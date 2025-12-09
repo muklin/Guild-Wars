@@ -4,3 +4,5 @@
 Players develop their Guilds by recruiting members, securing resources, forging alliances, and overcoming challenges. They must navigate threats both internal and external—whether through combat, subterfuge, market maneuvers, or infiltration of rival guilds.
 
 Ultimately, each Guild vies for dominance, seeking to gain control of the city and claim victory.
+
+See the full rules [here.](https://github.com/muklin/Guild-Wars/blob/main/Game%20Rules/Rules.md)
