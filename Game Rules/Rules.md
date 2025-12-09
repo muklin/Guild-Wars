@@ -11,7 +11,7 @@ Ultimately, each Guild vies for dominance, seeking to gain control of the city a
 
 \page
 # Game Goals
-There is no Game *Master* in *GuildWars*, instead the players are all reponsible for contributing to a functioning game.  To motivate and share load, a mechanic where tasks done that assist the game's progress grant that player some level of influence in the world.
+There is no Game *Master* in *GuildWars*, instead the players are all responsible for contributing to a functioning game.  To motivate and share load, a mechanic where tasks done that assist the game's progress grant that player some level of influence in the world.
 ## Game Tasks 
 These are some common player tasks necessary to run the game:
 - **Ideas:** ideas, concepts, mission ideas, Guild concepts, Story Plots character sketches, can be voted to be influence worthy.
