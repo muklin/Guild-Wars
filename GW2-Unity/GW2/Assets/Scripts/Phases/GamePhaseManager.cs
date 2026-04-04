@@ -47,20 +47,14 @@ public class GamePhaseManager : MonoBehaviour
 
     private void InitializePhaseHandlers()
     {
-        // Create instances of each phase handler
-        var sessionZeroPhase = gameObject.AddComponent<SessionZeroPhase>();
-        var upkeepPhase = gameObject.AddComponent<UpkeepPhase>();
-        var planningPhase = gameObject.AddComponent<PlanningPhase>();
-        var executionPhase = gameObject.AddComponent<ExecutionPhase>();
-        var billsPhase = gameObject.AddComponent<BillsPhase>();
+        // Session Zero is managed separately by SessionZeroManager.
+        // GamePhaseManager only owns the repeating game loop phases.
+        phaseHandlers[GamePhase.Upkeep]    = gameObject.AddComponent<UpkeepPhase>();
+        phaseHandlers[GamePhase.Planning]  = gameObject.AddComponent<PlanningPhase>();
+        phaseHandlers[GamePhase.Execution] = gameObject.AddComponent<ExecutionPhase>();
+        phaseHandlers[GamePhase.Bills]     = gameObject.AddComponent<BillsPhase>();
 
-        phaseHandlers[GamePhase.SessionZero] = sessionZeroPhase;
-        phaseHandlers[GamePhase.Upkeep] = upkeepPhase;
-        phaseHandlers[GamePhase.Planning] = planningPhase;
-        phaseHandlers[GamePhase.Execution] = executionPhase;
-        phaseHandlers[GamePhase.Bills] = billsPhase;
-
-        Debug.Log("Phase handlers initialized");
+        Debug.Log("[GamePhaseManager] Phase handlers initialized (Upkeep → Planning → Execution → Bills)");
     }
 
     private void Update()
@@ -111,8 +105,8 @@ public class GamePhaseManager : MonoBehaviour
         }
 
         isPhaseActive = true;
-        Debug.Log($"[GamePhaseManager] Starting game...");
-        StartPhase(GamePhase.SessionZero);
+        Debug.Log("[GamePhaseManager] Starting game loop (Session Zero already complete).");
+        StartPhase(GamePhase.Upkeep);
     }
 
     private void StartPhase(GamePhase phase)
@@ -144,17 +138,15 @@ public class GamePhaseManager : MonoBehaviour
     {
         GamePhase nextPhase = gameStateManager.GetCurrentPhase() switch
         {
-            GamePhase.SessionZero => GamePhase.Upkeep,
-            GamePhase.Upkeep => GamePhase.Planning,
-            GamePhase.Planning => GamePhase.Execution,
+            GamePhase.Upkeep    => GamePhase.Planning,
+            GamePhase.Planning  => GamePhase.Execution,
             GamePhase.Execution => GamePhase.Bills,
-            GamePhase.Bills => GamePhase.Upkeep,
-            _ => GamePhase.Upkeep
+            GamePhase.Bills     => GamePhase.Upkeep,
+            _                   => GamePhase.Upkeep
         };
 
-        if (nextPhase == GamePhase.Upkeep && gameStateManager.GetCurrentPhase() != GamePhase.SessionZero)
+        if (nextPhase == GamePhase.Upkeep) // Bills → Upkeep means a round just ended
         {
-            // Round is complete - check victory conditions
             gameStateManager.AdvanceRound();
             CheckVictoryConditions();
 

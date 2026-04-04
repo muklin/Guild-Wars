@@ -54,8 +54,24 @@ public class GameStateManager : MonoBehaviour
     public District GetDistrict(int districtId) => state.Districts.FirstOrDefault(d => d.Id == districtId);
     public List<District> GetAllDistricts() => new(state.Districts);
     public List<District> GetDistrictsControlledBy(int guildId) => state.Districts.Where(d => d.ControllingGuildId == guildId).ToList();
-    public Faction GetFaction(int factionId) => state.Factions.FirstOrDefault(f => f.Id == factionId);
-    public List<Faction> GetAllFactions() => new(state.Factions);
+
+    /// <summary>
+    /// Returns all Factions across every subtype: standalone Factions (incl. ClassFactions),
+    /// Districts, Guilds, and TradingDestinations.
+    /// </summary>
+    public List<Faction> GetAllFactions()
+    {
+        var all = new List<Faction>(state.Factions);
+        all.AddRange(state.Districts.Cast<Faction>());
+        all.AddRange(state.Guilds.Cast<Faction>());
+        all.AddRange(state.TradingDestinations.Cast<Faction>());
+        return all;
+    }
+
+    /// <summary>Standalone/class factions only (excludes Districts, Guilds, TradingDestinations).</summary>
+    public List<Faction> GetPureFactions() => new(state.Factions);
+
+    public Faction GetFaction(int factionId) => GetAllFactions().FirstOrDefault(f => f.Id == factionId);
 
     public int GetFactionStanding(int guildId, int factionId)
     {

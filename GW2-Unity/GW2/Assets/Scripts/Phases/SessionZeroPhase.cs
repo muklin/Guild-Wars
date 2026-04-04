@@ -218,9 +218,7 @@ public class SessionZeroPhase : MonoBehaviour, IPhaseHandler
         var district = new District(archetype.name, pos);
         district.Class = archetype.cls;
 
-        var faction = gsm.GetAllFactions().FirstOrDefault(f => f.Name == archetype.faction)
-                      ?? CreateFaction(archetype.faction);
-        district.AssociatedFaction = faction;
+        district.FactionLabel = archetype.faction;
         district.AddProducedResource(archetype.produces, 30);
         foreach (var c in archetype.consumes)
             district.AddConsumedResource(c, 10);
@@ -290,11 +288,7 @@ public class SessionZeroPhase : MonoBehaviour, IPhaseHandler
         district.IsWalled = isWalled;
 
         if (!string.IsNullOrWhiteSpace(factionName))
-        {
-            var faction = gsm.GetAllFactions().FirstOrDefault(f => f.Name == factionName)
-                          ?? CreateFaction(factionName);
-            district.AssociatedFaction = faction;
-        }
+            district.FactionLabel = factionName;
 
         district.AddProducedResource(producedResource, 30);
         foreach (var c in validConsumes)
@@ -503,9 +497,10 @@ public class SessionZeroPhase : MonoBehaviour, IPhaseHandler
     {
         if (!hqReservations.TryGetValue(guildId, out int districtId)) return;
         var district = gsm.GetDistrict(districtId);
-        if (district?.AssociatedFaction == null) return;
-        gsm.UpdateFactionStanding(guildId, district.AssociatedFaction.Id, +20);
-        Log($"Guild {guildId} gains +20 standing with {district.AssociatedFaction.Name} (HQ bonus).");
+        if (district == null) return;
+        // The district IS the faction — use its ID directly
+        gsm.UpdateFactionStanding(guildId, district.Id, +20);
+        Log($"Guild {guildId} gains +20 standing with {district.Name} (HQ bonus).");
     }
 
     private void AdvanceToComplete()
@@ -583,13 +578,6 @@ public class SessionZeroPhase : MonoBehaviour, IPhaseHandler
     }
 
     // ─── UTILITIES ────────────────────────────────────────────────────
-
-    private Faction CreateFaction(string name)
-    {
-        var faction = new Faction(name);
-        gsm.AddFaction(faction);
-        return faction;
-    }
 
     /// <summary>Wire simple linear adjacency: new district is adjacent to the last placed district.</summary>
     private void WireAdjacency(District newDistrict)

@@ -170,11 +170,6 @@ public class UIManager : MonoBehaviour
         // Update panel visibility based on phase
         switch (phase)
         {
-            case GamePhase.SessionZero:
-                Debug.Log("[UIManager] Detected Session Zero phase");
-                HideAllPanels();
-                ShowPanel<SessionZeroUIPanel>(true);
-                break;
             case GamePhase.Planning:
                 Debug.Log("[UIManager] Detected Planning phase");
                 OnPlanningPhaseStart();

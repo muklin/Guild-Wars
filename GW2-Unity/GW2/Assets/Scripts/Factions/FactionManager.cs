@@ -5,34 +5,32 @@ using UnityEngine;
 /// <summary>
 /// Centralized faction logic.
 /// Manages faction standings, updates after actions, checks victory conditions.
+///
+/// Districts, Guilds, TradingDestinations, and ClassFactions are all Factions.
+/// A guild's standing with a district is tracked by district.Id (district IS the faction).
 /// </summary>
 public class FactionManager
 {
     private GameStateManager gameStateManager;
-    private List<Faction> factions;
 
     public FactionManager(GameStateManager stateManager)
     {
         gameStateManager = stateManager;
-        factions = gameStateManager.GetAllFactions();
     }
 
     // ==================== FACTION STANDING UPDATES ====================
 
+    /// <summary>
+    /// Award a standing bonus to a guild for controlling a district.
+    /// The district IS the faction — we update standing directly by district.Id.
+    /// </summary>
     public void UpdateStandingFromDistrictControl(Guild guild, District district)
     {
-        if (district.AssociatedFaction == null) return;
-
-        // Bonus for controlling faction origin district
-        int bonus = district.AssociatedFaction.CalculateOriginDistrictBonus(
-            district.Id == district.AssociatedFaction.OriginDistrictId
-        );
-
-        int oldStanding = guild.GetFactionStanding(district.AssociatedFaction.Id);
-        int newStanding = Mathf.Clamp(oldStanding + bonus, 0, 100);
-        guild.UpdateFactionStanding(district.AssociatedFaction.Id, newStanding);
-
-        EventSystem.Instance?.Fire(GameEvents.FACTION_STANDING_CHANGED, guild, district.AssociatedFaction);
+        const int controlBonus = 10;
+        int oldStanding = guild.GetFactionStanding(district.Id);
+        int newStanding = Mathf.Clamp(oldStanding + controlBonus, 0, 100);
+        guild.UpdateFactionStanding(district.Id, newStanding);
+        EventSystem.Instance?.Fire(GameEvents.FACTION_STANDING_CHANGED, guild, (Faction)district);
     }
 
     public void UpdateStandingFromMission(Guild guild, Faction faction, int amount)
@@ -40,7 +38,6 @@ public class FactionManager
         int oldStanding = guild.GetFactionStanding(faction.Id);
         int newStanding = Mathf.Clamp(oldStanding + amount, 0, 100);
         guild.UpdateFactionStanding(faction.Id, newStanding);
-
         EventSystem.Instance?.Fire(GameEvents.FACTION_MISSION_COMPLETED, guild, faction);
     }
 
@@ -50,21 +47,18 @@ public class FactionManager
     {
         foreach (var guild in gameStateManager.GetAllGuilds())
         {
-            if (HasWon(guild))
-                return guild;
+            if (HasWon(guild)) return guild;
         }
         return null;
     }
 
     public bool HasWon(Guild guild)
     {
-        // Guild must have reached victory threshold with at least 2 factions
         var factionStandings = guild.GetAllFactionStandings();
-        var victoriesFactions = factionStandings
+        var victories = factionStandings
             .Where(kvp => kvp.Value >= GetVictoryThreshold(kvp.Key))
             .ToList();
-
-        return victoriesFactions.Count >= 2;
+        return victories.Count >= 2;
     }
 
     private int GetVictoryThreshold(int factionId)
@@ -75,18 +69,14 @@ public class FactionManager
 
     // ==================== FACTION QUERIES ====================
 
-    public List<Faction> GetFactionsForDistrict(District district)
-    {
-        if (district.AssociatedFaction == null)
-            return new List<Faction>();
-
-        return new List<Faction> { district.AssociatedFaction };
-    }
+    /// <summary>Returns the district itself as its own faction.</summary>
+    public List<Faction> GetFactionsForDistrict(District district) =>
+        new List<Faction> { district };
 
     public Dictionary<Faction, int> GetGuildFactionStandings(Guild guild)
     {
         var standings = new Dictionary<Faction, int>();
-        foreach (var faction in factions)
+        foreach (var faction in gameStateManager.GetAllFactions())
         {
             standings[faction] = guild.GetFactionStanding(faction.Id);
         }
@@ -96,8 +86,7 @@ public class FactionManager
     public void PrintFactionStandings(Guild guild)
     {
         Debug.Log($"=== Faction Standings for {guild.Name} ===");
-        var standings = GetGuildFactionStandings(guild);
-        foreach (var kvp in standings)
+        foreach (var kvp in GetGuildFactionStandings(guild))
         {
             Debug.Log($"{kvp.Key.Name}: {kvp.Value}/100");
         }

@@ -98,9 +98,9 @@ public class SessionZeroUIPanel : UIPanel
 
     protected void Awake()
     {
-        sessionZero = GamePhaseManager.Instance?.GetPhaseHandler(GamePhase.SessionZero) as SessionZeroPhase;
+        sessionZero = SessionZeroManager.Instance?.Phase;
         if (sessionZero == null)
-            Debug.LogWarning("[SessionZeroUIPanel] SessionZeroPhase not found — wire GamePhaseManager.");
+            Debug.LogWarning("[SessionZeroUIPanel] SessionZeroPhase not found — ensure SessionZeroManager exists.");
     }
 
     protected void OnEnable()
@@ -446,7 +446,7 @@ public class SessionZeroUIPanel : UIPanel
     public override void ShowPanel()
     {
         base.ShowPanel();
-        sessionZero = GamePhaseManager.Instance?.GetPhaseHandler(GamePhase.SessionZero) as SessionZeroPhase;
+        sessionZero = SessionZeroManager.Instance?.Phase;
         Refresh();
     }
 }

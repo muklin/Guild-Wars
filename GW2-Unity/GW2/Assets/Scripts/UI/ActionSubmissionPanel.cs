@@ -30,15 +30,8 @@ public class ActionSubmissionPanel : UIPanel
                 return;
             }
 
-            var allGuilds = gameStateManager.GetAllGuilds();
-            if (allGuilds == null || allGuilds.Count == 0)
-            {
-                Debug.LogError("[ActionSubmissionPanel] No guilds found in GameStateManager!");
-                return;
-            }
-
-            playerGuild = allGuilds[0]; // Player is always first guild
-            Debug.Log($"[ActionSubmissionPanel] Using player guild: {playerGuild.Name}");
+            // Guilds don't exist yet during UI initialization (they're created in Session Zero).
+            // We'll initialize playerGuild in ShowPanel() when Planning phase starts.
 
             // Position: center-bottom
             rectTransform.anchorMin = new Vector2(0.33f, 0);
@@ -75,7 +68,6 @@ public class ActionSubmissionPanel : UIPanel
             var squadObj = new GameObject("SquadMemberDropdown");
             squadObj.transform.SetParent(transform, false);
             squadMemberDropdown = squadObj.AddComponent<Dropdown>();
-            PopulateSquadMembers();
 
             // Status text
             statusText = CreateTextObject("Status", "Ready to submit", transform, 18).GetComponent<Text>();
@@ -86,7 +78,7 @@ public class ActionSubmissionPanel : UIPanel
                 .GetComponent<Button>();
 
             RefreshLayout();
-            Debug.Log("[ActionSubmissionPanel] Successfully initialized!");
+            Debug.Log("[ActionSubmissionPanel] Successfully initialized! (Guilds will be loaded when panel is shown)");
         }
         catch (System.Exception e)
         {
@@ -255,6 +247,19 @@ public class ActionSubmissionPanel : UIPanel
     public override void ShowPanel()
     {
         base.ShowPanel();
+
+        // Initialize guild data on first show (when guilds now exist)
+        if (playerGuild == null)
+        {
+            var allGuilds = gameStateManager?.GetAllGuilds();
+            if (allGuilds != null && allGuilds.Count > 0)
+            {
+                playerGuild = allGuilds[0]; // Player is always first guild
+                Debug.Log($"[ActionSubmissionPanel] Using player guild: {playerGuild.Name}");
+                PopulateSquadMembers();
+            }
+        }
+
         // Reset UI when panel shows
         actionTypeDropdown.value = 0;
         targetDropdown.value = 0;

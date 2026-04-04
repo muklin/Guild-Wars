@@ -1,72 +1,73 @@
 using System.Collections.Generic;
+using System.Linq;
 
 /// <summary>
-/// Represents a faction that guilds can gain influence with.
+/// Base type for all societal actors in GuildWars.
+/// Districts, Guilds, TradingDestinations, and ClassFactions are all Factions.
+/// A Faction has a list of Tradeables it produces and needs, and a victory threshold
+/// for faction-standing win conditions.
 /// </summary>
 public class Faction
 {
-    public int Id { get; private set; }
+    public int Id { get; protected set; }
     public string Name { get; set; }
     public string Description { get; set; }
 
-    // Origin district (where faction is based)
-    public int OriginDistrictId { get; set; }
+    // Typed tradeable lists — what this faction produces and what it needs
+    public List<Tradeable> Produces { get; protected set; } = new();
+    public List<Tradeable> Needs    { get; protected set; } = new();
 
-    // Resources and services this faction produces/needs
-    public List<string> ProducedResources { get; private set; } = new();
-    public List<string> NeededResources { get; private set; } = new();
-
-    // Victory condition - standing required to help guild win
+    // Standing threshold at which a guild wins via faction influence
     public int VictoryThreshold { get; set; } = 90;
 
-    // Bonuses for having standing in this faction
-    public int FactionBonusStandingBonus { get; set; } = 10; // How much standing bonus for HQ in origin district
-    public int MaxStandingBonus { get; set; } = 20;
+    // Standing bonus for a guild whose HQ is in this faction's territory
+    public int HQStandingBonus { get; set; } = 20;
 
-    private static int nextId = 1;
+    // Auto-assigned IDs start at 100; Guild IDs 1–99 are reserved for explicit assignment
+    private static int nextId = 100;
 
+    /// <summary>Auto-assigned ID. Used by Districts, TradingDestinations, ClassFactions.</summary>
     public Faction(string name)
     {
         Id = nextId++;
         Name = name;
     }
 
-    // ==================== RESOURCES ====================
-
-    public void AddProducedResource(string resource)
+    /// <summary>Explicit ID. Used by Guild (IDs 1–99 reserved for player/NPC guilds).</summary>
+    protected Faction(int id, string name)
     {
-        if (!ProducedResources.Contains(resource))
-            ProducedResources.Add(resource);
+        Id = id;
+        Name = name;
     }
 
-    public void AddNeededResource(string resource)
+    // ==================== TRADEABLES ====================
+
+    public void AddProduced(Tradeable t)
     {
-        if (!NeededResources.Contains(resource))
-            NeededResources.Add(resource);
+        if (!Produces.Any(p => p.Name == t.Name))
+            Produces.Add(t);
     }
 
-    public bool ProducesResource(string resource)
+    public void AddNeeded(Tradeable t)
     {
-        return ProducedResources.Contains(resource);
+        if (!Needs.Any(n => n.Name == t.Name))
+            Needs.Add(t);
     }
 
-    public bool NeedsResource(string resource)
-    {
-        return NeededResources.Contains(resource);
-    }
+    /// <summary>Add a Resource to the Produces list by name (creates a Resource instance).</summary>
+    public void AddProducedResource(string name)    => AddProduced(new Resource(name));
 
-    // ==================== STANDING ====================
+    /// <summary>Add a Resource to the Needs list by name.</summary>
+    public void AddNeededResource(string name)      => AddNeeded(new Resource(name));
 
-    /// <summary>
-    /// Calculates the standing bonus for a guild based on controlling the origin district.
-    /// </summary>
-    public int CalculateOriginDistrictBonus(bool controlsOrigin)
-    {
-        return controlsOrigin ? FactionBonusStandingBonus : 0;
-    }
+    /// <summary>Add a Service to the Produces list by name (creates a Service instance).</summary>
+    public void AddProducedService(string name)     => AddProduced(new Service(name));
 
-    public override string ToString()
-    {
-        return $"Faction[{Name}, VictoryThreshold={VictoryThreshold}]";
-    }
+    /// <summary>Add a Service to the Needs list by name.</summary>
+    public void AddNeededService(string name)       => AddNeeded(new Service(name));
+
+    public bool ProducesItem(string name) => Produces.Any(p => p.Name == name);
+    public bool NeedsItem(string name)    => Needs.Any(n => n.Name == name);
+
+    public override string ToString() => $"{GetType().Name}[{Name}]";
 }

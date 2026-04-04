@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// District classification that affects faction standing bonuses
+/// District classification that affects the type of faction standing bonuses available.
 /// </summary>
 public enum DistrictClass
 {
@@ -15,71 +15,71 @@ public enum DistrictClass
 }
 
 /// <summary>
-/// Represents a district in the city.
-/// Each district has resources, can be controlled by guilds, and has faction associations.
+/// A district in the city. Districts ARE Factions — each district represents the societal
+/// group or power bloc that inhabits it. Guilds gain or lose standing with a district by
+/// controlling it, trading with it, or acting within it.
+///
+/// Inherits Produces / Needs (typed Tradeable lists) from Faction.
+/// Also holds ProducedResources / ConsumedResources dictionaries for upkeep amount tracking.
 /// </summary>
-public class District
+public class District : Faction
 {
-    public int Id { get; private set; }
-    public string Name { get; set; }
-    public string Description { get; set; }
-
-    // Location in the city (for 3D view)
+    // Location in the 3D city
     public Vector3 WorldPosition { get; set; }
 
-    // Control
-    public int ControllingGuildId { get; set; } = -1; // -1 means no control
-    public Faction AssociatedFaction { get; set; }
+    // Which guild currently controls this district (-1 = uncontrolled)
+    public int ControllingGuildId { get; set; } = -1;
 
-    // Resources produced and consumed
+    // Optional label for the dominant group in this district (e.g. "Merchants Guild")
+    public string FactionLabel { get; set; }
+
+    // Resource amounts for upkeep calculations (keyed by resource name)
     public Dictionary<string, int> ProducedResources { get; private set; } = new();
     public Dictionary<string, int> ConsumedResources { get; private set; } = new();
 
-    // District class (affects faction standing bonuses)
+    // District classification
     public DistrictClass Class { get; set; } = DistrictClass.Neutral;
 
-    // Adjacency for district control
+    // Adjacency graph (district IDs)
     public List<int> AdjacentDistrictIds { get; private set; } = new();
 
-    // For gameplay
+    // Gameplay state
     public bool IsWalled { get; set; }
     public Threat ThreatSource { get; set; }
     public bool IsThreatened => ThreatSource != null && !ThreatSource.IsMitigated;
 
-    private static int nextId = 1;
-
-    public District(string name, Vector3 worldPosition)
+    public District(string name, Vector3 worldPosition) : base(name)
     {
-        Id = nextId++;
-        Name = name;
         WorldPosition = worldPosition;
     }
 
     // ==================== RESOURCES ====================
 
+    /// <summary>
+    /// Add an amount of a produced resource. Also registers it in the typed Faction.Produces list.
+    /// </summary>
     public void AddProducedResource(string resourceType, int amount)
     {
         if (!ProducedResources.ContainsKey(resourceType))
             ProducedResources[resourceType] = 0;
         ProducedResources[resourceType] += amount;
+        // Sync to the typed Faction list (creates a Resource if not already present)
+        AddProducedResource(resourceType);
     }
 
+    /// <summary>
+    /// Add an amount of a consumed resource. Also registers it in the typed Faction.Needs list.
+    /// </summary>
     public void AddConsumedResource(string resourceType, int amount)
     {
         if (!ConsumedResources.ContainsKey(resourceType))
             ConsumedResources[resourceType] = 0;
         ConsumedResources[resourceType] += amount;
+        AddNeededResource(resourceType);
     }
 
-    public Dictionary<string, int> GenerateResources()
-    {
-        return new Dictionary<string, int>(ProducedResources);
-    }
-
-    public Dictionary<string, int> GetRequiredResources()
-    {
-        return new Dictionary<string, int>(ConsumedResources);
-    }
+    public Dictionary<string, int> GenerateResources()      => new(ProducedResources);
+    public Dictionary<string, int> GetRequiredResources()   => new(ConsumedResources);
 
     // ==================== ADJACENCY ====================
 
@@ -89,22 +89,12 @@ public class District
             AdjacentDistrictIds.Add(districtId);
     }
 
-    public bool IsAdjacent(int districtId)
-    {
-        return AdjacentDistrictIds.Contains(districtId);
-    }
+    public bool IsAdjacent(int districtId) => AdjacentDistrictIds.Contains(districtId);
 
     // ==================== CONTROL ====================
 
-    public bool IsControlled()
-    {
-        return ControllingGuildId != -1;
-    }
-
-    public bool IsControlledBy(int guildId)
-    {
-        return ControllingGuildId == guildId;
-    }
+    public bool IsControlled()            => ControllingGuildId != -1;
+    public bool IsControlledBy(int guildId) => ControllingGuildId == guildId;
 
     public override string ToString()
     {

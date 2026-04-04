@@ -3,7 +3,7 @@ using System.Linq;
 using UnityEngine;
 
 /// <summary>
-/// D&D 5e ability types
+/// D&amp;D 5e ability types
 /// </summary>
 public enum Ability
 {
@@ -16,12 +16,16 @@ public enum Ability
 }
 
 /// <summary>
-/// Represents a Guild with members, resources, faction standings, and controlled districts.
+/// A Guild is a Faction. It represents the organisation itself as a power bloc in the city.
+/// Other guilds (and the world) can have standing with it; it tracks its own standing with
+/// all other Factions.
+///
+/// Guild IDs 1–99 are reserved for player/NPC guilds (explicit IDs).
+/// Inherits Produces / Needs (typed Tradeable lists) from Faction — these represent
+/// what the guild trades in and what it requires to operate.
 /// </summary>
-public class Guild
+public class Guild : Faction
 {
-    public int Id { get; private set; }
-    public string Name { get; set; }
     public int OwnerId { get; set; } // Player network ID
     public GuildLeader Leader { get; set; }
     public GuildLeader SecondInCommand { get; set; }
@@ -29,30 +33,28 @@ public class Guild
     public List<GuildCharacter> Members { get; private set; } = new();
     public int Gold { get; set; }
 
-    // Faction standings: factionId -> standing (0-100, neutral at 50)
+    // Faction standings: factionId -> standing (0–100, neutral = 50)
     private Dictionary<int, int> factionStandings = new();
 
     // Districts this guild controls
     public List<int> ControlledDistrictIds { get; private set; } = new();
 
-    // Resources inventory
+    // Resource stockpile (keyed by resource name)
     private Dictionary<string, int> resources = new();
 
-    // Squads for action purposes (groups of characters that can take actions)
+    // Squads available for actions
     public int SquadCount { get; set; } = 1;
 
-    // Session Zero tokens (reset at round start per rules)
-    public int VetoTokens { get; set; } = 1;
-    public int GuildTokens { get; set; } = 2;
+    // Session Zero tokens
+    public int VetoTokens      { get; set; } = 1;
+    public int GuildTokens     { get; set; } = 2;
     public int CharacterTokens { get; set; } = 2;
-    public int RoundTokens { get; set; } = 2;
+    public int RoundTokens     { get; set; } = 2;
 
-    public Guild(int id, string name, int ownerId)
+    public Guild(int id, string name, int ownerId) : base(id, name)
     {
-        Id = id;
-        Name = name;
         OwnerId = ownerId;
-        Gold = 200; // Starting gold per rules
+        Gold = 200;
     }
 
     // ==================== MEMBERS ====================
@@ -60,20 +62,13 @@ public class Guild
     public void AddMember(GuildCharacter character)
     {
         if (!Members.Contains(character))
-        {
             Members.Add(character);
-        }
     }
 
-    public void RemoveMember(GuildCharacter character)
-    {
-        Members.Remove(character);
-    }
+    public void RemoveMember(GuildCharacter character) => Members.Remove(character);
 
-    public List<GuildCharacter> GetAvailableMembers()
-    {
-        return Members.Where(m => !m.IsIncapacitated).ToList();
-    }
+    public List<GuildCharacter> GetAvailableMembers() =>
+        Members.Where(m => !m.IsIncapacitated).ToList();
 
     // ==================== RESOURCES ====================
 
@@ -92,32 +87,20 @@ public class Guild
         return true;
     }
 
-    public int GetResourceAmount(string resourceType)
-    {
-        return resources.ContainsKey(resourceType) ? resources[resourceType] : 0;
-    }
+    public int GetResourceAmount(string resourceType) =>
+        resources.ContainsKey(resourceType) ? resources[resourceType] : 0;
 
-    public Dictionary<string, int> GetAllResources()
-    {
-        return new Dictionary<string, int>(resources);
-    }
+    public Dictionary<string, int> GetAllResources() => new(resources);
 
     // ==================== FACTION STANDINGS ====================
 
     public void UpdateFactionStanding(int factionId, int newStanding)
-    {
-        factionStandings[factionId] = newStanding;
-    }
+        => factionStandings[factionId] = newStanding;
 
-    public int GetFactionStanding(int factionId)
-    {
-        return factionStandings.ContainsKey(factionId) ? factionStandings[factionId] : 50;
-    }
+    public int GetFactionStanding(int factionId) =>
+        factionStandings.ContainsKey(factionId) ? factionStandings[factionId] : 50;
 
-    public Dictionary<int, int> GetAllFactionStandings()
-    {
-        return new Dictionary<int, int>(factionStandings);
-    }
+    public Dictionary<int, int> GetAllFactionStandings() => new(factionStandings);
 
     // ==================== DISTRICTS ====================
 
@@ -127,15 +110,11 @@ public class Guild
             ControlledDistrictIds.Add(districtId);
     }
 
-    public void RemoveControlledDistrict(int districtId)
-    {
+    public void RemoveControlledDistrict(int districtId) =>
         ControlledDistrictIds.Remove(districtId);
-    }
 
-    public bool ControlsDistrict(int districtId)
-    {
-        return ControlledDistrictIds.Contains(districtId);
-    }
+    public bool ControlsDistrict(int districtId) =>
+        ControlledDistrictIds.Contains(districtId);
 
     // ==================== MONEY ====================
 
@@ -146,30 +125,19 @@ public class Guild
         return true;
     }
 
-    public void ReceiveMoney(int amount)
-    {
-        Gold += amount;
-    }
+    public void ReceiveMoney(int amount) => Gold += amount;
 
-    public int CalculateSalaryBill()
-    {
-        // Salary = level * factorial
-        // Level 1: 1gp, Level 2: 2gp, Level 3: 6gp, Level 4: 24gp, etc
-        return Members.Sum(m => CalculateFactorial(m.Level));
-    }
+    public int CalculateSalaryBill() => Members.Sum(m => CalculateFactorial(m.Level));
 
     private int CalculateFactorial(int n)
     {
         int result = 1;
-        for (int i = 2; i <= n; i++)
-            result *= i;
+        for (int i = 2; i <= n; i++) result *= i;
         return result;
     }
 
-    public override string ToString()
-    {
-        return $"Guild[{Name}, Members={Members.Count}, Gold={Gold}, Districts={ControlledDistrictIds.Count}]";
-    }
+    public override string ToString() =>
+        $"Guild[{Name}, Members={Members.Count}, Gold={Gold}, Districts={ControlledDistrictIds.Count}]";
 }
 
 /// <summary>
@@ -183,16 +151,16 @@ public class GuildCharacter
     public int Level { get; set; }
 
     // D&D 5e abilities
-    public int Strength { get; set; }
-    public int Dexterity { get; set; }
+    public int Strength     { get; set; }
+    public int Dexterity    { get; set; }
     public int Constitution { get; set; }
     public int Intelligence { get; set; }
-    public int Wisdom { get; set; }
-    public int Charisma { get; set; }
+    public int Wisdom       { get; set; }
+    public int Charisma     { get; set; }
 
     // Combat state
-    public int HitPoints { get; set; }
-    public int MaxHitPoints { get; set; }
+    public int HitPoints      { get; set; }
+    public int MaxHitPoints   { get; set; }
     public bool IsIncapacitated { get; set; }
 
     private static int nextId = 1;
@@ -203,23 +171,23 @@ public class GuildCharacter
         Name = name;
         Class = charClass;
         Level = level;
-        MaxHitPoints = 10 + (level - 1) * 5; // Simple formula
+        MaxHitPoints = 10 + (level - 1) * 5;
         HitPoints = MaxHitPoints;
     }
 
     public int GetModifier(Ability ability)
     {
-        int abilityScore = ability switch
+        int score = ability switch
         {
-            Ability.Strength => Strength,
-            Ability.Dexterity => Dexterity,
+            Ability.Strength     => Strength,
+            Ability.Dexterity    => Dexterity,
             Ability.Constitution => Constitution,
             Ability.Intelligence => Intelligence,
-            Ability.Wisdom => Wisdom,
-            Ability.Charisma => Charisma,
-            _ => 10
+            Ability.Wisdom       => Wisdom,
+            Ability.Charisma     => Charisma,
+            _                    => 10
         };
-        return (abilityScore - 10) / 2;
+        return (score - 10) / 2;
     }
 
     public void TakeDamage(int damage)
@@ -234,14 +202,12 @@ public class GuildCharacter
         IsIncapacitated = false;
     }
 
-    public override string ToString()
-    {
-        return $"{Name} - Level {Level} {Class} (HP: {HitPoints}/{MaxHitPoints})";
-    }
+    public override string ToString() =>
+        $"{Name} - Level {Level} {Class} (HP: {HitPoints}/{MaxHitPoints})";
 }
 
 /// <summary>
-/// A leader character (special type with additional role).
+/// A leader character (special type with an additional role title).
 /// </summary>
 public class GuildLeader : GuildCharacter
 {
