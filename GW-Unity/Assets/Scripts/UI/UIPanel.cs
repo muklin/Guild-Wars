@@ -1,5 +1,4 @@
 using UnityEngine;
-using UnityEngine.UI;
 
 /// <summary>
 /// Base class for all UI panels in GuildWars.

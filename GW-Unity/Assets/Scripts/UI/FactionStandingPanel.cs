@@ -1,5 +1,4 @@
 using UnityEngine;
-using UnityEngine.UI;
 
 /// <summary>
 /// FactionStandingPanel: Shows faction standings for all guilds.

@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using UnityEngine;
 
 /// <summary>
 /// Unit tests for ClassFaction class (which inherits from Faction).

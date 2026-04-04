@@ -1,4 +1,6 @@
 using NUnit.Framework;
+using UnityEngine;
+
 
 /// <summary>
 /// Unit tests for District class (which inherits from Faction).

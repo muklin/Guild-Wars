@@ -1,5 +1,4 @@
 using UnityEngine;
-using UnityEngine.UI;
 
 /// <summary>
 /// ActionSubmissionPanel: Shown during Planning phase.

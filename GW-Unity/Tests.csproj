@@ -18,7 +18,7 @@
     <LangVersion>9.0</LangVersion>
     <RootNamespace></RootNamespace>
     <OutputType>Library</OutputType>
-    <AssemblyName>GuildWarsTests</AssemblyName>
+    <AssemblyName>Tests</AssemblyName>
     <TargetFramework>netstandard2.1</TargetFramework>
     <BaseDirectory>.</BaseDirectory>
   </PropertyGroup>
@@ -1146,8 +1146,6 @@
       <Private>False</Private>
     </Reference>
   </ItemGroup>
-  <ItemGroup>
-  </ItemGroup>
   <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
   <ItemGroup>
     <ProjectCapability Remove="LaunchProfiles" />
@@ -1158,8 +1156,5 @@
     <ProjectCapability Remove="ReferenceManagerCOM" />
     <ProjectCapability Remove="AssemblyReferences" />
     <ProjectCapability Remove="ReferenceManagerAssemblies" />
-  </ItemGroup>
-  <ItemGroup>
-      <ProjectReference Include=".\Assembly-CSharp.csproj" />
   </ItemGroup>
 </Project>

@@ -1,7 +1,4 @@
 using UnityEngine;
-using UnityEngine.EventSystems;
-using UnityEngine.UI;
-using static UnityEngine.EventSystems.PointerEventData;
 
 public class MinimapInteractionController : MonoBehaviour, IPointerClickHandler
 {
