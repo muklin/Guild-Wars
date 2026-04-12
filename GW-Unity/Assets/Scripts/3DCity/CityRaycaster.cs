@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 /// <summary>
 /// Detects building/district clicks and fires selection events.
@@ -17,7 +18,10 @@ public class CityRaycaster : MonoBehaviour
 
     public DistrictVisual GetDistrictAtMousePosition()
     {
-        Ray ray = mainCamera.ScreenPointToRay(Input.mousePosition);
+        var mouse = Mouse.current;
+        if (mouse == null) return null;
+
+        Ray ray = mainCamera.ScreenPointToRay(mouse.position.ReadValue());
         return GetDistrictFromRay(ray);
     }
 

@@ -51,5 +51,5 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "GW2.slnx"
+    "dotnet.defaultSolution": "GW-Unity.slnx"
 }

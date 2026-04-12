@@ -16,7 +16,7 @@ System_Boundary(gw, "GuildWars Game") {
 
     ' ── Bootstrap ──────────────────────────────────────────────────────────
     Container_Boundary(bootstrap, "Bootstrap") {
-        Component(bootstrapper, "GameBootstrapper", "MonoBehaviour", "Creates core managers; spawns empty city grid at startup; triggers SessionZeroManager then GamePhaseManager")
+        Component(bootstrapper, "GameBootstrapper", "MonoBehaviour", "Sets up camera; creates core managers; spawns empty city grid at startup; triggers SessionZeroManager then GamePhaseManager")
     }
 
     ' ── Core ───────────────────────────────────────────────────────────────
@@ -72,7 +72,8 @@ System_Boundary(gw, "GuildWars Game") {
     Container_Boundary(city, "3D City Visualisation") {
         Component(layout,  "CityLayout",      "MonoBehaviour", "Maps district IDs to grid positions; stores TerrainFeatures per cell")
         Component(spawner, "BuildingSpawner", "MonoBehaviour", "Spawns DistrictVisual GameObjects for each district")
-        Component(viz,     "CityVisualization","MonoBehaviour","Orbit camera centre; coordinates overall city scene")
+        Component(viz,     "CityVisualization","MonoBehaviour","Coordinates overall city scene; manages terrain and district visuals")
+        Component(cam,     "CameraController","MonoBehaviour","Owns main camera; handles movement, zoom, rotation; isometric orthographic view")
         Component(ray,     "CityRaycaster",   "MonoBehaviour", "Raycasts player clicks onto district visuals; fires UI_SELECT_DISTRICT")
     }
 
@@ -168,6 +169,7 @@ Rel(ray,  events, "UI_SELECT_DISTRICT")
 Rel(layout,  gsm,     "GetAllDistricts()")
 Rel(spawner, layout,  "GenerateGridLayout()")
 Rel(spawner, viz,     "Provides GameObjects")
+Rel(viz,     cam,     "Uses for camera control")
 
 Rel(gpm,  cfg, "Load GameConfig from Resources")
 Rel(bi,   cfg, "Salary formula constants")

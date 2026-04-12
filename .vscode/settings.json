@@ -1,4 +1,10 @@
 {
     "git.ignoreLimitWarning": true,
-    "dotnet.preferCSharpExtension": true
+    "dotnet.preferCSharpExtension": true,
+    "[csharp]": {
+        "editor.defaultFormatter": "ms-dotnettools.csharp",
+        "editor.formatOnSave": true,
+        "editor.formatOnType": true
+    },
+    "omnisharp.useEditorConfig": true
 }

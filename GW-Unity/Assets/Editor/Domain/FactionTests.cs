@@ -14,7 +14,7 @@ public class FactionTests
 
         Assert.IsNotNull(faction);
         Assert.AreEqual("Merchants Guild", faction.Name);
-        Assert.GreaterThanOrEqual(faction.Id, 100); // Auto-IDs start at 100
+        Assert.GreaterOrEqual(faction.Id, 100); // Auto-IDs start at 100
     }
 
     [Test]

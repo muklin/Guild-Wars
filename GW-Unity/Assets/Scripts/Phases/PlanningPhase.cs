@@ -12,7 +12,7 @@ public class PlanningPhase : MonoBehaviour, IPhaseHandler
     private GameStateManager gameStateManager;
     private Dictionary<int, List<ActionBase>> guildActions = new(); // guildId -> list of actions
     private bool allPlayersSubmitted = false;
-    private NPCGuildController npcController;
+    
     private float phaseStartTime;
 
     public void OnPhaseStart()
@@ -22,9 +22,7 @@ public class PlanningPhase : MonoBehaviour, IPhaseHandler
         allPlayersSubmitted = false;
         phaseStartTime = Time.time;
 
-        // Initialize NPC controller (single-seed for determinism)
-        npcController = new NPCGuildController(gameStateManager, 42);
-
+        
         EventSystem.Instance?.Fire(GameEvents.PLANNING_PHASE_START);
 
         // Initialize action collections for each guild
@@ -49,11 +47,7 @@ public class PlanningPhase : MonoBehaviour, IPhaseHandler
                 // Player has submitted - now generate NPC actions
                 for (int i = 1; i < allGuilds.Count; i++)
                 {
-                    var npcActions = npcController.GenerateNPCActions(allGuilds[i].Id);
-                    foreach (var action in npcActions)
-                    {
-                        SubmitAction(allGuilds[i].Id, action);
-                    }
+                    
                 }
 
                 allPlayersSubmitted = true;

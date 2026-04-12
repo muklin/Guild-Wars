@@ -42,6 +42,37 @@ namespace DelaunayVoronoi {
 
         public DelaunayTriangulator(List<Point> points) {
             Points = points;
+
+            // Create a super-triangle that encompasses all points
+            if (points.Count > 0)
+            {
+                double minX = double.MaxValue, minY = double.MaxValue;
+                double maxX = double.MinValue, maxY = double.MinValue;
+
+                foreach (var p in points)
+                {
+                    if (p.X < minX) minX = p.X;
+                    if (p.Y < minY) minY = p.Y;
+                    if (p.X > maxX) maxX = p.X;
+                    if (p.Y > maxY) maxY = p.Y;
+                }
+
+                // Create border triangles that cover all points with margin
+                double margin = 10.0;
+                var p0 = new Point(minX - margin, minY - margin);
+                var p1 = new Point(maxX + margin, minY - margin);
+                var p2 = new Point((minX + maxX) / 2.0, maxY + margin);
+
+                var tri1 = new Triangle(p0, p1, p2);
+                Border = new List<Triangle>() { tri1 };
+
+                MaxX = maxX + margin;
+                MaxY = maxY + margin;
+            }
+            else
+            {
+                Border = new List<Triangle>();
+            }
         }
 
         public void GeneratePoints(int amount, double maxX, double maxY) {
@@ -138,7 +169,7 @@ namespace DelaunayVoronoi {
                     edges.Add(edge);
                 }
             }
-            this.Edges = (HashSet<Edge>)edges.Cast<Edge>();
+            this.Edges = new HashSet<Edge>(edges.Cast<Edge>());
 
         }
 

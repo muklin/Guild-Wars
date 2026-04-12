@@ -13,7 +13,7 @@ public class BuildingSpawner : MonoBehaviour
     public void Initialize()
     {
         // Create or load prefab for district visual
-        CreateDistrictPrefab();
+        //CreateDistrictPrefab();
     }
 
     private void CreateDistrictPrefab()

@@ -83,6 +83,7 @@ public class SessionZeroPhase : MonoBehaviour, IPhaseHandler
         Log("Step 1: Terrain Setup");
         Log("Describe the landscape surrounding the city (place at least one terrain feature).");
         SetStep(SessionZeroStep.Terrain);
+        InitializeTerrainStep();
     }
 
     public void OnPhaseUpdate() { }
@@ -105,7 +106,7 @@ public class SessionZeroPhase : MonoBehaviour, IPhaseHandler
         if (string.IsNullOrWhiteSpace(description)) { Log("Terrain requires a description."); return false; }
 
         var feature = new TerrainFeature(type, description, gridX, gridZ, PLAYER_ID);
-        Object.FindFirstObjectByType<CityLayout>()?.AddTerrainFeature(feature);
+        Object.FindAnyObjectByType<CityLayout>()?.AddTerrainFeature(feature);
 
         playerTerrainCount++;
         Log($"You placed terrain: {type} at ({gridX},{gridZ}) — \"{description}\"");
@@ -120,29 +121,47 @@ public class SessionZeroPhase : MonoBehaviour, IPhaseHandler
         if (playerTerrainCount == 0) { Log("Place at least one terrain feature first."); return false; }
 
         Log("Terrain placement complete.");
-        AutoPlaceNPCTerrain();
+        
         AdvanceToDistrictSetup();
         return true;
     }
 
-    private void AutoPlaceNPCTerrain()
+    private void InitializeTerrainStep()
     {
-        var templates = new (TerrainType type, string desc, int x, int z)[]
+        // Create Voronoi world generator on the CityVisualization GameObject
+        var cityViz = Object.FindAnyObjectByType<CityVisualization>();
+        if (cityViz == null)
         {
-            (TerrainType.Forest,    "A dense, ancient forest to the north",            3, 0),
-            (TerrainType.Cliffs,    "Rocky cliffs overlooking the sea to the east",    4, 0),
-            (TerrainType.Plains,    "Fertile plains stretching to the horizon",        3, 4),
-            (TerrainType.Mountains, "A mineral-rich mountain range to the south-west", 0, 4),
-        };
-
-        var layout = Object.FindFirstObjectByType<CityLayout>();
-        for (int i = 0; i < NPC_IDS.Length; i++)
-        {
-            var t = templates[i % templates.Length];
-            var feature = new TerrainFeature(t.type, t.desc, t.x, t.z, NPC_IDS[i]);
-            layout?.AddTerrainFeature(feature);
-            Log($"NPC {NPC_IDS[i]} placed terrain: {t.type} — \"{t.desc}\"");
+            Log("ERROR: CityVisualization not found. Cannot initialize terrain.");
+            return;
         }
+
+        var voronoiGen = cityViz.gameObject.AddComponent<VoronoiWorldGenerator>();
+        voronoiGen.Generate();
+
+        var mainCamera = Object.FindAnyObjectByType<Camera>();
+
+        // Create terrain region selection controller
+        var terrainController = cityViz.gameObject.AddComponent<TerrainSelectionController>();
+        terrainController.Initialize(voronoiGen, this, mainCamera);
+        terrainController.BeginTerrainSelection();
+
+        // Create edge (cliff/river) selection controller
+        var edgeController = cityViz.gameObject.AddComponent<EdgeSelectionController>();
+        edgeController.Initialize(voronoiGen, this, mainCamera);
+        // Don't start edge selection yet; user switches mode via UI
+
+        // Create UI panel on the main canvas
+        var mainCanvas = Object.FindAnyObjectByType<Canvas>();
+        if (mainCanvas != null)
+        {
+            var panelGO = new GameObject("TerrainTypePanel");
+            panelGO.transform.SetParent(mainCanvas.transform, false);
+            var terrainPanel = panelGO.AddComponent<TerrainTypePanel>();
+            terrainPanel.Initialize(terrainController, edgeController, this);
+        }
+
+        Log("Terrain setup initialized. Click regions and assign terrain types, or switch to edge mode for cliffs/rivers.");
     }
 
     // ─── STEP 2: DISTRICT SETUP ───────────────────────────────────────

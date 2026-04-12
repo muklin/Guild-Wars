@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.UI;
 
 /// <summary>
 /// ResourcePanel: Shows resource production/consumption breakdown.

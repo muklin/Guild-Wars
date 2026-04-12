@@ -1,5 +1,6 @@
 using UnityEngine;
-using UnityEngine.EventSystems;
+using UnityEngine.UI;
+using UnityEngine.InputSystem.UI;
 using System.Collections.Generic;
 
 /// <summary>
@@ -7,17 +8,14 @@ using System.Collections.Generic;
 /// Manages all UI panels, subscriptions to game events, and state display.
 /// Implements Singleton pattern.
 /// </summary>
-public class UIManager : MonoBehaviour
-{
+public class UIManager : MonoBehaviour {
     public static UIManager Instance { get; private set; }
 
     private Dictionary<string, UIPanel> panels = new();
     private Canvas mainCanvas;
 
-    private void Awake()
-    {
-        if (Instance != null && Instance != this)
-        {
+    private void Awake() {
+        if (Instance != null && Instance != this) {
             Destroy(gameObject);
             return;
         }
@@ -25,12 +23,10 @@ public class UIManager : MonoBehaviour
         DontDestroyOnLoad(gameObject);
     }
 
-    private void Start()
-    {
+    private void Start() {
         // Create main canvas if it doesn't exist
         mainCanvas = Object.FindAnyObjectByType<Canvas>();
-        if (mainCanvas == null)
-        {
+        if (mainCanvas == null) {
             CreateMainCanvas();
         }
 
@@ -41,8 +37,7 @@ public class UIManager : MonoBehaviour
         SubscribeToGameEvents();
     }
 
-    private void CreateMainCanvas()
-    {
+    private void CreateMainCanvas() {
         var canvasObj = new GameObject("MainCanvas");
         mainCanvas = canvasObj.AddComponent<Canvas>();
         mainCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
@@ -54,16 +49,14 @@ public class UIManager : MonoBehaviour
         var graphicsRaycaster = canvasObj.AddComponent<GraphicRaycaster>();
 
         // Create EventSystem if needed
-        if (Object.FindAnyObjectByType<EventSystem>() == null)
-        {
+        if (Object.FindAnyObjectByType<EventSystem>() == null) {
             var eventSystemObj = new GameObject("EventSystem");
             eventSystemObj.AddComponent<EventSystem>();
-            eventSystemObj.AddComponent<StandaloneInputModule>();
+            eventSystemObj.AddComponent<InputSystemUIInputModule>();
         }
     }
 
-    private void InitializePanels()
-    {
+    private void InitializePanels() {
         // Create and register all UI panels
         CreatePanel<SessionZeroUIPanel>("SessionZeroUIPanel");
         CreatePanel<GameStatePanel>("GameStatePanel");
@@ -75,14 +68,12 @@ public class UIManager : MonoBehaviour
         CreatePanel<VetoVotingPanel>("VetoVotingPanel");
 
         Debug.Log($"[UIManager] UI Manager initialized with {panels.Count} panels");
-        foreach (var kvp in panels)
-        {
+        foreach (var kvp in panels) {
             Debug.Log($"  - {kvp.Key}: {(kvp.Value.gameObject.activeSelf ? "ACTIVE" : "inactive")}");
         }
     }
 
-    private UIPanel CreatePanel<T>(string panelName) where T : UIPanel
-    {
+    private UIPanel CreatePanel<T>(string panelName) where T : UIPanel {
         var panelObj = new GameObject(panelName);
         panelObj.transform.SetParent(mainCanvas.transform, false);
 
@@ -101,8 +92,7 @@ public class UIManager : MonoBehaviour
         return panel;
     }
 
-    private void SubscribeToGameEvents()
-    {
+    private void SubscribeToGameEvents() {
         Debug.Log("[UIManager] Subscribing to game events");
         EventSystem.Instance?.Subscribe<GamePhase>(GameEvents.PHASE_CHANGED, OnPhaseChanged);
         EventSystem.Instance?.Subscribe(GameEvents.SESSION_ZERO_START, OnSessionZeroStart);
@@ -118,42 +108,32 @@ public class UIManager : MonoBehaviour
 
     // ==================== PANEL MANAGEMENT ====================
 
-    public void ShowPanel<T>(bool show = true) where T : UIPanel
-    {
-        foreach (var panel in panels.Values)
-        {
-            if (panel is T)
-            {
+    public void ShowPanel<T>(bool show = true) where T : UIPanel {
+        foreach (var panel in panels.Values) {
+            if (panel is T) {
                 panel.gameObject.SetActive(show);
             }
         }
     }
 
-    public void ShowAllPanels()
-    {
-        foreach (var panel in panels.Values)
-        {
+    public void ShowAllPanels() {
+        foreach (var panel in panels.Values) {
             panel.gameObject.SetActive(true);
         }
     }
 
-    public void HideAllPanels()
-    {
-        foreach (var panel in panels.Values)
-        {
+    public void HideAllPanels() {
+        foreach (var panel in panels.Values) {
             panel.gameObject.SetActive(false);
         }
     }
 
-    public T GetPanel<T>(string panelName = null) where T : UIPanel
-    {
-        if (panelName != null && panels.TryGetValue(panelName, out var panel))
-        {
+    public T GetPanel<T>(string panelName = null) where T : UIPanel {
+        if (panelName != null && panels.TryGetValue(panelName, out var panel)) {
             return panel as T;
         }
 
-        foreach (var p in panels.Values)
-        {
+        foreach (var p in panels.Values) {
             if (p is T typedPanel)
                 return typedPanel;
         }
@@ -162,13 +142,11 @@ public class UIManager : MonoBehaviour
 
     // ==================== GAME EVENT HANDLERS ====================
 
-    private void OnPhaseChanged(GamePhase phase)
-    {
+    private void OnPhaseChanged(GamePhase phase) {
         Debug.Log($"[UIManager] PHASE_CHANGED fired: {phase}");
 
         // Update panel visibility based on phase
-        switch (phase)
-        {
+        switch (phase) {
             case GamePhase.Planning:
                 Debug.Log("[UIManager] Detected Planning phase");
                 OnPlanningPhaseStart();
@@ -190,67 +168,57 @@ public class UIManager : MonoBehaviour
 
     // ==================== SESSION ZERO EVENT HANDLERS ====================
 
-    private void OnSessionZeroStart()
-    {
+    private void OnSessionZeroStart() {
         Debug.Log("[UIManager] Session Zero started");
         HideAllPanels();
         ShowPanel<SessionZeroUIPanel>(true);
+        ShowPanel<GameStatePanel>(true); // GameStatePanel always visible
     }
 
-    private void OnSessionZeroEnd()
-    {
+    private void OnSessionZeroEnd() {
         Debug.Log("[UIManager] Session Zero ended");
         ShowPanel<SessionZeroUIPanel>(false);
+        ShowPanel<GameStatePanel>(true); // Keep GameStatePanel visible
     }
 
     // ==================== ACTION EVENT HANDLERS ====================
 
-    private void OnActionExecuted(object data)
-    {
+    private void OnActionExecuted(object data) {
         var result = data as ActionResult;
-        if (result != null)
-        {
+        if (result != null) {
             var executionPanel = GetPanel<ExecutionDisplayPanel>();
             executionPanel?.DisplayActionResult(result);
         }
     }
 
-    private void OnActionFailed(object data)
-    {
+    private void OnActionFailed(object data) {
         var result = data as ActionResult;
-        if (result != null)
-        {
+        if (result != null) {
             var executionPanel = GetPanel<ExecutionDisplayPanel>();
             executionPanel?.DisplayActionResult(result);
         }
     }
 
-    private void OnPlanningPhaseStart()
-    {
+    private void OnPlanningPhaseStart() {
         Debug.Log("[UIManager] OnPlanningPhaseStart called");
         ShowAllPanels();
         ShowPanel<ExecutionDisplayPanel>(false);
         ShowPanel<VetoVotingPanel>(false);
         var actionPanel = GetPanel<ActionSubmissionPanel>();
-        if (actionPanel != null)
-        {
+        if (actionPanel != null) {
             Debug.Log("[UIManager] Found ActionSubmissionPanel, showing it");
             actionPanel.ShowPanel();
-        }
-        else
-        {
+        } else {
             Debug.LogError("[UIManager] ActionSubmissionPanel not found!");
         }
     }
 
-    private void OnPlanningPhaseEnd()
-    {
+    private void OnPlanningPhaseEnd() {
         var actionPanel = GetPanel<ActionSubmissionPanel>();
         actionPanel?.HidePanel();
     }
 
-    private void OnExecutionPhaseStart()
-    {
+    private void OnExecutionPhaseStart() {
         ShowAllPanels();
         ShowPanel<ActionSubmissionPanel>(false);
         ShowPanel<VetoVotingPanel>(false);
@@ -259,16 +227,13 @@ public class UIManager : MonoBehaviour
         executionPanel?.ShowPanel();
     }
 
-    private void OnExecutionPhaseEnd()
-    {
+    private void OnExecutionPhaseEnd() {
         var executionPanel = GetPanel<ExecutionDisplayPanel>();
         executionPanel?.HidePanel();
     }
 
-    private void OnDestroy()
-    {
-        if (EventSystem.Instance != null)
-        {
+    private void OnDestroy() {
+        if (EventSystem.Instance != null) {
             EventSystem.Instance.Unsubscribe<GamePhase>(GameEvents.PHASE_CHANGED, OnPhaseChanged);
         }
     }
