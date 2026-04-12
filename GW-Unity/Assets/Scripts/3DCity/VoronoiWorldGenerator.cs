@@ -50,8 +50,7 @@ public class VoronoiWorldGenerator : MonoBehaviour
             points.Add(new Point(x, z));
         }
 
-        // Record super-triangle point indices before adding them
-        int superTriangleStartIndex = points.Count;
+        // Add super-triangle points far outside bounds
         points.Add(new Point(-100, -100));
         points.Add(new Point(worldSize + 100, -100));
         points.Add(new Point(-100, worldSize + 100));
@@ -67,10 +66,9 @@ public class VoronoiWorldGenerator : MonoBehaviour
             var seedPoint = seedPoints[i];
             var delaunayPoint = points[i];
 
-            // Find all triangles containing this seed, excluding super-triangle triangles
+            // Find all triangles containing this seed
             var trianglesWithSeed = triangulator.Triangulation
-                .Where(t => t.Vertices.Contains(delaunayPoint) &&
-                           !IsSupertriangle(t, superTriangleStartIndex))
+                .Where(t => t.Vertices.Contains(delaunayPoint))
                 .ToList();
 
             if (trianglesWithSeed.Count == 0) continue;
@@ -154,17 +152,6 @@ public class VoronoiWorldGenerator : MonoBehaviour
         region.AssignedType = TerrainType.City;
         region.Material.color = TerrainColors.For(TerrainType.City);
         Debug.Log($"City region identified: Region {region.Id} at seed {region.SeedPoint} ({region.Polygon.Count} vertices)");
-    }
-
-    private bool IsSupertriangle(DelaunayVoronoi.Triangle triangle, int superTriangleStartIndex)
-    {
-        // A triangle is part of the super-triangle if any of its vertices
-        // is a super-triangle point (far outside world bounds)
-        const float threshold = 60f; // Super-triangle points are at ±100
-        return triangle.Vertices.Any(v =>
-            v.X < -threshold || v.X > (worldSize + threshold) ||
-            v.Y < -threshold || v.Y > (worldSize + threshold)
-        );
     }
 
     private List<Vector3> SortByAngle(Vector3 center, List<Vector3> points)
