@@ -62,6 +62,7 @@
     <Compile Include="Assets\Scripts\Core\GameBootstrapper.cs" />
     <Compile Include="Assets\Scripts\3DCity\TerrainSelectionController.cs" />
     <Compile Include="Assets\Scripts\3DCity\CityRaycaster.cs" />
+    <Compile Include="Assets\Scripts\3DCity\CityDistrictSelectionController.cs" />
     <Compile Include="Assets\Scripts\Core\GameStateManager.cs" />
     <Compile Include="Assets\Scripts\3DCity\VoronoiWorldGenerator.cs" />
     <Compile Include="Assets\Scripts\Data\SaveLoadSystem.cs" />
@@ -80,6 +81,7 @@
     <Compile Include="Assets\Scripts\3DCity\DistrictVisual.cs" />
     <Compile Include="Assets\Scripts\Phases\ExecutionPhase.cs" />
     <Compile Include="Assets\Scripts\Veto\VotingSystem.cs" />
+    <Compile Include="Assets\Scripts\3DCity\CityVoronoiGenerator.cs" />
     <Compile Include="Assets\Scripts\Actions\ResourceTheftAction.cs" />
     <Compile Include="Assets\Scripts\Data\World\Tradeable.cs" />
     <Compile Include="Assets\Scripts\Data\World\District.cs" />
@@ -115,6 +117,7 @@
     <Compile Include="Assets\Scripts\3DCity\CityVisualization.cs" />
     <Compile Include="Assets\Scripts\3DCity\TerrainColors.cs" />
     <Compile Include="Assets\Scripts\UI\UIPanel.cs" />
+    <Compile Include="Assets\Scripts\UI\DistrictTypePanel.cs" />
     <Compile Include="Assets\Scripts\Data\World\TradingDestination.cs" />
     <Compile Include="Assets\Scripts\Data\World\ThreatDatabase.cs" />
     <Compile Include="Assets\Scripts\Utilities\DelaunayVoronoi.cs" />

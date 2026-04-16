@@ -186,7 +186,9 @@ public class DistrictTypePanel : MonoBehaviour {
     }
 
     private void SetupEventSubscriptions() {
-        EventSystem.Instance?.Subscribe(GameEvents.SETUP_PHASE_STEP_CHANGED, OnSetupPhaseStepChanged);
+        if (EventSystem.Instance != null) {
+            EventSystem.Instance.Subscribe<SetupPhaseStep>(GameEvents.SETUP_PHASE_STEP_CHANGED, OnSetupPhaseStepChanged);
+        }
     }
 
     private void OnSetupPhaseStepChanged(SetupPhaseStep step) {
