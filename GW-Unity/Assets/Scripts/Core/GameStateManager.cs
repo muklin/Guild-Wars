@@ -2,14 +2,12 @@ using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
 
-public class GameStateManager : MonoBehaviour
-{
+public class GameStateManager : MonoBehaviour {
     public static GameStateManager Instance { get; private set; }
     private EventSystem eventSystem;
 
     [System.Serializable]
-    public class GameState
-    {
+    public class GameState {
         public List<Guild> Guilds = new();
         public List<District> Districts = new();
         public List<Faction> Factions = new();
@@ -24,10 +22,20 @@ public class GameStateManager : MonoBehaviour
 
     private GameState state = new();
 
-    private void Awake()
-    {
-        if (Instance != null && Instance != this)
-        {
+    // ==================== TERRAIN DATA (World Scale) ====================
+    private TerrainData worldTerrainData = new();
+    public TerrainData WorldTerrainData => worldTerrainData;
+
+    // ==================== DISTRICT DATA (City Scale) ====================
+    private DistrictData cityDistrictData = new();
+    public DistrictData CityDistrictData => cityDistrictData;
+
+    // ==================== BUILDING DATA (Block Scale) ====================
+    private BuildingData blockBuildingData = new();
+    public BuildingData BlockBuildingData => blockBuildingData;
+
+    private void Awake() {
+        if (Instance != null && Instance != this) {
             Destroy(gameObject);
             return;
         }
@@ -36,8 +44,7 @@ public class GameStateManager : MonoBehaviour
         eventSystem = EventSystem.Instance;
     }
 
-    public void InitializeGame(List<Guild> guilds, List<District> districts, List<Faction> factions)
-    {
+    public void InitializeGame(List<Guild> guilds, List<District> districts, List<Faction> factions) {
         state.Guilds = guilds;
         state.Districts = districts;
         state.Factions = factions;
@@ -59,8 +66,7 @@ public class GameStateManager : MonoBehaviour
     /// Returns all Factions across every subtype: standalone Factions (incl. ClassFactions),
     /// Districts, Guilds, and TradingDestinations.
     /// </summary>
-    public List<Faction> GetAllFactions()
-    {
+    public List<Faction> GetAllFactions() {
         var all = new List<Faction>(state.Factions);
         all.AddRange(state.Districts.Cast<Faction>());
         all.AddRange(state.Guilds.Cast<Faction>());
@@ -73,87 +79,75 @@ public class GameStateManager : MonoBehaviour
 
     public Faction GetFaction(int factionId) => GetAllFactions().FirstOrDefault(f => f.Id == factionId);
 
-    public int GetFactionStanding(int guildId, int factionId)
-    {
+    public int GetFactionStanding(int guildId, int factionId) {
         var guild = GetGuild(guildId);
         return guild != null ? guild.GetFactionStanding(factionId) : 50;
     }
 
-    public GamePhase GetCurrentPhase()
-    {
+    public GamePhase GetCurrentPhase() {
         if (System.Enum.TryParse<GamePhase>(state.CurrentPhase, out var phase))
             return phase;
         return GamePhase.Upkeep;
     }
     public int GetCurrentRound() => state.CurrentRound;
 
-    public void SetPhase(string phaseName)
-    {
+    public void SetPhase(string phaseName) {
         state.CurrentPhase = phaseName;
         EventSystem.Instance?.Fire<string>(GameEvents.PHASE_CHANGED, phaseName);
     }
 
-    public void AdvanceRound()
-    {
+    public void AdvanceRound() {
         state.CurrentRound++;
         state.TurnCount = 0;
         EventSystem.Instance?.Fire(GameEvents.ROUND_ADVANCED);
     }
 
-    public void UpdateGuildResources(int guildId, int amount)
-    {
+    public void UpdateGuildResources(int guildId, int amount) {
         var guild = GetGuild(guildId);
-        if (guild != null)
-        {
+        if (guild != null) {
             guild.ReceiveMoney(amount);
             EventSystem.Instance?.Fire<int>(GameEvents.GUILD_UPDATED, guildId);
         }
     }
 
-    public void UpdateGuildLeader(int guildId, int newLeaderId)
-    {
+    public void UpdateGuildLeader(int guildId, int newLeaderId) {
         var guild = GetGuild(guildId);
-        if (guild != null)
-        {
+        if (guild != null) {
             // Note: newLeaderId refers to character ID, not guild ID
             var newLeader = guild.Members.FirstOrDefault(m => m.Id == newLeaderId);
-            if (newLeader != null && newLeader is GuildLeader leader)
-            {
+            if (newLeader != null && newLeader is GuildLeader leader) {
                 guild.Leader = leader;
                 EventSystem.Instance?.Fire<int, int>(GameEvents.GUILD_LEADER_CHANGED, guildId, newLeaderId);
             }
         }
     }
 
-    public bool CanGuildAfford(int guildId, int cost)
-    {
+    public bool CanGuildAfford(int guildId, int cost) {
         var guild = GetGuild(guildId);
         return guild != null && guild.Gold >= cost;
     }
 
-    public void SetDistrictController(int districtId, int newControllerGuildId)
-    {
+    public void SetDistrictController(int districtId, int newControllerGuildId) {
         var district = GetDistrict(districtId);
-        if (district == null) return;
+        if (district == null)
+            return;
         district.ControllingGuildId = newControllerGuildId;
         EventSystem.Instance?.Fire<int, int>(GameEvents.DISTRICT_CONTROL_CHANGED, districtId, newControllerGuildId);
     }
 
-    public void TransferDistrictResources(int fromDistrictId, int toGuildId)
-    {
+    public void TransferDistrictResources(int fromDistrictId, int toGuildId) {
         var district = GetDistrict(fromDistrictId);
-        if (district != null)
-        {
+        if (district != null) {
             // Sum all produced resources as gold
             int totalResources = district.ProducedResources.Values.Sum();
             UpdateGuildResources(toGuildId, totalResources);
         }
     }
 
-    public void UpdateFactionStanding(int guildId, int factionId, int delta)
-    {
+    public void UpdateFactionStanding(int guildId, int factionId, int delta) {
         var guild = GetGuild(guildId);
-        if (guild == null) return;
+        if (guild == null)
+            return;
         int currentStanding = guild.GetFactionStanding(factionId);
         int newStanding = Mathf.Clamp(currentStanding + delta, 0, 100);
         guild.UpdateFactionStanding(factionId, newStanding);
@@ -162,32 +156,27 @@ public class GameStateManager : MonoBehaviour
 
     // ==================== STATE MUTATION ====================
 
-    public void AddGuild(Guild guild)
-    {
+    public void AddGuild(Guild guild) {
         state.Guilds.Add(guild);
         EventSystem.Instance?.Fire<int>(GameEvents.GUILD_CREATED, guild.Id);
     }
 
-    public void AddDistrict(District district)
-    {
+    public void AddDistrict(District district) {
         state.Districts.Add(district);
         EventSystem.Instance?.Fire<int>(GameEvents.DISTRICT_CREATED, district.Id);
     }
 
-    public void AddFaction(Faction faction)
-    {
+    public void AddFaction(Faction faction) {
         state.Factions.Add(faction);
     }
 
-    public void TryTransferDistrict(int districtId, int newControllerGuildId)
-    {
+    public void TryTransferDistrict(int districtId, int newControllerGuildId) {
         SetDistrictController(districtId, newControllerGuildId);
     }
 
     // ==================== THREATS ====================
 
-    public void AddThreat(Threat threat)
-    {
+    public void AddThreat(Threat threat) {
         state.Threats.Add(threat);
         EventSystem.Instance?.Fire(GameEvents.THREAT_PLACED);
     }
@@ -198,8 +187,7 @@ public class GameStateManager : MonoBehaviour
 
     // ==================== TRADING DESTINATIONS ====================
 
-    public void AddTradingDestination(TradingDestination dest)
-    {
+    public void AddTradingDestination(TradingDestination dest) {
         state.TradingDestinations.Add(dest);
     }
 
@@ -207,8 +195,7 @@ public class GameStateManager : MonoBehaviour
 
     // ==================== CITY LEADERSHIP ====================
 
-    public void SetCityLeadership(string leaderName, string successionMethod)
-    {
+    public void SetCityLeadership(string leaderName, string successionMethod) {
         state.CityLeaderName = leaderName;
         state.CitySuccessionMethod = successionMethod;
     }
@@ -216,14 +203,12 @@ public class GameStateManager : MonoBehaviour
     public string GetCityLeaderName() => state.CityLeaderName;
     public string GetCitySuccessionMethod() => state.CitySuccessionMethod;
 
-    public void SetCurrentPhase(GamePhase phase)
-    {
+    public void SetCurrentPhase(GamePhase phase) {
         state.CurrentPhase = phase.ToString();
         EventSystem.Instance?.Fire<GamePhase>(GameEvents.PHASE_CHANGED, phase);
     }
 
-    public bool IsGameComplete()
-    {
+    public bool IsGameComplete() {
         // Check if any guild has a faction at victory threshold (90)
         return state.Guilds.Any(g => g.GetAllFactionStandings().Values.Any(standing => standing >= 90));
     }
@@ -234,9 +219,8 @@ public class GameStateManager : MonoBehaviour
 // Guild, GuildCharacter, and District are now defined in their respective files: Guild.cs, District.cs
 // Remove duplicates to avoid CS0101 errors
 
-public enum GamePhase
-{
-    SessionZero,
+public enum GamePhase {
+    SetupPhase,
     Upkeep,
     Planning,
     Execution,
@@ -246,8 +230,7 @@ public enum GamePhase
 /// <summary>
 /// Pre-defined event name constants to avoid typos and improve discoverability.
 /// </summary>
-public static class GameEvents
-{
+public static class GameEvents {
     // Game state
     public const string GAME_STARTED = "game:started";
     public const string GAME_ENDED = "game:ended";
@@ -256,8 +239,8 @@ public static class GameEvents
 
     // Phase events
     public const string PHASE_CHANGED = "phase:changed";
-    public const string SESSION_ZERO_START = "phase:sessionzero:start";
-    public const string SESSION_ZERO_END = "phase:sessionzero:end";
+    public const string SETUP_PHASE_START = "phase:SetupPhase:start";
+    public const string SETUP_PHASE_END = "phase:SetupPhase:end";
     public const string UPKEEP_PHASE_START = "phase:upkeep:start";
     public const string UPKEEP_PHASE_END = "phase:upkeep:end";
     public const string PLANNING_PHASE_START = "phase:planning:start";
@@ -303,11 +286,11 @@ public static class GameEvents
     public const string VETO_CALLED = "veto:called";
     public const string VETO_RESOLVED = "veto:resolved";
 
-    // Session Zero events
-    public const string TERRAIN_PLACED = "sessionzero:terrain:placed";
-    public const string THREAT_PLACED = "sessionzero:threat:placed";
-    public const string TRADING_DEST_ADDED = "sessionzero:trade:added";
-    public const string SESSION_ZERO_STEP_CHANGED = "sessionzero:step:changed";
+    // Setup Phase events
+    public const string TERRAIN_PLACED = "SetupPhase:terrain:placed";
+    public const string THREAT_PLACED = "SetupPhase:threat:placed";
+    public const string TRADING_DEST_ADDED = "SetupPhase:trade:added";
+    public const string SETUP_PHASE_STEP_CHANGED = "SetupPhase:step:changed";
 
     // UI events
     public const string UI_SHOW_ACTION_PANEL = "ui:show:action_panel";

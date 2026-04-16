@@ -23,7 +23,16 @@ public class UIManager : MonoBehaviour {
         DontDestroyOnLoad(gameObject);
     }
 
+    private bool isInitialized = false;
+
     private void Start() {
+        EnsureInitialized();
+    }
+
+    public void EnsureInitialized() {
+        if (isInitialized)
+            return;
+
         // Create main canvas if it doesn't exist
         mainCanvas = Object.FindAnyObjectByType<Canvas>();
         if (mainCanvas == null) {
@@ -35,6 +44,8 @@ public class UIManager : MonoBehaviour {
 
         // Subscribe to game events
         SubscribeToGameEvents();
+
+        isInitialized = true;
     }
 
     private void CreateMainCanvas() {
@@ -58,7 +69,7 @@ public class UIManager : MonoBehaviour {
 
     private void InitializePanels() {
         // Create and register all UI panels
-        CreatePanel<SessionZeroUIPanel>("SessionZeroUIPanel");
+        CreatePanel<SetupPhaseUIPanel>("SetupPhaseUIPanel");
         CreatePanel<GameStatePanel>("GameStatePanel");
         CreatePanel<GuildStatusPanel>("GuildStatusPanel");
         CreatePanel<ActionSubmissionPanel>("ActionSubmissionPanel");
@@ -95,8 +106,8 @@ public class UIManager : MonoBehaviour {
     private void SubscribeToGameEvents() {
         Debug.Log("[UIManager] Subscribing to game events");
         EventSystem.Instance?.Subscribe<GamePhase>(GameEvents.PHASE_CHANGED, OnPhaseChanged);
-        EventSystem.Instance?.Subscribe(GameEvents.SESSION_ZERO_START, OnSessionZeroStart);
-        EventSystem.Instance?.Subscribe(GameEvents.SESSION_ZERO_END, OnSessionZeroEnd);
+        EventSystem.Instance?.Subscribe(GameEvents.SETUP_PHASE_START, OnSetupPhaseStart);
+        EventSystem.Instance?.Subscribe(GameEvents.SETUP_PHASE_END, OnSetupPhaseEnd);
         EventSystem.Instance?.Subscribe<object>(GameEvents.ACTION_EXECUTED, OnActionExecuted);
         EventSystem.Instance?.Subscribe<object>(GameEvents.ACTION_FAILED, OnActionFailed);
         EventSystem.Instance?.Subscribe(GameEvents.PLANNING_PHASE_START, OnPlanningPhaseStart);
@@ -166,18 +177,18 @@ public class UIManager : MonoBehaviour {
         }
     }
 
-    // ==================== SESSION ZERO EVENT HANDLERS ====================
+    // ==================== Setup Phase EVENT HANDLERS ====================
 
-    private void OnSessionZeroStart() {
-        Debug.Log("[UIManager] Session Zero started");
+    private void OnSetupPhaseStart() {
+        Debug.Log("[UIManager] Setup Phase started");
         HideAllPanels();
-        ShowPanel<SessionZeroUIPanel>(true);
+        ShowPanel<SetupPhaseUIPanel>(true);
         ShowPanel<GameStatePanel>(true); // GameStatePanel always visible
     }
 
-    private void OnSessionZeroEnd() {
-        Debug.Log("[UIManager] Session Zero ended");
-        ShowPanel<SessionZeroUIPanel>(false);
+    private void OnSetupPhaseEnd() {
+        Debug.Log("[UIManager] Setup Phase ended");
+        ShowPanel<SetupPhaseUIPanel>(false);
         ShowPanel<GameStatePanel>(true); // Keep GameStatePanel visible
     }
 

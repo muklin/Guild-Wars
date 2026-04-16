@@ -61,9 +61,9 @@ In *GuildWars* an intitiative can sometimes be called for to determine Player ac
 
 \page
 
-# Session Zero 
+# Cooperative City, Setup Phase
 
-Session Zero prepares the game.  Players set the theme of the game, city districts, their guilds, leaders and etc.
+The Setup Phase prepares the game.  Players set the theme of the game, city districts, their guilds, leaders and etc.
 At this time the City Map is a blank slate, ie a grid of tiles, but otherwise ready for definition by the players.
 
 #### Theme 

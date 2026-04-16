@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 
 /// <summary>
-/// UI Panel for Session Zero: step-by-step city and guild creation.
+/// UI Panel for Setup Phase: step-by-step city and guild creation.
 ///
 /// Steps shown:
 ///   1. Terrain Setup      — place landscape features on the grid
@@ -16,8 +16,7 @@ using System.Linq;
 /// Each step panel (terrainPanel, districtSetupPanel, hqPanel, guildSetupPanel)
 /// is a child GameObject that is shown/hidden as the step advances.
 /// </summary>
-public class SessionZeroUIPanel : UIPanel
-{
+public class SetupPhaseUIPanel : UIPanel {
     // ─── Shared ───────────────────────────────────────────────────────
     [Header("Shared")]
     [SerializeField] private Text stepTitleText;
@@ -91,129 +90,144 @@ public class SessionZeroUIPanel : UIPanel
     [SerializeField] private Button startGameButton;
 
     // ─── State ────────────────────────────────────────────────────────
-    private SessionZeroPhase sessionZero;
+    private SetupPhase SetupPhase;
     private List<District> hqDistrictOptions = new();
 
     // ─── Lifecycle ────────────────────────────────────────────────────
 
-    protected void Awake()
-    {
-        sessionZero = SessionZeroManager.Instance?.Phase;
-        if (sessionZero == null)
-            Debug.LogWarning("[SessionZeroUIPanel] SessionZeroPhase not found — ensure SessionZeroManager exists.");
+    protected void Awake() {
+        SetupPhase = SetupPhaseManager.Instance?.Phase;
+        if (SetupPhase == null)
+            Debug.LogWarning("[SetupPhaseUIPanel] SetupPhase not found — ensure SetupPhaseManager exists.");
     }
 
-    protected void OnEnable()
-    {
+    public override void Initialize() {
+        // Call base to set up basic layout
+        base.Initialize();
+
+        // Position on the right side of screen (doesn't block Terrain UI on left)
+        rectTransform.anchorMin = new Vector2(1, 0);
+        rectTransform.anchorMax = new Vector2(1, 1);
+        rectTransform.offsetMin = new Vector2(-400, 0);
+        rectTransform.offsetMax = Vector2.zero;
+
+        // Make background semi-transparent and block raycasts
+        var bgImg = GetComponent<Image>();
+        if (bgImg != null) {
+            bgImg.color = new Color(0, 0, 0, 0.7f);
+            bgImg.raycastTarget = true; // Block raycasts to world
+        }
+
+        RefreshLayout();
+    }
+
+    protected void OnEnable() {
         BindButtons(true);
         InitDropdowns();
         Refresh();
     }
 
-    protected void OnDisable()
-    {
+    protected void OnDisable() {
         BindButtons(false);
     }
 
-    private void BindButtons(bool add)
-    {
-        Bind(placeTerrainButton,  OnPlaceTerrainClicked,  add);
-        Bind(doneTerrainButton,   OnDoneTerrainClicked,   add);
+    private void BindButtons(bool add) {
+        Bind(placeTerrainButton, OnPlaceTerrainClicked, add);
+        Bind(doneTerrainButton, OnDoneTerrainClicked, add);
         Bind(confirmActionButton, OnConfirmActionClicked, add);
-        Bind(passButton,          OnPassClicked,          add);
-        Bind(placeHQButton,       OnPlaceHQClicked,       add);
-        Bind(startGameButton,     OnStartGameClicked,     add);
+        Bind(passButton, OnPassClicked, add);
+        Bind(placeHQButton, OnPlaceHQClicked, add);
+        Bind(startGameButton, OnStartGameClicked, add);
 
-        if (actionTypeDropdown != null)
-        {
-            if (add) actionTypeDropdown.onValueChanged.AddListener(OnActionTypeChanged);
-            else     actionTypeDropdown.onValueChanged.RemoveListener(OnActionTypeChanged);
+        if (actionTypeDropdown != null) {
+            if (add)
+                actionTypeDropdown.onValueChanged.AddListener(OnActionTypeChanged);
+            else
+                actionTypeDropdown.onValueChanged.RemoveListener(OnActionTypeChanged);
         }
     }
 
-    private static void Bind(Button btn, UnityEngine.Events.UnityAction action, bool add)
-    {
-        if (btn == null) return;
-        if (add) btn.onClick.AddListener(action);
-        else     btn.onClick.RemoveListener(action);
+    private static void Bind(Button btn, UnityEngine.Events.UnityAction action, bool add) {
+        if (btn == null)
+            return;
+        if (add)
+            btn.onClick.AddListener(action);
+        else
+            btn.onClick.RemoveListener(action);
     }
 
     // ─── Dropdown Initialization ──────────────────────────────────────
 
-    private void InitDropdowns()
-    {
-        SetOptions(terrainTypeDropdown,    new[] { "Desert", "Mountains", "Forest", "River", "Delta", "Plains", "Cliffs", "Sea", "Other" });
-        SetOptions(districtClassDropdown,  new[] { "Neutral", "Commerce", "Military", "Magical", "Religious", "Noble" });
-        SetOptions(actionTypeDropdown,     new[] { "Place District", "Place Threat", "Add Trading Destination", "Define City Leadership" });
+    private void InitDropdowns() {
+        SetOptions(terrainTypeDropdown, new[] { "Desert", "Mountains", "Forest", "River", "Delta", "Plains", "Cliffs", "Sea", "Other" });
+        SetOptions(districtClassDropdown, new[] { "Neutral", "Commerce", "Military", "Magical", "Religious", "Noble" });
+        SetOptions(actionTypeDropdown, new[] { "Place District", "Place Threat", "Add Trading Destination", "Define City Leadership" });
 
         var classes = new[] { "Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk", "Paladin", "Ranger", "Rogue", "Sorcerer", "Warlock", "Wizard" };
-        SetOptions(leaderClassDropdown,  classes);
-        SetOptions(secondClassDropdown,  classes);
+        SetOptions(leaderClassDropdown, classes);
+        SetOptions(secondClassDropdown, classes);
 
         // Grid cell options: (x, z) for a 5×5 grid
         var cells = Enumerable.Range(0, 25).Select(i => $"({i % 5}, {i / 5})").ToArray();
-        SetOptions(terrainGridCellDropdown,  cells);
+        SetOptions(terrainGridCellDropdown, cells);
         SetOptions(districtGridCellDropdown, cells);
-        SetOptions(threatGridCellDropdown,   cells);
+        SetOptions(threatGridCellDropdown, cells);
     }
 
-    private static void SetOptions(Dropdown dropdown, IEnumerable<string> options)
-    {
-        if (dropdown == null) return;
+    private static void SetOptions(Dropdown dropdown, IEnumerable<string> options) {
+        if (dropdown == null)
+            return;
         dropdown.ClearOptions();
         dropdown.AddOptions(options.ToList());
     }
 
     // ─── Refresh (main display update) ───────────────────────────────
 
-    public override void Refresh()
-    {
-        if (sessionZero == null) return;
+    public override void Refresh() {
+        if (SetupPhase == null)
+            return;
 
         UpdateStepTitle();
         UpdateLog();
         ShowStepPanel();
     }
 
-    private void UpdateStepTitle()
-    {
-        if (stepTitleText == null) return;
-        stepTitleText.text = sessionZero.CurrentStep switch
-        {
-            SessionZeroStep.Terrain       => "Step 1: Terrain Setup",
-            SessionZeroStep.DistrictSetup => "Step 2: District Setup",
-            SessionZeroStep.HQPlacement   => "Step 3: Place Headquarters",
-            SessionZeroStep.GuildSetup    => "Step 4: Guild Setup",
-            SessionZeroStep.Complete      => "Session Zero Complete",
-            _                             => "Session Zero"
+    private void UpdateStepTitle() {
+        if (stepTitleText == null)
+            return;
+        stepTitleText.text = SetupPhase.CurrentStep switch {
+            SetupPhaseStep.Terrain => "Step 1: Terrain Setup",
+            SetupPhaseStep.DistrictSetup => "Step 2: District Setup",
+            SetupPhaseStep.HQPlacement => "Step 3: Place Headquarters",
+            SetupPhaseStep.GuildSetup => "Step 4: Guild Setup",
+            SetupPhaseStep.Complete => "Setup Phase Complete",
+            _ => "Setup Phase"
         };
     }
 
-    private void UpdateLog()
-    {
-        if (logText == null) return;
-        var log = sessionZero.SetupLog;
+    private void UpdateLog() {
+        if (logText == null)
+            return;
+        var log = SetupPhase.SetupLog;
         int start = Mathf.Max(0, log.Count - 20);
         logText.text = string.Join("\n", log.GetRange(start, log.Count - start));
     }
 
-    private void ShowStepPanel()
-    {
-        SetActive(terrainPanel,       sessionZero.CurrentStep == SessionZeroStep.Terrain);
-        SetActive(districtSetupPanel, sessionZero.CurrentStep == SessionZeroStep.DistrictSetup);
-        SetActive(hqPanel,            sessionZero.CurrentStep == SessionZeroStep.HQPlacement);
-        SetActive(guildSetupPanel,    sessionZero.CurrentStep == SessionZeroStep.GuildSetup);
+    private void ShowStepPanel() {
+        SetActive(terrainPanel, SetupPhase.CurrentStep == SetupPhaseStep.Terrain);
+        SetActive(districtSetupPanel, SetupPhase.CurrentStep == SetupPhaseStep.DistrictSetup);
+        SetActive(hqPanel, SetupPhase.CurrentStep == SetupPhaseStep.HQPlacement);
+        SetActive(guildSetupPanel, SetupPhase.CurrentStep == SetupPhaseStep.GuildSetup);
 
-        if (sessionZero.CurrentStep == SessionZeroStep.DistrictSetup)
+        if (SetupPhase.CurrentStep == SetupPhaseStep.DistrictSetup)
             UpdateDistrictTurnUI();
 
-        if (sessionZero.CurrentStep == SessionZeroStep.HQPlacement)
+        if (SetupPhase.CurrentStep == SetupPhaseStep.HQPlacement)
             RefreshHQDropdown();
     }
 
-    private void UpdateDistrictTurnUI()
-    {
-        bool isPlayerTurn = sessionZero.IsPlayerTurn();
+    private void UpdateDistrictTurnUI() {
+        bool isPlayerTurn = SetupPhase.IsPlayerTurn();
 
         if (turnIndicatorText != null)
             turnIndicatorText.text = isPlayerTurn ? "Your Turn" : "Waiting for NPCs...";
@@ -223,15 +237,15 @@ public class SessionZeroUIPanel : UIPanel
 
         // Show the correct sub-form
         int action = actionTypeDropdown?.value ?? 0;
-        SetActive(districtForm,   action == 0);
-        SetActive(threatForm,     action == 1);
-        SetActive(tradeForm,      action == 2);
+        SetActive(districtForm, action == 0);
+        SetActive(threatForm, action == 1);
+        SetActive(tradeForm, action == 2);
         SetActive(leadershipForm, action == 3);
     }
 
-    private void RefreshHQDropdown()
-    {
-        if (hqDistrictDropdown == null) return;
+    private void RefreshHQDropdown() {
+        if (hqDistrictDropdown == null)
+            return;
         hqDistrictOptions = GameStateManager.Instance?.GetAllDistricts() ?? new List<District>();
         hqDistrictDropdown.ClearOptions();
         hqDistrictDropdown.AddOptions(hqDistrictOptions.Select(d => d.Name).ToList());
@@ -239,42 +253,43 @@ public class SessionZeroUIPanel : UIPanel
 
     // ─── Step 1: Terrain Handlers ─────────────────────────────────────
 
-    private void OnPlaceTerrainClicked()
-    {
-        if (sessionZero == null) return;
+    private void OnPlaceTerrainClicked() {
+        if (SetupPhase == null)
+            return;
         string desc = terrainDescriptionInput?.text?.Trim() ?? "";
         if (string.IsNullOrEmpty(desc)) { ShowStatus("Enter a terrain description.", Color.red); return; }
 
         int typeIdx = terrainTypeDropdown?.value ?? 0;
         int cellIdx = terrainGridCellDropdown?.value ?? 0;
-        bool ok = sessionZero.PlaceTerrainFeature((TerrainType)typeIdx, desc, cellIdx % 5, cellIdx / 5);
-        if (ok)
-        {
+        bool ok = SetupPhase.PlaceTerrainFeature((TerrainType)typeIdx, desc, cellIdx % 5, cellIdx / 5);
+        if (ok) {
             ShowStatus($"{(TerrainType)typeIdx} placed.", Color.green);
-            if (terrainDescriptionInput) terrainDescriptionInput.text = "";
+            if (terrainDescriptionInput)
+                terrainDescriptionInput.text = "";
             Refresh();
         }
     }
 
-    private void OnDoneTerrainClicked()
-    {
-        if (sessionZero == null) return;
-        bool ok = sessionZero.FinishTerrainPlacement();
-        if (!ok) ShowStatus("Place at least one terrain feature first.", Color.red);
-        else Refresh();
+    private void OnDoneTerrainClicked() {
+        if (SetupPhase == null)
+            return;
+        bool ok = SetupPhase.FinishTerrainPlacement();
+        if (!ok)
+            ShowStatus("Place at least one terrain feature first.", Color.red);
+        else
+            Refresh();
     }
 
     // ─── Step 2: District Setup Handlers ─────────────────────────────
 
     private void OnActionTypeChanged(int _) => UpdateDistrictTurnUI();
 
-    private void OnConfirmActionClicked()
-    {
-        if (sessionZero == null) return;
+    private void OnConfirmActionClicked() {
+        if (SetupPhase == null)
+            return;
         int action = actionTypeDropdown?.value ?? 0;
 
-        bool success = action switch
-        {
+        bool success = action switch {
             0 => ConfirmPlaceDistrict(),
             1 => ConfirmPlaceThreat(),
             2 => ConfirmAddTrade(),
@@ -282,16 +297,14 @@ public class SessionZeroUIPanel : UIPanel
             _ => false
         };
 
-        if (success)
-        {
+        if (success) {
             ClearDistrictForms();
             Refresh();
         }
     }
 
-    private bool ConfirmPlaceDistrict()
-    {
-        string name    = districtNameInput?.text?.Trim() ?? "";
+    private bool ConfirmPlaceDistrict() {
+        string name = districtNameInput?.text?.Trim() ?? "";
         string faction = districtFactionInput?.text?.Trim() ?? "";
         string produces = districtProducesInput?.text?.Trim() ?? "";
         var consumes = new List<string>
@@ -305,148 +318,143 @@ public class SessionZeroUIPanel : UIPanel
         bool walled = districtWalledToggle?.isOn ?? false;
         var cls = (DistrictClass)(districtClassDropdown?.value ?? 0);
 
-        if (string.IsNullOrEmpty(name))    { ShowStatus("Enter a district name.", Color.red);      return false; }
+        if (string.IsNullOrEmpty(name)) { ShowStatus("Enter a district name.", Color.red); return false; }
         if (string.IsNullOrEmpty(produces)) { ShowStatus("Enter a produced resource.", Color.red); return false; }
-        if (consumes.Count(c => !string.IsNullOrEmpty(c)) < 3)
-            { ShowStatus("Enter at least 3 consumed resources.", Color.red); return false; }
+        if (consumes.Count(c => !string.IsNullOrEmpty(c)) < 3) { ShowStatus("Enter at least 3 consumed resources.", Color.red); return false; }
 
-        bool ok = sessionZero.PlaceDistrict(name, cls, faction, produces, consumes, cellIdx % 5, cellIdx / 5, walled);
-        if (!ok) ShowStatus("Could not place district.", Color.red);
-        else     ShowStatus($"District '{name}' placed.", Color.green);
+        bool ok = SetupPhase.PlaceDistrict(name, cls, faction, produces, consumes, cellIdx % 5, cellIdx / 5, walled);
+        if (!ok)
+            ShowStatus("Could not place district.", Color.red);
+        else
+            ShowStatus($"District '{name}' placed.", Color.green);
         return ok;
     }
 
-    private bool ConfirmPlaceThreat()
-    {
-        string name    = threatNameInput?.text?.Trim() ?? "";
-        string desc    = threatDescriptionInput?.text?.Trim() ?? "";
+    private bool ConfirmPlaceThreat() {
+        string name = threatNameInput?.text?.Trim() ?? "";
+        string desc = threatDescriptionInput?.text?.Trim() ?? "";
         string mitigation = threatMitigationInput?.text?.Trim() ?? "";
-        int dc         = int.TryParse(threatDCInput?.text, out int parsed) ? parsed : 12;
-        int cellIdx    = threatGridCellDropdown?.value ?? 0;
+        int dc = int.TryParse(threatDCInput?.text, out int parsed) ? parsed : 12;
+        int cellIdx = threatGridCellDropdown?.value ?? 0;
 
         if (string.IsNullOrEmpty(name)) { ShowStatus("Enter a threat name.", Color.red); return false; }
 
-        bool ok = sessionZero.PlaceThreat(name, desc, dc, mitigation, cellIdx % 5, cellIdx / 5);
-        if (!ok) ShowStatus("Could not place threat.", Color.red);
-        else     ShowStatus($"Threat '{name}' placed.", Color.green);
+        bool ok = SetupPhase.PlaceThreat(name, desc, dc, mitigation, cellIdx % 5, cellIdx / 5);
+        if (!ok)
+            ShowStatus("Could not place threat.", Color.red);
+        else
+            ShowStatus($"Threat '{name}' placed.", Color.green);
         return ok;
     }
 
-    private bool ConfirmAddTrade()
-    {
+    private bool ConfirmAddTrade() {
         string name = tradeNameInput?.text?.Trim() ?? "";
         var produces = Split(tradeProducesInput?.text ?? "");
         var consumes = Split(tradeConsumesInput?.text ?? "");
 
         if (string.IsNullOrEmpty(name)) { ShowStatus("Enter a trading destination name.", Color.red); return false; }
 
-        bool ok = sessionZero.AddTradingDestination(name, produces, consumes);
-        if (!ok) ShowStatus("Could not add trading destination.", Color.red);
-        else     ShowStatus($"Trading destination '{name}' added.", Color.green);
+        bool ok = SetupPhase.AddTradingDestination(name, produces, consumes);
+        if (!ok)
+            ShowStatus("Could not add trading destination.", Color.red);
+        else
+            ShowStatus($"Trading destination '{name}' added.", Color.green);
         return ok;
     }
 
-    private bool ConfirmDefineLeadership()
-    {
-        string head      = leadershipHeadInput?.text?.Trim() ?? "";
+    private bool ConfirmDefineLeadership() {
+        string head = leadershipHeadInput?.text?.Trim() ?? "";
         string succession = leadershipSuccessionInput?.text?.Trim() ?? "";
 
         if (string.IsNullOrEmpty(head)) { ShowStatus("Enter the head of state.", Color.red); return false; }
 
-        sessionZero.DefineCityLeadership(head, succession);
+        SetupPhase.DefineCityLeadership(head, succession);
         ShowStatus($"City leadership set: {head}.", Color.green);
         Refresh();
         return false; // Leadership is informational; doesn't consume the turn
     }
 
-    private void OnPassClicked()
-    {
-        sessionZero?.PassDistrictSetup();
+    private void OnPassClicked() {
+        SetupPhase?.PassDistrictSetup();
         Refresh();
     }
 
-    private void ClearDistrictForms()
-    {
+    private void ClearDistrictForms() {
         foreach (var field in new[] {
             districtNameInput, districtFactionInput, districtProducesInput,
             districtConsumes1Input, districtConsumes2Input, districtConsumes3Input, districtConsumes4Input,
             threatNameInput, threatDescriptionInput, threatDCInput, threatMitigationInput,
             tradeNameInput, tradeProducesInput, tradeConsumesInput,
-            leadershipHeadInput, leadershipSuccessionInput })
-        {
-            if (field != null) field.text = "";
+            leadershipHeadInput, leadershipSuccessionInput }) {
+            if (field != null)
+                field.text = "";
         }
     }
 
     // ─── Step 3: HQ Placement Handlers ───────────────────────────────
 
-    private void OnPlaceHQClicked()
-    {
-        if (sessionZero == null || hqDistrictOptions.Count == 0) return;
+    private void OnPlaceHQClicked() {
+        if (SetupPhase == null || hqDistrictOptions.Count == 0)
+            return;
         int idx = hqDistrictDropdown?.value ?? 0;
-        if (idx >= hqDistrictOptions.Count) return;
+        if (idx >= hqDistrictOptions.Count)
+            return;
 
-        bool ok = sessionZero.PlacePlayerHQ(hqDistrictOptions[idx].Id);
-        if (ok)
-        {
+        bool ok = SetupPhase.PlacePlayerHQ(hqDistrictOptions[idx].Id);
+        if (ok) {
             ShowStatus("Headquarters placed!", Color.green);
             Refresh();
-        }
-        else
+        } else
             ShowStatus("Could not place HQ.", Color.red);
     }
 
     // ─── Step 4: Guild Setup Handlers ────────────────────────────────
 
-    private void OnStartGameClicked()
-    {
-        if (sessionZero == null) return;
+    private void OnStartGameClicked() {
+        if (SetupPhase == null)
+            return;
 
-        string guildName   = guildNameInput?.text?.Trim() ?? "";
-        string leaderName  = leaderNameInput?.text?.Trim() ?? "";
+        string guildName = guildNameInput?.text?.Trim() ?? "";
+        string leaderName = leaderNameInput?.text?.Trim() ?? "";
         string leaderClass = leaderClassDropdown != null
             ? leaderClassDropdown.options[leaderClassDropdown.value].text
             : "Fighter";
-        string secondName  = secondNameInput?.text?.Trim() ?? "";
+        string secondName = secondNameInput?.text?.Trim() ?? "";
         string secondClass = secondClassDropdown != null
             ? secondClassDropdown.options[secondClassDropdown.value].text
             : "Fighter";
 
-        bool ok = sessionZero.CreatePlayerGuild(guildName, leaderName, leaderClass, secondName, secondClass);
-        if (ok)
-        {
+        bool ok = SetupPhase.CreatePlayerGuild(guildName, leaderName, leaderClass, secondName, secondClass);
+        if (ok) {
             ShowStatus("Game starting...", Color.cyan);
             Refresh();
-        }
-        else
+        } else
             ShowStatus("Enter a guild name and leader name.", Color.red);
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────
 
-    private static void SetActive(GameObject obj, bool active)
-    {
-        if (obj != null) obj.SetActive(active);
+    private static void SetActive(GameObject obj, bool active) {
+        if (obj != null)
+            obj.SetActive(active);
     }
 
-    private static void SetInteractable(Button btn, bool interactable)
-    {
-        if (btn != null) btn.interactable = interactable;
+    private static void SetInteractable(Button btn, bool interactable) {
+        if (btn != null)
+            btn.interactable = interactable;
     }
 
     private static List<string> Split(string input) =>
         input.Split(',').Select(s => s.Trim()).Where(s => !string.IsNullOrEmpty(s)).ToList();
 
-    private void ShowStatus(string message, Color color)
-    {
+    private void ShowStatus(string message, Color color) {
         if (statusText != null) { statusText.text = message; statusText.color = color; }
-        Debug.Log($"[SessionZeroUI] {message}");
+        Debug.Log($"[SetupPhaseUI] {message}");
     }
 
-    public override void ShowPanel()
-    {
+    public override void ShowPanel() {
         base.ShowPanel();
-        sessionZero = SessionZeroManager.Instance?.Phase;
+        SetupPhase = SetupPhaseManager.Instance?.Phase;
         Refresh();
     }
 }

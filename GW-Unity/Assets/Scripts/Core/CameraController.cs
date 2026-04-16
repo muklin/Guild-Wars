@@ -7,6 +7,8 @@ using UnityEngine.InputSystem;
 /// </summary>
 
 public class CameraController : MonoBehaviour {
+    /// <summary>Set to false to disable camera input (e.g., when typing in UI text fields)</summary>
+    public static bool IsInputEnabled { get; set; } = true;
 
     [SerializeField] private Camera thisCamera;
     private float horizontal; // Input axis values for movement
@@ -17,6 +19,7 @@ public class CameraController : MonoBehaviour {
     private float moveSmoothing = 0.075f; // Higher = slower camera movement (more smoothing)
     [SerializeField] private float moveSpeed = 30f; // Base movement speed; actual speed is adjusted based on zoom level for consistent feel
     [SerializeField] private float zoomSpeed = 1f; // Higher = faster zooming; also affects movement speed for consistent feel (see moveSpeed)
+    [SerializeField] private float panSensitivity = 1.0f; // Middle mouse drag sensitivity (1.0 = 1:1 with mouse, increase for faster panning)
 
     private Vector3 desiredCameraPosition; // The target position the camera moves towards smoothly
 
@@ -24,9 +27,12 @@ public class CameraController : MonoBehaviour {
     [SerializeField] private float rotationSpeed = 30f;
     [SerializeField] private bool snapRotation = true; // Prevents free rotation, only allows 90° snaps
 
-
     private Quaternion desiredCameraRotation;
     private float zoomOrthographicSize = 10f;
+
+    private Vector2 lastMousePosition; // For middle mouse panning
+    private bool isMiddleMousePressed = false;
+    private Vector3 gazeLockWorldPoint; // The world point locked under the cursor when panning started
 
     [SerializeField, Range(45f, 75f)] private float camFieldOfView = 60f;
 
@@ -39,6 +45,13 @@ public class CameraController : MonoBehaviour {
         thisCamera.tag = "MainCamera";
         thisCamera.clearFlags = CameraClearFlags.SolidColor;
         thisCamera.backgroundColor = new Color(0.1f, 0.1f, 0.1f, 1f);
+
+        // Add lighting
+        var lightGO = new GameObject("DirectionalLight");
+        var light = lightGO.AddComponent<Light>();
+        light.type = LightType.Directional;
+        light.intensity = 1.2f;
+        lightGO.transform.rotation = Quaternion.Euler(45f, 45f, 0f);
 
         // Isometric orthographic setup
         thisCamera.orthographic = true;
@@ -56,6 +69,7 @@ public class CameraController : MonoBehaviour {
         CheckMovement();
         CheckZoom();
         CheckRotation();
+        CheckPan();
     }
 
     private void LateUpdate() {
@@ -63,6 +77,9 @@ public class CameraController : MonoBehaviour {
     }
 
     private void CheckMovement() {
+        if (!IsInputEnabled)
+            return;
+
         var keyboard = Keyboard.current;
         if (keyboard == null)
             return;
@@ -91,6 +108,9 @@ public class CameraController : MonoBehaviour {
     }
 
     private void CheckZoom() {
+        if (!IsInputEnabled)
+            return;
+
         var mouse = Mouse.current;
         if (mouse == null)
             return;
@@ -104,11 +124,14 @@ public class CameraController : MonoBehaviour {
 
         // adjust orthographicSize (larger = more zoomed out)
         float zoomDelta = -scrollValue * 2f; // Negative because larger size = zoom out
-        zoomOrthographicSize = Mathf.Clamp(zoomOrthographicSize + zoomDelta, 1f, 10f);
+        zoomOrthographicSize = Mathf.Clamp(zoomOrthographicSize + zoomDelta, 1f, 18f);
 
     }
 
     private void CheckRotation() {
+        if (!IsInputEnabled)
+            return;
+
         var keyboard = Keyboard.current;
         if (keyboard == null)
             return;
@@ -136,6 +159,49 @@ public class CameraController : MonoBehaviour {
         RotateBy(rotationAngle);
     }
 
+    private void CheckPan() {
+        if (!IsInputEnabled)
+            return;
+
+        var mouse = Mouse.current;
+        if (mouse == null)
+            return;
+
+        // Track middle mouse button state
+        if (mouse.middleButton.wasPressedThisFrame) {
+            isMiddleMousePressed = true;
+            lastMousePosition = mouse.position.ReadValue();
+
+            // Cast ray to find the world point under the cursor
+            Ray ray = thisCamera.ScreenPointToRay(lastMousePosition);
+            Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
+            if (groundPlane.Raycast(ray, out float distance)) {
+                gazeLockWorldPoint = ray.origin + ray.direction * distance;
+            }
+        } else if (mouse.middleButton.wasReleasedThisFrame) {
+            isMiddleMousePressed = false;
+        }
+
+        // Pan camera to keep gaze-locked point under cursor
+        if (isMiddleMousePressed) {
+            Vector2 currentMousePos = mouse.position.ReadValue();
+
+            // Cast ray at current mouse position
+            Ray currentRay = thisCamera.ScreenPointToRay(currentMousePos);
+            Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
+
+            if (groundPlane.Raycast(currentRay, out float currentDistance)) {
+                Vector3 currentWorldPoint = currentRay.origin + currentRay.direction * currentDistance;
+
+                // Move camera so that gazeLockWorldPoint appears at currentMousePos
+                Vector3 offset = gazeLockWorldPoint - currentWorldPoint;
+                desiredCameraPosition += offset;
+            }
+
+            lastMousePosition = currentMousePos;
+        }
+    }
+
     private void RotateBy(float angleAroundY) {
         try {
             Vector3 screenCenter = GetScreenCenterPoint();
@@ -161,8 +227,7 @@ public class CameraController : MonoBehaviour {
             transform.rotation = Quaternion.Lerp(transform.rotation, desiredCameraRotation, moveSmoothing);
 
         if (thisCamera.orthographicSize != zoomOrthographicSize)
-            //thisCamera.orthographicSize = zoomOrthographicSize; 
-            Mathf.Lerp(thisCamera.orthographicSize, zoomOrthographicSize, moveSmoothing);
+            thisCamera.orthographicSize = zoomOrthographicSize;
     }
 
     private Vector3 GetScreenCenterPoint() {
@@ -185,6 +250,9 @@ public class CameraController : MonoBehaviour {
 
         transform.position = desiredCameraPosition;
         transform.rotation = desiredCameraRotation;
+
+        thisCamera.orthographicSize = zoomOrthographicSize;
+
 
     }
 

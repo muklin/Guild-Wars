@@ -2,12 +2,11 @@ using UnityEngine;
 using System.Collections.Generic;
 
 /// <summary>
-/// Orchestrates the turn flow: SessionZero (setup) → Upkeep → Planning → Execution → Bills
+/// Orchestrates the turn flow: SetupPhase (setup) → Upkeep → Planning → Execution → Bills
 /// Broadcasts phase transitions to all clients via networking.
 /// Manages phase timeouts and auto-advance logic.
 /// </summary>
-public class GamePhaseManager : MonoBehaviour
-{
+public class GamePhaseManager : MonoBehaviour {
     public static GamePhaseManager Instance { get; private set; }
 
     [SerializeField] private float planningPhaseDurationSeconds = 900f; // 15 minutes
@@ -19,10 +18,8 @@ public class GamePhaseManager : MonoBehaviour
     private float phaseTimer = 0f;
     private bool isPhaseActive = false;
 
-    private void Awake()
-    {
-        if (Instance != null && Instance != this)
-        {
+    private void Awake() {
+        if (Instance != null && Instance != this) {
             Destroy(gameObject);
             return;
         }
@@ -30,8 +27,7 @@ public class GamePhaseManager : MonoBehaviour
         DontDestroyOnLoad(gameObject);
 
         gameStateManager = GameStateManager.Instance;
-        if (gameStateManager == null)
-        {
+        if (gameStateManager == null) {
             Debug.LogError("[GamePhaseManager] GameStateManager not found!");
             return;
         }
@@ -40,42 +36,36 @@ public class GamePhaseManager : MonoBehaviour
         InitializePhaseHandlers();
     }
 
-    private void Start()
-    {
+    private void Start() {
         // Phase handlers already initialized in Awake
     }
 
-    private void InitializePhaseHandlers()
-    {
-        // Session Zero is managed separately by SessionZeroManager.
+    private void InitializePhaseHandlers() {
+        // Setup Phase is managed separately by SetupPhaseManager.
         // GamePhaseManager only owns the repeating game loop phases.
-        phaseHandlers[GamePhase.Upkeep]    = gameObject.AddComponent<UpkeepPhase>();
-        phaseHandlers[GamePhase.Planning]  = gameObject.AddComponent<PlanningPhase>();
+        phaseHandlers[GamePhase.Upkeep] = gameObject.AddComponent<UpkeepPhase>();
+        phaseHandlers[GamePhase.Planning] = gameObject.AddComponent<PlanningPhase>();
         phaseHandlers[GamePhase.Execution] = gameObject.AddComponent<ExecutionPhase>();
-        phaseHandlers[GamePhase.Bills]     = gameObject.AddComponent<BillsPhase>();
+        phaseHandlers[GamePhase.Bills] = gameObject.AddComponent<BillsPhase>();
 
         Debug.Log("[GamePhaseManager] Phase handlers initialized (Upkeep → Planning → Execution → Bills)");
     }
 
-    private void Update()
-    {
+    private void Update() {
         if (!isPhaseActive || currentPhaseHandler == null)
             return;
 
         currentPhaseHandler.OnPhaseUpdate();
 
         // Check for phase completion
-        if (currentPhaseHandler.IsPhaseComplete())
-        {
+        if (currentPhaseHandler.IsPhaseComplete()) {
             AdvancePhase();
         }
 
         // Planning phase has a timeout
-        if (gameStateManager.GetCurrentPhase() == GamePhase.Planning)
-        {
+        if (gameStateManager.GetCurrentPhase() == GamePhase.Planning) {
             phaseTimer += Time.deltaTime;
-            if (phaseTimer >= planningPhaseDurationSeconds)
-            {
+            if (phaseTimer >= planningPhaseDurationSeconds) {
                 Debug.Log("Planning phase timeout - advancing to execution");
                 AdvancePhase();
             }
@@ -84,42 +74,35 @@ public class GamePhaseManager : MonoBehaviour
 
     // ==================== PHASE MANAGEMENT ====================
 
-    public void BeginRound()
-    {
-        if (isPhaseActive)
-        {
+    public void BeginRound() {
+        if (isPhaseActive) {
             Debug.LogWarning("[GamePhaseManager] Round already in progress");
             return;
         }
 
-        if (phaseHandlers.Count == 0)
-        {
+        if (phaseHandlers.Count == 0) {
             Debug.LogError("[GamePhaseManager] Phase handlers not initialized!");
             return;
         }
 
-        if (gameStateManager == null)
-        {
+        if (gameStateManager == null) {
             Debug.LogError("[GamePhaseManager] GameStateManager not initialized!");
             return;
         }
 
         isPhaseActive = true;
-        Debug.Log("[GamePhaseManager] Starting game loop (Session Zero already complete).");
+        Debug.Log("[GamePhaseManager] Starting game loop (Setup Phase already complete).");
         StartPhase(GamePhase.Upkeep);
     }
 
-    private void StartPhase(GamePhase phase)
-    {
-        if (!phaseHandlers.TryGetValue(phase, out var handler))
-        {
+    private void StartPhase(GamePhase phase) {
+        if (!phaseHandlers.TryGetValue(phase, out var handler)) {
             Debug.LogError($"No handler found for phase: {phase}");
             return;
         }
 
         // End current phase
-        if (currentPhaseHandler != null)
-        {
+        if (currentPhaseHandler != null) {
             currentPhaseHandler.OnPhaseEnd();
         }
 
@@ -134,15 +117,13 @@ public class GamePhaseManager : MonoBehaviour
         Debug.Log($"Phase started: {phase}");
     }
 
-    private void AdvancePhase()
-    {
-        GamePhase nextPhase = gameStateManager.GetCurrentPhase() switch
-        {
-            GamePhase.Upkeep    => GamePhase.Planning,
-            GamePhase.Planning  => GamePhase.Execution,
+    private void AdvancePhase() {
+        GamePhase nextPhase = gameStateManager.GetCurrentPhase() switch {
+            GamePhase.Upkeep => GamePhase.Planning,
+            GamePhase.Planning => GamePhase.Execution,
             GamePhase.Execution => GamePhase.Bills,
-            GamePhase.Bills     => GamePhase.Upkeep,
-            _                   => GamePhase.Upkeep
+            GamePhase.Bills => GamePhase.Upkeep,
+            _ => GamePhase.Upkeep
         };
 
         if (nextPhase == GamePhase.Upkeep) // Bills → Upkeep means a round just ended
@@ -150,8 +131,7 @@ public class GamePhaseManager : MonoBehaviour
             gameStateManager.AdvanceRound();
             CheckVictoryConditions();
 
-            if (gameStateManager.IsGameComplete())
-            {
+            if (gameStateManager.IsGameComplete()) {
                 EndGame();
                 return;
             }
@@ -160,11 +140,9 @@ public class GamePhaseManager : MonoBehaviour
         StartPhase(nextPhase);
     }
 
-    private void CheckVictoryConditions()
-    {
+    private void CheckVictoryConditions() {
         var config = Resources.Load<GameConfig>("GameConfig");
-        if (config == null)
-        {
+        if (config == null) {
             Debug.LogWarning("GameConfig not found in Resources folder");
             return;
         }
@@ -172,13 +150,10 @@ public class GamePhaseManager : MonoBehaviour
         int victoryThreshold = config.VictoryFactionStanding;
 
         // Check all factions for each guild
-        foreach (var guild in gameStateManager.GetAllGuilds())
-        {
-            foreach (var faction in gameStateManager.GetAllFactions())
-            {
+        foreach (var guild in gameStateManager.GetAllGuilds()) {
+            foreach (var faction in gameStateManager.GetAllFactions()) {
                 int standing = guild.GetFactionStanding(faction.Id);
-                if (standing >= victoryThreshold)
-                {
+                if (standing >= victoryThreshold) {
                     Debug.Log($"Guild {guild.Name} has reached {standing} standing with {faction.Name}! VICTORY!");
                     return;
                 }
@@ -186,8 +161,7 @@ public class GamePhaseManager : MonoBehaviour
         }
     }
 
-    private void EndGame()
-    {
+    private void EndGame() {
         isPhaseActive = false;
         EventSystem.Instance?.Fire(GameEvents.GAME_ENDED);
         Debug.Log("Game ended!");
@@ -195,19 +169,16 @@ public class GamePhaseManager : MonoBehaviour
 
     // ==================== GETTERS ====================
 
-    public GamePhase GetCurrentPhase()
-    {
+    public GamePhase GetCurrentPhase() {
         return gameStateManager.GetCurrentPhase();
     }
 
-    public IPhaseHandler GetPhaseHandler(GamePhase phase)
-    {
+    public IPhaseHandler GetPhaseHandler(GamePhase phase) {
         phaseHandlers.TryGetValue(phase, out var handler);
         return handler;
     }
 
-    public float GetPlanningPhaseTimeRemaining()
-    {
+    public float GetPlanningPhaseTimeRemaining() {
         if (gameStateManager.GetCurrentPhase() != GamePhase.Planning)
             return 0f;
         return Mathf.Max(0, planningPhaseDurationSeconds - phaseTimer);

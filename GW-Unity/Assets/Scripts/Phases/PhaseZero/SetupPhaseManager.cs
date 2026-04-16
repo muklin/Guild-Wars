@@ -1,22 +1,24 @@
 using UnityEngine;
 
 /// <summary>
-/// Manages the one-time Session Zero setup flow, separate from the repeating game loop.
-/// Owns and drives SessionZeroPhase; fires SESSION_ZERO_END when complete, at which point
+/// Manages the one-time Setup Phase flow, separate from the repeating game loop.
+/// Owns and drives SetupPhase; fires SETUP_PHASE_END when complete, at which point
 /// GamePhaseManager takes over with the normal Upkeep → Planning → Execution → Bills cycle.
 /// </summary>
-public class SessionZeroManager : MonoBehaviour {
-    public static SessionZeroManager Instance { get; private set; }
+public class SetupPhaseManager : MonoBehaviour {
+    public static SetupPhaseManager Instance { get; private set; }
 
-    private SessionZeroPhase phase;
+    private SetupPhase phase;
     private bool completed;
     private CityVisualization cityViz;
     private CityLayout cityLayout;
     private BuildingSpawner buildingSpawner;
 
 
-    public SessionZeroPhase Phase => phase;
+    public SetupPhase Phase => phase;
     public bool IsComplete => completed;
+    public CityVisualization CityViz => cityViz;
+    public BuildingSpawner BuildingSpawner => buildingSpawner;
 
     private void Awake() {
         if (Instance != null && Instance != this) {
@@ -26,11 +28,11 @@ public class SessionZeroManager : MonoBehaviour {
         Instance = this;
         DontDestroyOnLoad(gameObject);
 
-        phase = gameObject.AddComponent<SessionZeroPhase>();
+        phase = gameObject.AddComponent<SetupPhase>();
 
 
 
-        // Spawn an empty city grid now so it is visible during Session Zero.
+        // Spawn an empty city grid now so it is visible during Setup Phase.
         //    Districts and terrain are added incrementally as the player builds the world.
         SpawnCityVisualization();
 
@@ -48,22 +50,26 @@ public class SessionZeroManager : MonoBehaviour {
 
         if (phase.IsPhaseComplete()) {
             completed = true;
-            phase.OnPhaseEnd(); // fires SESSION_ZERO_END
+            phase.OnPhaseEnd(); // fires SETUP_PHASE_END
         }
     }
 
     /// <summary>
-    /// Starts Session Zero. Call this from GameBootstrapper instead of GamePhaseManager.BeginRound().
+    /// Starts Setup Phase. Call this from GameBootstrapper instead of GamePhaseManager.BeginRound().
     /// </summary>
     public void Begin() {
         if (completed) {
-            Debug.LogWarning("[SessionZeroManager] Session Zero already completed.");
+            Debug.LogWarning("[SetupPhaseManager] Setup Phase already completed.");
             return;
         }
 
-        GameStateManager.Instance?.SetCurrentPhase(GamePhase.SessionZero);
+        Debug.Log("[SetupPhaseManager] Begin() called");
+        GameStateManager.Instance?.SetCurrentPhase(GamePhase.SetupPhase);
+        Debug.Log("[SetupPhaseManager] Calling phase.OnPhaseStart()");
         phase.OnPhaseStart();
-        EventSystem.Instance?.Fire(GameEvents.SESSION_ZERO_START);
+        Debug.Log($"[SetupPhaseManager] Firing event: {GameEvents.SETUP_PHASE_START}");
+        EventSystem.Instance?.Fire<object>(GameEvents.SETUP_PHASE_START, null);
+        Debug.Log("[SetupPhaseManager] Event fired");
     }
     // ─── City visualisation ───────────────────────────────────────────────────
 
@@ -74,7 +80,7 @@ public class SessionZeroManager : MonoBehaviour {
         buildingSpawner = cityGO.AddComponent<BuildingSpawner>();
         buildingSpawner.Initialize();
 
-        // Layout starts empty; grid fills as districts are added during Session Zero.
+        // Layout starts empty; grid fills as districts are added during Setup Phase.
         var districts = GameStateManager.Instance?.GetAllDistricts();
         if (districts.Count > 0) {
             cityLayout.GenerateGridLayout(districts);

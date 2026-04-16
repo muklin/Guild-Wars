@@ -1,5 +1,5 @@
 /// <summary>
-/// Terrain types for the city's surrounding landscape, placed during Session Zero.
+/// Terrain types for the city's surrounding landscape, placed during Setup Phase.
 /// </summary>
 public enum TerrainType {
     Plains,
@@ -19,7 +19,7 @@ public enum TerrainType {
 
 
 /// <summary>
-/// A terrain feature placed on a map grid tile during Session Zero terrain setup.
+/// A terrain feature placed on a map grid tile during Setup Phase terrain setup.
 /// Each participant places 1-3 features describing the landscape around the city.
 /// </summary>
 public class TerrainFeature {

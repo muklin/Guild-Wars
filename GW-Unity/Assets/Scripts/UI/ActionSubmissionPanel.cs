@@ -6,8 +6,7 @@ using UnityEngine.UI;
 /// Player selects: Action type, target, squad member.
 /// Submits action or auto-advances if timeout.
 /// </summary>
-public class ActionSubmissionPanel : UIPanel
-{
+public class ActionSubmissionPanel : UIPanel {
     private Dropdown actionTypeDropdown;
     private Dropdown targetDropdown;
     private Dropdown squadMemberDropdown;
@@ -17,20 +16,17 @@ public class ActionSubmissionPanel : UIPanel
     private GameStateManager gameStateManager;
     private Guild playerGuild;
 
-    public override void Initialize()
-    {
+    public override void Initialize() {
         base.Initialize();
-        try
-        {
+        try {
             gameStateManager = GameStateManager.Instance;
 
-            if (gameStateManager == null)
-            {
+            if (gameStateManager == null) {
                 Debug.LogError("[ActionSubmissionPanel] GameStateManager not found!");
                 return;
             }
 
-            // Guilds don't exist yet during UI initialization (they're created in Session Zero).
+            // Guilds don't exist yet during UI initialization (they're created in Setup Phase).
             // We'll initialize playerGuild in ShowPanel() when Planning phase starts.
 
             // Position: center-bottom
@@ -78,16 +74,13 @@ public class ActionSubmissionPanel : UIPanel
                 .GetComponent<Button>();
 
             RefreshLayout();
-            Debug.Log("[ActionSubmissionPanel] Successfully initialized! (Guilds will be loaded when panel is shown)");
-        }
-        catch (System.Exception e)
-        {
+            Debug.Log("[ActionSubmissionPanel] Successfully initialized! (Guilds will be loaded when panel is shown during Setup Phase)");
+        } catch (System.Exception e) {
             Debug.LogError($"[ActionSubmissionPanel] Initialize failed: {e.Message}\n{e.StackTrace}");
         }
     }
 
-    private void OnActionTypeChanged(int index)
-    {
+    private void OnActionTypeChanged(int index) {
         // Repopulate target dropdown based on action type
         targetDropdown.options.Clear();
         targetDropdown.options.Add(new Dropdown.OptionData("Select target..."));
@@ -95,64 +88,51 @@ public class ActionSubmissionPanel : UIPanel
         if (index == 1) // PvP
         {
             var otherGuilds = gameStateManager.GetAllGuilds();
-            foreach (var guild in otherGuilds)
-            {
-                if (guild.Id != playerGuild.Id)
-                {
+            foreach (var guild in otherGuilds) {
+                if (guild.Id != playerGuild.Id) {
                     targetDropdown.options.Add(new Dropdown.OptionData(guild.Name));
                 }
             }
-        }
-        else if (index == 2) // District Control
-        {
+        } else if (index == 2) // District Control
+          {
             var districts = gameStateManager.GetAllDistricts();
-            foreach (var district in districts)
-            {
+            foreach (var district in districts) {
                 targetDropdown.options.Add(new Dropdown.OptionData(district.Name));
             }
-        }
-        else if (index == 3) // Steal Resources
-        {
+        } else if (index == 3) // Steal Resources
+          {
             var districts = gameStateManager.GetAllDistricts();
-            foreach (var district in districts)
-            {
+            foreach (var district in districts) {
                 targetDropdown.options.Add(new Dropdown.OptionData(district.Name));
             }
         }
     }
 
-    private void PopulateSquadMembers()
-    {
+    private void PopulateSquadMembers() {
         squadMemberDropdown.options.Clear();
         squadMemberDropdown.options.Add(new Dropdown.OptionData("Select member..."));
 
-        if (playerGuild != null)
-        {
-            foreach (var member in playerGuild.Members)
-            {
+        if (playerGuild != null) {
+            foreach (var member in playerGuild.Members) {
                 squadMemberDropdown.options.Add(new Dropdown.OptionData(member.Name));
             }
         }
     }
 
-    private void OnSubmitAction()
-    {
-        if (actionTypeDropdown.value == 0)
-        {
+    private void OnSubmitAction() {
+        if (actionTypeDropdown.value == 0) {
             statusText.text = "Please select an action type";
             statusText.color = Color.red;
             return;
         }
 
-        if (targetDropdown.value == 0)
-        {
+        if (targetDropdown.value == 0) {
             statusText.text = "Please select a target";
             statusText.color = Color.red;
             return;
         }
 
-        if (squadMemberDropdown.value == 0)
-        {
+        if (squadMemberDropdown.value == 0) {
             statusText.text = "Please select a squad member";
             statusText.color = Color.red;
             return;
@@ -165,8 +145,7 @@ public class ActionSubmissionPanel : UIPanel
         int memberIndex = squadMemberDropdown.value - 1;
 
         var memberList = playerGuild.Members;
-        if (memberIndex < 0 || memberIndex >= memberList.Count)
-        {
+        if (memberIndex < 0 || memberIndex >= memberList.Count) {
             statusText.text = "Invalid member selection";
             statusText.color = Color.red;
             return;
@@ -178,14 +157,12 @@ public class ActionSubmissionPanel : UIPanel
         {
             var otherGuilds = gameStateManager.GetAllGuilds();
             var guildFiltered = new System.Collections.Generic.List<Guild>();
-            foreach (var g in otherGuilds)
-            {
+            foreach (var g in otherGuilds) {
                 if (g.Id != playerGuild.Id)
                     guildFiltered.Add(g);
             }
 
-            if (targetIndex >= guildFiltered.Count)
-            {
+            if (targetIndex >= guildFiltered.Count) {
                 statusText.text = "Invalid target";
                 statusText.color = Color.red;
                 return;
@@ -194,30 +171,25 @@ public class ActionSubmissionPanel : UIPanel
             var targetGuild = guildFiltered[targetIndex];
             var targetMember = targetGuild.Members[0]; // Just pick first member for simplicity
 
-            action = new PvPAction(playerGuild.Id)
-            {
+            action = new PvPAction(playerGuild.Id) {
                 AttackerCharacterId = member.Id,
                 DefenderCharacterId = targetMember.Id,
                 DefenderGuildId = targetGuild.Id
             };
-        }
-        else if (actionType == 2) // District Control
-        {
+        } else if (actionType == 2) // District Control
+          {
             var districts = gameStateManager.GetAllDistricts();
-            if (targetIndex >= districts.Count)
-            {
+            if (targetIndex >= districts.Count) {
                 statusText.text = "Invalid district";
                 statusText.color = Color.red;
                 return;
             }
 
             action = new DistrictControlAction(playerGuild.Id, districts[targetIndex].Id);
-        }
-        else if (actionType == 3) // Steal Resources
-        {
+        } else if (actionType == 3) // Steal Resources
+          {
             var districts = gameStateManager.GetAllDistricts();
-            if (targetIndex >= districts.Count)
-            {
+            if (targetIndex >= districts.Count) {
                 statusText.text = "Invalid target district";
                 statusText.color = Color.red;
                 return;
@@ -226,12 +198,10 @@ public class ActionSubmissionPanel : UIPanel
             action = new StealResourcesAction(playerGuild.Id, districts[targetIndex].Id, member.Id);
         }
 
-        if (action != null)
-        {
+        if (action != null) {
             // Get PlanningPhase and submit
             planningPhase = (PlanningPhase)GamePhaseManager.Instance.GetPhaseHandler(GamePhase.Planning);
-            if (planningPhase != null)
-            {
+            if (planningPhase != null) {
                 planningPhase.SubmitAction(playerGuild.Id, action);
                 statusText.text = "Action submitted!";
                 statusText.color = Color.green;
@@ -244,16 +214,13 @@ public class ActionSubmissionPanel : UIPanel
         }
     }
 
-    public override void ShowPanel()
-    {
+    public override void ShowPanel() {
         base.ShowPanel();
 
         // Initialize guild data on first show (when guilds now exist)
-        if (playerGuild == null)
-        {
+        if (playerGuild == null) {
             var allGuilds = gameStateManager?.GetAllGuilds();
-            if (allGuilds != null && allGuilds.Count > 0)
-            {
+            if (allGuilds != null && allGuilds.Count > 0) {
                 playerGuild = allGuilds[0]; // Player is always first guild
                 Debug.Log($"[ActionSubmissionPanel] Using player guild: {playerGuild.Name}");
                 PopulateSquadMembers();

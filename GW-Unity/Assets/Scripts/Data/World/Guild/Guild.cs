@@ -5,8 +5,7 @@ using UnityEngine;
 /// <summary>
 /// D&amp;D 5e ability types
 /// </summary>
-public enum Ability
-{
+public enum Ability {
     Strength,
     Dexterity,
     Constitution,
@@ -24,8 +23,7 @@ public enum Ability
 /// Inherits Produces / Needs (typed Tradeable lists) from Faction — these represent
 /// what the guild trades in and what it requires to operate.
 /// </summary>
-public class Guild : Faction
-{
+public class Guild : Faction {
     public int OwnerId { get; set; } // Player network ID
     public GuildLeader Leader { get; set; }
     public GuildLeader SecondInCommand { get; set; }
@@ -45,22 +43,20 @@ public class Guild : Faction
     // Squads available for actions
     public int SquadCount { get; set; } = 1;
 
-    // Session Zero tokens
-    public int VetoTokens      { get; set; } = 1;
-    public int GuildTokens     { get; set; } = 2;
+    // Setup Phase tokens
+    public int VetoTokens { get; set; } = 1;
+    public int GuildTokens { get; set; } = 2;
     public int CharacterTokens { get; set; } = 2;
-    public int RoundTokens     { get; set; } = 2;
+    public int RoundTokens { get; set; } = 2;
 
-    public Guild(int id, string name, int ownerId) : base(id, name)
-    {
+    public Guild(int id, string name, int ownerId) : base(id, name) {
         OwnerId = ownerId;
         Gold = 200;
     }
 
     // ==================== MEMBERS ====================
 
-    public void AddMember(GuildCharacter character)
-    {
+    public void AddMember(GuildCharacter character) {
         if (!Members.Contains(character))
             Members.Add(character);
     }
@@ -72,15 +68,13 @@ public class Guild : Faction
 
     // ==================== RESOURCES ====================
 
-    public void AddResource(string resourceType, int amount)
-    {
+    public void AddResource(string resourceType, int amount) {
         if (!resources.ContainsKey(resourceType))
             resources[resourceType] = 0;
         resources[resourceType] += amount;
     }
 
-    public bool TryConsumeResource(string resourceType, int amount)
-    {
+    public bool TryConsumeResource(string resourceType, int amount) {
         if (!resources.ContainsKey(resourceType) || resources[resourceType] < amount)
             return false;
         resources[resourceType] -= amount;
@@ -104,8 +98,7 @@ public class Guild : Faction
 
     // ==================== DISTRICTS ====================
 
-    public void AddControlledDistrict(int districtId)
-    {
+    public void AddControlledDistrict(int districtId) {
         if (!ControlledDistrictIds.Contains(districtId))
             ControlledDistrictIds.Add(districtId);
     }
@@ -118,9 +111,9 @@ public class Guild : Faction
 
     // ==================== MONEY ====================
 
-    public bool TryPayMoney(int amount)
-    {
-        if (Gold < amount) return false;
+    public bool TryPayMoney(int amount) {
+        if (Gold < amount)
+            return false;
         Gold -= amount;
         return true;
     }
@@ -129,10 +122,10 @@ public class Guild : Faction
 
     public int CalculateSalaryBill() => Members.Sum(m => CalculateFactorial(m.Level));
 
-    private int CalculateFactorial(int n)
-    {
+    private int CalculateFactorial(int n) {
         int result = 1;
-        for (int i = 2; i <= n; i++) result *= i;
+        for (int i = 2; i <= n; i++)
+            result *= i;
         return result;
     }
 
@@ -143,30 +136,28 @@ public class Guild : Faction
 /// <summary>
 /// A character in a guild (player or NPC).
 /// </summary>
-public class GuildCharacter
-{
+public class GuildCharacter {
     public int Id { get; private set; }
     public string Name { get; set; }
     public string Class { get; set; }
     public int Level { get; set; }
 
     // D&D 5e abilities
-    public int Strength     { get; set; }
-    public int Dexterity    { get; set; }
+    public int Strength { get; set; }
+    public int Dexterity { get; set; }
     public int Constitution { get; set; }
     public int Intelligence { get; set; }
-    public int Wisdom       { get; set; }
-    public int Charisma     { get; set; }
+    public int Wisdom { get; set; }
+    public int Charisma { get; set; }
 
     // Combat state
-    public int HitPoints      { get; set; }
-    public int MaxHitPoints   { get; set; }
+    public int HitPoints { get; set; }
+    public int MaxHitPoints { get; set; }
     public bool IsIncapacitated { get; set; }
 
     private static int nextId = 1;
 
-    public GuildCharacter(string name, string charClass, int level)
-    {
+    public GuildCharacter(string name, string charClass, int level) {
         Id = nextId++;
         Name = name;
         Class = charClass;
@@ -175,29 +166,25 @@ public class GuildCharacter
         HitPoints = MaxHitPoints;
     }
 
-    public int GetModifier(Ability ability)
-    {
-        int score = ability switch
-        {
-            Ability.Strength     => Strength,
-            Ability.Dexterity    => Dexterity,
+    public int GetModifier(Ability ability) {
+        int score = ability switch {
+            Ability.Strength => Strength,
+            Ability.Dexterity => Dexterity,
             Ability.Constitution => Constitution,
             Ability.Intelligence => Intelligence,
-            Ability.Wisdom       => Wisdom,
-            Ability.Charisma     => Charisma,
-            _                    => 10
+            Ability.Wisdom => Wisdom,
+            Ability.Charisma => Charisma,
+            _ => 10
         };
         return (score - 10) / 2;
     }
 
-    public void TakeDamage(int damage)
-    {
+    public void TakeDamage(int damage) {
         HitPoints = Mathf.Max(0, HitPoints - damage);
         IsIncapacitated = HitPoints <= 0;
     }
 
-    public void Heal(int amount)
-    {
+    public void Heal(int amount) {
         HitPoints = Mathf.Min(MaxHitPoints, HitPoints + amount);
         IsIncapacitated = false;
     }
@@ -209,13 +196,11 @@ public class GuildCharacter
 /// <summary>
 /// A leader character (special type with an additional role title).
 /// </summary>
-public class GuildLeader : GuildCharacter
-{
+public class GuildLeader : GuildCharacter {
     public string Title { get; set; } = "Leader";
 
     public GuildLeader(string name, string charClass, int level, string title = "Leader")
-        : base(name, charClass, level)
-    {
+        : base(name, charClass, level) {
         Title = title;
     }
 }

@@ -1,10 +1,10 @@
 using UnityEngine;
 
 /// <summary>
-/// Initialises core managers at startup, then hands off to SessionZeroManager.
+/// Initialises core managers at startup, then hands off to SetupPhaseManager.
 /// City visualisation is created immediately (empty grid) so players can see the map
-/// during Session Zero as they place terrain and districts.
-/// When Session Zero ends, GamePhaseManager starts the repeating game loop.
+/// during Setup Phase as they place terrain and districts.
+/// When Setup Phase ends, GamePhaseManager starts the repeating game loop.
 /// </summary>
 public class GameBootstrapper : MonoBehaviour {
     private GameStateManager gameStateManager;
@@ -15,20 +15,23 @@ public class GameBootstrapper : MonoBehaviour {
         SetupCamera();
 
         // 1. Core managers
+
+        var eventSystem = FindOrCreate<EventSystem>("EventSystem");
+        var uiManager = FindOrCreate<UIManager>("UIManager");
         gameStateManager = FindOrCreate<GameStateManager>("GameStateManager");
-        FindOrCreate<EventSystem>("EventSystem");
         gamePhaseManager = FindOrCreate<GamePhaseManager>("GamePhaseManager");
-        FindOrCreate<UIManager>("UIManager");
-        FindOrCreate<SessionZeroManager>("SessionZeroManager");
+        var setupManager = FindOrCreate<SetupPhaseManager>("SetupPhaseManager");
 
+        // 2. Ensure UI is fully initialized before Setup Phase starts (it needs MainCanvas)
+        uiManager.EnsureInitialized();
 
-        // 4. When Session Zero finishes, hand off to the game loop.
-        EventSystem.Instance?.Subscribe(GameEvents.SESSION_ZERO_END, OnSessionZeroComplete);
+        // 3. When Setup Phase finishes, hand off to the game loop.
+        EventSystem.Instance?.Subscribe(GameEvents.SETUP_PHASE_END, OnSetupPhaseComplete);
 
-        // 5. Begin Session Zero.
-        SessionZeroManager.Instance.Begin();
+        // 4. Begin Setup Phase.
+        SetupPhaseManager.Instance.Begin();
 
-        Debug.Log("=== Bootstrap complete — Session Zero started ===");
+        Debug.Log("=== Bootstrap complete — Setup Phase started ===");
     }
 
     // ─── Camera Setup ─────────────────────────────────────────────────────────
@@ -55,10 +58,10 @@ public class GameBootstrapper : MonoBehaviour {
     }
 
 
-    // ─── Session Zero → Game Loop hand-off ───────────────────────────────────
+    // ─── Setup Phase → Game Loop hand-off ───────────────────────────────────
 
-    private void OnSessionZeroComplete() {
-        Debug.Log("[GameBootstrapper] Session Zero complete — starting game loop.");
+    private void OnSetupPhaseComplete() {
+        Debug.Log("[GameBootstrapper] Setup Phase complete — starting game loop.");
         gamePhaseManager.BeginRound();
     }
 

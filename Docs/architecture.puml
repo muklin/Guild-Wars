@@ -59,6 +59,7 @@ System_Boundary(gw, "GuildWars Game") {
         Component(service,  "Service",            "Tradeable",   "Recurring activities that renew each round (e.g. protection, transport, labour, blessings)")
         Component(threat,   "Threat",             "Plain class", "HP, DC, mitigation criteria; used as world-map threat and PvE template")
         Component(terrain,  "TerrainFeature",     "Plain class", "TerrainType + description placed on a grid cell during Session Zero")
+        Component(edgef,    "EdgeFeature",        "Plain class", "Cliff or River spanning 1-2+ contiguous edges; validated for continuity")
     }
 
     ' ── Data / Config ──────────────────────────────────────────────────────
@@ -70,17 +71,23 @@ System_Boundary(gw, "GuildWars Game") {
 
     ' ── 3D City ────────────────────────────────────────────────────────────
     Container_Boundary(city, "3D City Visualisation") {
-        Component(layout,  "CityLayout",      "MonoBehaviour", "Maps district IDs to grid positions; stores TerrainFeatures per cell")
-        Component(spawner, "BuildingSpawner", "MonoBehaviour", "Spawns DistrictVisual GameObjects for each district")
-        Component(viz,     "CityVisualization","MonoBehaviour","Coordinates overall city scene; manages terrain and district visuals")
-        Component(cam,     "CameraController","MonoBehaviour","Owns main camera; handles movement, zoom, rotation; isometric orthographic view")
-        Component(ray,     "CityRaycaster",   "MonoBehaviour", "Raycasts player clicks onto district visuals; fires UI_SELECT_DISTRICT")
+        Component(layout,  "CityLayout",             "MonoBehaviour", "Maps district IDs to grid positions; stores TerrainFeatures per cell")
+        Component(spawner, "BuildingSpawner",       "MonoBehaviour", "Spawns DistrictVisual GameObjects for each district")
+        Component(viz,     "CityVisualization",     "MonoBehaviour", "Owns main camera; handles movement, zoom, rotation; isometric orthographic view")
+        Component(cam,     "CameraController",      "MonoBehaviour", "Camera control helper; orbit, zoom, rotation snaps")
+        Component(ray,     "CityRaycaster",         "MonoBehaviour", "Raycasts player clicks onto district visuals; fires UI_SELECT_DISTRICT")
+        Component(voronoi, "VoronoiWorldGenerator", "MonoBehaviour", "Generates 50×50 Voronoi terrain regions from Delaunay triangulation")
+        Component(terrsel, "TerrainSelectionController","MonoBehaviour", "Handles click-to-select-region input; assigns terrain types")
+        Component(edgesel, "EdgeSelectionController", "MonoBehaviour", "Handles edge selection for cliffs/rivers; validates continuity")
+        Component(edge,    "VoronoiEdge",           "MonoBehaviour", "Clickable edge component between regions")
+        Component(colors,  "TerrainColors",         "Static class",  "Maps TerrainType → Color for region display")
     }
 
     ' ── UI ─────────────────────────────────────────────────────────────────
     Container_Boundary(ui, "UI  [UIPanel]") {
         Component(uimgr, "UIManager",              "Singleton MonoBehaviour", "Creates and shows/hides all panels in response to phase events")
         Component(szui,  "SessionZeroUIPanel",     "UIPanel", "Step-by-step city and guild creation form (Terrain / Districts / HQ / Guild)")
+        Component(terrui,"TerrainTypePanel",       "UIPanel", "Region/edge selection and terrain type assignment during terrain setup")
         Component(gsui,  "GameStatePanel",         "UIPanel", "Phase name + round number, always visible")
         Component(guui,  "GuildStatusPanel",       "UIPanel", "Per-guild: gold, resources, roster, leader, veto tokens, districts")
         Component(asui,  "ActionSubmissionPanel",  "UIPanel", "Action type + target selection during Planning phase")
@@ -170,6 +177,16 @@ Rel(layout,  gsm,     "GetAllDistricts()")
 Rel(spawner, layout,  "GenerateGridLayout()")
 Rel(spawner, viz,     "Provides GameObjects")
 Rel(viz,     cam,     "Uses for camera control")
+
+Rel(sz,      voronoi, "Generate() Voronoi regions on terrain step")
+Rel(sz,      terrsel, "Initialize terrain region selection")
+Rel(sz,      edgesel, "Initialize edge feature selection")
+Rel(terrsel, voronoi, "SetRegionTerrain / HighlightRegion")
+Rel(edgesel, voronoi, "AddEdgeFeature / HighlightEdge")
+Rel(voronoi, colors,  "For(TerrainType) → Color")
+Rel(terrui,  terrsel, "AssignTerrain() region mode")
+Rel(terrui,  edgesel, "TryCreateFeature() edge mode")
+Rel(terrui,  sz,      "PlaceTerrainFeature / FinishTerrainPlacement")
 
 Rel(gpm,  cfg, "Load GameConfig from Resources")
 Rel(bi,   cfg, "Salary formula constants")

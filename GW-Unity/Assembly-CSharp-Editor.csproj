@@ -53,8 +53,8 @@
     <Compile Include="Assets\Editor\Domain\GuildTests.cs" />
     <Compile Include="Assets\Editor\Domain\TradeableTests.cs" />
     <Compile Include="Assets\Editor\Domain\TradingDestinationTests.cs" />
-    <Compile Include="Assets\Editor\Domain\DistrictTests.cs" />
     <Compile Include="Assets\Editor\Domain\ClassFactionTests.cs" />
+    <Compile Include="Assets\Editor\Domain\DistrictTests.cs" />
     <Compile Include="Assets\Editor\Domain\FactionTests.cs" />
   </ItemGroup>
   <ItemGroup>
