@@ -121,15 +121,6 @@ public class EdgeSelectionController : MonoBehaviour {
         // Sort by distance
         System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
-        // Don't select edges if a region is already selected (stay in region mode)
-        var regionController = FindAnyObjectByType<TerrainSelectionController>();
-        if (regionController != null && regionController.GetSelectedRegion() != null) {
-            Debug.Log("[EdgeSelectionController] Region already selected, ignoring edge selection");
-            return;
-        }
-
-        Debug.Log($"[EdgeSelectionController] Raycast found {hits.Length} hits, currently selected {selectedEdges.Count} edges");
-
         foreach (var hit in hits) {
             var edgeComponent = hit.collider.GetComponent<VoronoiEdge>();
             if (edgeComponent != null) {
@@ -182,7 +173,6 @@ public class EdgeSelectionController : MonoBehaviour {
             var lastEdge = selectedEdges[selectedEdges.Count - 1];
             // Edges should form a continuous line (share vertices)
             bool isContiguous = EdgesAreContiguous(lastEdge, edge);
-            Debug.Log($"[EdgeSelectionController.CanSelectEdge] Checking contiguity: edge {lastEdge.id} to edge {edge.id} = {isContiguous}");
             if (!isContiguous) {
                 Debug.LogWarning("Edges must form a continuous line (share vertices)");
                 return false;

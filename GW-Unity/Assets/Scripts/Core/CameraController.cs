@@ -217,6 +217,16 @@ public class CameraController : MonoBehaviour {
 
     }
 
+    /// <summary>
+    /// Focus the camera on a world point with a given radius. Smoothly moves and zooms the camera to frame the area.
+    /// </summary>
+    public void FocusOn(Vector3 worldCenter, float radius) {
+        Vector3 camDir = desiredCameraRotation * Vector3.forward;
+        desiredCameraPosition = worldCenter - camDir * 35f;
+        desiredCameraPosition.y = 35f;
+        zoomOrthographicSize = Mathf.Max(radius * 1.25f, 3f);
+    }
+
     private void MoveCamera() {
         Vector3 screenCenter = GetScreenCenterPoint();
 

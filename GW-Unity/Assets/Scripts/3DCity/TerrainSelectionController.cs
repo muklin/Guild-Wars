@@ -142,7 +142,7 @@ public class TerrainSelectionController : MonoBehaviour {
         }
 
         // Validate boundary constraint
-        if ((type == TerrainType.Sea || type == TerrainType.Mountains) && !IsBoundaryRegion(selectedRegion)) {
+        if ((type == TerrainType.Sea || type == TerrainType.Mountains || type ==TerrainType.Desert ) && !IsBoundaryRegion(selectedRegion)) {
             Debug.LogWarning($"{type} can only be assigned to edge regions. Selected region is interior.");
             return;
         }

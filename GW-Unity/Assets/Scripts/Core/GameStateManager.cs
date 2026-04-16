@@ -291,6 +291,7 @@ public static class GameEvents {
     public const string THREAT_PLACED = "SetupPhase:threat:placed";
     public const string TRADING_DEST_ADDED = "SetupPhase:trade:added";
     public const string SETUP_PHASE_STEP_CHANGED = "SetupPhase:step:changed";
+    public const string CITY_SUBDIVISION_COMPLETE = "SetupPhase:city:subdivided";
 
     // UI events
     public const string UI_SHOW_ACTION_PANEL = "ui:show:action_panel";

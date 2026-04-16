@@ -403,6 +403,7 @@ public class VoronoiWorldGenerator : MonoBehaviour {
 
     private void GenerateEdges() {
         var allRegions = TerrainData.GetAllRegions();
+        Debug.Log($"[VoronoiWorldGenerator.GenerateEdges] Starting with {allRegions.Count} regions");
 
         // Find adjacent region pairs and create edge objects
         var adjacencySet = new HashSet<(int, int)>();
@@ -412,6 +413,7 @@ public class VoronoiWorldGenerator : MonoBehaviour {
             for (int j = i + 1; j < allRegions.Count; j++) {
                 if (AreRegionsAdjacent(allRegions[i], allRegions[j])) {
                     adjacentPairsFound++;
+                    Debug.Log($"[VoronoiWorldGenerator.GenerateEdges] Found adjacent pair: {allRegions[i].Id} ↔ {allRegions[j].Id}");
                     var key = (allRegions[i].Id < allRegions[j].Id)
                         ? (allRegions[i].Id, allRegions[j].Id)
                         : (allRegions[j].Id, allRegions[i].Id);
@@ -424,6 +426,9 @@ public class VoronoiWorldGenerator : MonoBehaviour {
         }
 
         Debug.Log($"[VoronoiWorldGenerator] Found {adjacentPairsFound} adjacent region pairs, created {edges.Count} edges");
+        if (edges.Count == 0) {
+            Debug.LogWarning("[VoronoiWorldGenerator] WARNING: No edges were created! Check AreRegionsAdjacent and FindSharedBoundaryVertices");
+        }
     }
 
     private bool AreRegionsAdjacent(VoronoiRegion a, VoronoiRegion b) {
@@ -443,14 +448,17 @@ public class VoronoiWorldGenerator : MonoBehaviour {
     private void CreateEdgeObject(int regionA, int regionB) {
         var regionAData = TerrainData.GetRegion(regionA);
         var regionBData = TerrainData.GetRegion(regionB);
-        if (regionAData == null || regionBData == null)
+        if (regionAData == null || regionBData == null) {
+            Debug.LogWarning($"[VoronoiWorldGenerator.CreateEdgeObject] Region data not found: {regionA}={regionAData}, {regionB}={regionBData}");
             return;
+        }
 
         // Find shared vertices between two regions
         var sharedVertices = FindSharedBoundaryVertices(regionAData, regionBData);
         Debug.Log($"[VoronoiWorldGenerator] Edge {regionA}-{regionB}: found {sharedVertices.Count} shared vertices");
 
         if (sharedVertices.Count < 2) {
+            Debug.LogWarning($"[VoronoiWorldGenerator.CreateEdgeObject] Edge {regionA}-{regionB} has only {sharedVertices.Count} shared vertices (need 2+)");
             return;
         }
 
@@ -499,9 +507,12 @@ public class VoronoiWorldGenerator : MonoBehaviour {
         var shared = new List<Vector3>();
         const float threshold = 1.0f; // Match or exceed AreRegionsAdjacent proximity
 
+        Debug.Log($"[FindSharedBoundaryVertices] Checking regions {a.Id}↔{b.Id}: {a.Polygon.Count}+{b.Polygon.Count} vertices");
+
         foreach (var vertexA in a.Polygon) {
             foreach (var vertexB in b.Polygon) {
-                if (Vector3.Distance(vertexA, vertexB) < threshold) {
+                float dist = Vector3.Distance(vertexA, vertexB);
+                if (dist < threshold) {
                     // Check if we already have this vertex
                     bool alreadyAdded = false;
                     foreach (var v in shared) {
@@ -510,11 +521,15 @@ public class VoronoiWorldGenerator : MonoBehaviour {
                             break;
                         }
                     }
-                    if (!alreadyAdded)
+                    if (!alreadyAdded) {
+                        Debug.Log($"[FindSharedBoundaryVertices] Found shared vertex at {vertexA} (dist={dist:F3})");
                         shared.Add(vertexA);
+                    }
                 }
             }
         }
+
+        Debug.Log($"[FindSharedBoundaryVertices] Result: {shared.Count} unique shared vertices for {a.Id}↔{b.Id}");
 
         // Sort shared vertices along the line connecting them
         if (shared.Count >= 2) {

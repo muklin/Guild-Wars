@@ -124,7 +124,7 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
 
         Log("Terrain placement complete.");
 
-        AdvanceToDistrictSetup();
+        InitializeCitySubdivisionStep();
         return true;
     }
 
@@ -189,6 +189,86 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
 
         Log("Terrain setup initialized. Click regions and assign terrain types, or switch to edge mode for cliffs/rivers.");
         Debug.Log("[InitializeTerrainStep] COMPLETE - returning to OnPhaseStart");
+    }
+
+    // ─── STEP 1b: CITY SUBDIVISION ────────────────────────────────────
+
+    private void InitializeCitySubdivisionStep()
+    {
+        Log("Step 1b: City Subdivision — generating district boundaries...");
+
+        // 1. Retrieve the city region polygon
+        var cityRegions = gsm.WorldTerrainData.GetRegionsByType(TerrainType.City);
+        if (cityRegions.Count == 0) { Log("ERROR: City region not found."); return; }
+
+        var cityRegion = cityRegions[0];
+        var poly = cityRegion.Polygon;
+
+        // 2. Compute bounding center and radius for camera focus
+        var center = poly.Aggregate(Vector3.zero, (a, b) => a + b) / poly.Count;
+        float radius = 0f;
+        foreach (var v in poly) {
+            float dist = Vector3.Distance(v, center);
+            if (dist > radius) radius = dist;
+        }
+
+        // 3. Focus camera
+        var cam = Object.FindAnyObjectByType<CameraController>();
+        if (cam != null) {
+            cam.FocusOn(center, radius);
+            Log("Camera focused on city region.");
+        }
+
+        // 4. Create CityVoronoiGenerator on the CityVisualization GameObject
+        var cityViz = Object.FindAnyObjectByType<CityVisualization>();
+        if (cityViz == null) { Log("ERROR: CityVisualization not found."); return; }
+
+        var cityGen = cityViz.gameObject.AddComponent<CityVoronoiGenerator>();
+        cityGen.Generate(cityRegion.Polygon, 6);
+        Log($"City subdivided into {gsm.CityDistrictData.DistrictCount} districts.");
+
+        // 5. Create UI panel
+        var mainCanvasGO = GameObject.Find("MainCanvas");
+        if (mainCanvasGO == null) { Log("ERROR: MainCanvas not found."); return; }
+
+        var mainCanvas = mainCanvasGO.GetComponent<Canvas>();
+        if (mainCanvas == null) { Log("ERROR: Canvas not found on MainCanvas."); return; }
+
+        var panelGO = new GameObject("DistrictTypePanel");
+        panelGO.transform.SetParent(mainCanvas.transform, false);
+        panelGO.AddComponent<RectTransform>();
+        var districtPanel = panelGO.AddComponent<DistrictTypePanel>();
+
+        // 6. Create selection controller
+        var mainCamera = Object.FindAnyObjectByType<Camera>();
+        var selController = cityViz.gameObject.AddComponent<CityDistrictSelectionController>();
+        selController.Initialize(cityGen, this, mainCamera, districtPanel);
+        selController.BeginDistrictSelection();
+        Log("District selection controller initialized.");
+
+        // 7. Initialize panel
+        districtPanel.Initialize(selController, this);
+        Log("District UI panel initialized.");
+
+        // 8. Advance step
+        SetStep(SetupPhaseStep.CitySubdivision);
+    }
+
+    /// <summary>Called by DistrictTypePanel when player finishes district classification.</summary>
+    public bool FinishCitySubdivision()
+    {
+        if (CurrentStep != SetupPhaseStep.CitySubdivision)
+            return false;
+
+        Log("City subdivision complete. Advancing to district setup.");
+        AdvanceToDistrictSetup();
+        return true;
+    }
+
+    /// <summary>Called by selection controller to record a district classification.</summary>
+    public void RecordDistrictClassAssignment(int districtId, DistrictClass cls)
+    {
+        Log($"District {districtId} classified as {cls}.");
     }
 
     // ─── STEP 2: DISTRICT SETUP ───────────────────────────────────────
@@ -691,6 +771,7 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
 public enum SetupPhaseStep
 {
     Terrain,
+    CitySubdivision,
     DistrictSetup,
     HQPlacement,
     GuildSetup,
