@@ -167,6 +167,12 @@ public class EdgeSelectionController : MonoBehaviour {
     }
 
     private bool CanSelectEdge(VoronoiEdge edge) {
+        // Prevent selecting already-assigned edges
+        if (edge.IsAssigned) {
+            Debug.LogWarning($"Edge {edge.id} is already assigned a feature and cannot be selected");
+            return false;
+        }
+
         // Allow selecting edges without restriction during selection
         // Validation happens when user chooses feature type and applies
         if (selectedEdges.Count > 0) {

@@ -114,9 +114,9 @@ public class TerrainSelectionController : MonoBehaviour {
 
             var region = worldGen.GetRegionAtWorldPos(hitPoint);
             if (region != null) {
-                // Prevent selecting the city region (it's pre-assigned as City terrain)
-                if (region.AssignedType == TerrainType.City) {
-                    Debug.Log("[TerrainSelectionController] Cannot select city region — it is locked");
+                // Prevent selecting already-assigned regions
+                if (region.AssignedType.HasValue) {
+                    Debug.Log($"[TerrainSelectionController] Cannot select region {region.Id} — it is already assigned {region.AssignedType}");
                     return;
                 }
 
