@@ -66,7 +66,7 @@ public class GameStatePanel : UIPanel {
             var lblGO = new GameObject(stepNames[i]);
             lblGO.transform.SetParent(progressGO.transform, false);
             var lbl = lblGO.AddComponent<Text>();
-            lbl.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            lbl.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             lbl.text = stepNames[i];
             lbl.fontSize = 14;
             lbl.color = Color.gray;

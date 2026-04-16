@@ -67,9 +67,9 @@ public class DistrictTypePanel : MonoBehaviour {
         var headerGO = new GameObject("Header");
         headerGO.transform.SetParent(transform, false);
         var headerText = headerGO.AddComponent<Text>();
-        headerText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        headerText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         headerText.text = "District Setup";
-        headerText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        headerText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         headerText.fontSize = 16;
         headerText.fontStyle = FontStyle.Bold;
         headerText.color = Color.white;
@@ -99,7 +99,7 @@ public class DistrictTypePanel : MonoBehaviour {
             btn.targetGraphic = btnImage;
 
             var btnText = btnGO.AddComponent<Text>();
-            btnText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            btnText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             btnText.text = cls.ToString();
             btnText.fontSize = 10;
             btnText.alignment = TextAnchor.MiddleCenter;
@@ -118,7 +118,7 @@ public class DistrictTypePanel : MonoBehaviour {
         var descLabelGO = new GameObject("DescriptionLabel");
         descLabelGO.transform.SetParent(transform, false);
         var descLabel = descLabelGO.AddComponent<Text>();
-        descLabel.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        descLabel.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         descLabel.text = "Description:";
         descLabel.fontSize = 12;
         descLabel.color = Color.white;
@@ -132,7 +132,7 @@ public class DistrictTypePanel : MonoBehaviour {
         descInputImage.color = Color.white;
         descriptionInput = descInputGO.AddComponent<InputField>();
         var descInputText = descInputGO.AddComponent<Text>();
-        descInputText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        descInputText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         descInputText.fontSize = 12;
         descInputText.color = Color.black;
         descriptionInput.textComponent = descInputText;
@@ -143,7 +143,7 @@ public class DistrictTypePanel : MonoBehaviour {
         var statusGO = new GameObject("StatusText");
         statusGO.transform.SetParent(transform, false);
         statusText = statusGO.AddComponent<Text>();
-        statusText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        statusText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         statusText.text = "Select a district to classify";
         statusText.fontSize = 10;
         statusText.color = Color.yellow;
@@ -158,7 +158,7 @@ public class DistrictTypePanel : MonoBehaviour {
         applyButton = applyBtnGO.AddComponent<Button>();
         applyButton.targetGraphic = applyBtnImage;
         var applyBtnText = applyBtnGO.AddComponent<Text>();
-        applyBtnText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        applyBtnText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         applyBtnText.text = "Assign";
         applyBtnText.fontSize = 12;
         applyBtnText.color = Color.white;
@@ -175,7 +175,7 @@ public class DistrictTypePanel : MonoBehaviour {
         doneButton = doneBtnGO.AddComponent<Button>();
         doneButton.targetGraphic = doneBtnImage;
         var doneBtnText = doneBtnGO.AddComponent<Text>();
-        doneBtnText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        doneBtnText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         doneBtnText.text = "Finish Districts";
         doneBtnText.fontSize = 12;
         doneBtnText.color = Color.white;
