@@ -1,4 +1,5 @@
 import TerrainTypePanel from './TerrainTypePanel.js'
+import DistrictClassPanel from './DistrictClassPanel.js'
 
 export default class UIManager {
   constructor(eventBus, renderer) {
@@ -7,6 +8,7 @@ export default class UIManager {
     this.panels = new Map()
     this.currentStep = null
     this.terrainTypePanel = new TerrainTypePanel(eventBus)
+    this.districtClassPanel = new DistrictClassPanel(eventBus)
   }
 
   init() {
@@ -61,13 +63,27 @@ export default class UIManager {
   createErrorPopup(container) {
     const errorPopup = document.createElement('div')
     errorPopup.id = 'error-popup'
-    errorPopup.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:none;z-index:30'
+    errorPopup.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:none;z-index:30;pointer-events:auto'
     const errorBox = document.createElement('div')
-    errorBox.style.cssText = 'position:absolute;left:30%;right:30%;top:47%;transform:translateY(-50%);width:40%'
-    errorBox.innerHTML = '<div id="error-message" style="text-align:center;padding:20px"></div><button id="error-ok-btn" style="width:100%">OK</button>'
+    errorBox.style.cssText = 'position:absolute;left:30%;right:30%;top:47%;transform:translateY(-50%);width:40%;background:#2a2a2a;border:2px solid #666;border-radius:4px;padding:20px'
+
+    const message = document.createElement('div')
+    message.id = 'error-message'
+    message.style.cssText = 'text-align:center;padding:20px;color:#fff'
+
+    const btn = document.createElement('button')
+    btn.id = 'error-ok-btn'
+    btn.textContent = 'OK'
+    btn.style.cssText = 'width:100%;padding:10px;background:#4a7c59;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer'
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.hideError()
+    })
+
+    errorBox.appendChild(message)
+    errorBox.appendChild(btn)
     errorPopup.appendChild(errorBox)
     container.appendChild(errorPopup)
-    document.getElementById('error-ok-btn').addEventListener('click', () => this.hideError())
   }
 
   showSetupPhase(step) {
@@ -80,8 +96,8 @@ export default class UIManager {
       this.terrainTypePanel.addFinishButton(leftPanel)
       rightPanel.innerHTML = '<h2>Terrain Setup</h2><p>Click a region to select it, then choose a terrain type from the left. Or click an edge to select it and assign a cliff or river.</p>'
     } else if (step === 'CitySubdivision') {
-      leftPanel.innerHTML = ''
-      rightPanel.innerHTML = '<h2>City Districts</h2><p>Click to assign district classes.</p>'
+      this.districtClassPanel.render(leftPanel)
+      rightPanel.innerHTML = '<h2>City Districts</h2><p>Click a district to select it, then choose a class from the left panel.</p>'
     } else {
       rightPanel.innerHTML = '<h2>Setup</h2>'
     }

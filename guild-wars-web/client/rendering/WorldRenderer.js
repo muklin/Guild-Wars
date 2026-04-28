@@ -10,7 +10,9 @@ export default class WorldRenderer {
     this.cameraController = null
     this.regionMeshes = new Map()
     this.edgeMeshes = new Map()
+    this.districtMeshes = new Map()
     this.terrainData = null
+    this.cityDistrictData = null
     this.worldSize = 50
     this.isPaused = false
     this.godMode = false
@@ -70,7 +72,7 @@ export default class WorldRenderer {
         this.toggleGodMode()
         e.preventDefault()
       }
-      if (e.code === 'KeyD') {
+      if (e.code === 'KeyD' && e.shiftKey) {
         this.toggleDebugVisualization()
         e.preventDefault()
       }
@@ -87,6 +89,12 @@ export default class WorldRenderer {
     if (edges && Object.keys(edges).length > 0) {
       this.renderEdges(edges)
     }
+  }
+
+  setCityDistrictData(districts) {
+    console.log('setCityDistrictData called with', districts.length, 'districts')
+    this.cityDistrictData = { districts }
+    this.renderDistricts(districts)
   }
 
   renderTerrain(regions) {
@@ -296,6 +304,67 @@ export default class WorldRenderer {
     }
   }
 
+  updateDistrictColor(districtId, districtClass) {
+    const mesh = this.districtMeshes.get(districtId)
+    if (mesh) {
+      const color = TerrainColors.get(districtClass) || TerrainColors.Neutral
+      mesh.material.color.setHex(color)
+    }
+  }
+
+  renderDistricts(districts) {
+    this.districtMeshes.forEach(mesh => this.scene.remove(mesh))
+    this.districtMeshes.clear()
+
+    console.log(`Rendering ${districts.length} city districts`)
+    for (const district of districts) {
+      const mesh = this.buildDistrictMesh(district)
+      if (mesh) {
+        this.scene.add(mesh)
+        this.districtMeshes.set(district.id, mesh)
+      }
+    }
+  }
+
+  buildDistrictMesh(district) {
+    if (!district.boundary || district.boundary.length < 3) {
+      console.warn(`District ${district.id} has invalid boundary`)
+      return null
+    }
+
+    const polygon = [...district.boundary]
+    polygon.reverse()
+    const vertices = polygon.map(v => [v.x, 0.07, v.y]).flat()
+
+    const triangles = []
+    for (let i = 1; i < polygon.length - 1; i++) {
+      triangles.push(0, i, i + 1)
+    }
+
+    if (triangles.length === 0) return null
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
+    geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(triangles), 1))
+    geometry.computeVertexNormals()
+    geometry.computeBoundingBox()
+
+    const color = TerrainColors.get(district.class) || TerrainColors.Neutral
+    const material = new THREE.MeshStandardMaterial({
+      color: color,
+      roughness: 0.5,
+      metalness: 0,
+      transparent: true,
+      opacity: 0.8,
+      emissive: color,
+      emissiveIntensity: 0.1
+    })
+
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.userData = { districtId: district.id, districtClass: district.class }
+    return mesh
+  }
+
   getRegionAtWorldPos(worldX, worldY) {
     if (!this.terrainData) return null
 
@@ -340,6 +409,17 @@ export default class WorldRenderer {
     const distX = px - closestX
     const distY = py - closestY
     return Math.sqrt(distX * distX + distY * distY)
+  }
+
+  getDistrictAtWorldPos(worldX, worldY) {
+    if (!this.cityDistrictData) return null
+
+    for (const district of this.cityDistrictData.districts) {
+      if (this.pointInPolygon(worldX, worldY, district.boundary)) {
+        return district
+      }
+    }
+    return null
   }
 
   pointInPolygon(x, y, polygon) {

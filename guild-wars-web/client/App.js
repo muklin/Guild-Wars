@@ -13,6 +13,7 @@ export default class App {
     this.gameState = null
     this.selectedRegionId = null
     this.selectedEdgeId = null
+    this.selectedDistrictId = null
     this.selectedTerrainType = null
   }
 
@@ -53,6 +54,13 @@ export default class App {
       this.selectedEdgeId = edge.id
       this.selectedRegionId = null
       console.log('Edge selected:', edge.id)
+    })
+
+    this.eventBus.on('DISTRICT_CLICKED', (districtId) => {
+      this.selectedDistrictId = districtId
+      this.selectedRegionId = null
+      this.selectedEdgeId = null
+      console.log('District selected:', districtId)
     })
 
     this.eventBus.on('TERRAIN_ASSIGNED', async (data) => {
@@ -97,12 +105,48 @@ export default class App {
       }
     })
 
+    this.eventBus.on('DISTRICT_CLASS_ASSIGNED', async (data) => {
+      if (!this.selectedDistrictId) {
+        this.uiManager.showError('Please select a district first')
+        return
+      }
+
+      try {
+        const response = await GameAPI.assignDistrictClass(this.selectedDistrictId, data.districtClass)
+        if (response.ok) {
+          this.gameState = response
+          this.renderer.updateDistrictColor(this.selectedDistrictId, data.districtClass)
+          this.uiManager.showSuccess(`Assigned ${data.districtClass} to district ${this.selectedDistrictId}`)
+          this.selectedDistrictId = null
+        } else {
+          this.uiManager.showError(response.error)
+        }
+      } catch (error) {
+        this.uiManager.showError(error.message)
+      }
+    })
+
     this.eventBus.on('TERRAIN_COMPLETE', async () => {
       try {
         const response = await GameAPI.finishTerrain()
         if (response.ok) {
           this.gameState = response
+          this.renderer.setCityDistrictData(response.districts || [])
           this.uiManager.showSetupPhase('CitySubdivision')
+        } else {
+          this.uiManager.showError(response.error)
+        }
+      } catch (error) {
+        this.uiManager.showError(error.message)
+      }
+    })
+
+    this.eventBus.on('SUBDIVISION_COMPLETE', async () => {
+      try {
+        const response = await GameAPI.finishSubdivision()
+        if (response.ok) {
+          this.gameState = response
+          this.uiManager.showSetupPhase('GuildCreation')
         } else {
           this.uiManager.showError(response.error)
         }
@@ -118,6 +162,9 @@ export default class App {
       if (response.ok) {
         this.gameState = response
         this.renderer.setTerrainData(response.regions, response.edges || {})
+        if (response.districts) {
+          this.renderer.setCityDistrictData(response.districts)
+        }
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')
         this.eventBus.emit('SETUP_STARTED')
