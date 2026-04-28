@@ -1,141 +1,144 @@
 @startuml Guild Wars Web Architecture
-
-!define RECTANGLE(name, desc) rectangle name [ desc ]
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
 
-title Guild Wars Web Project - C4 Architecture Diagram
+title Guild Wars Web Project - C4 Component Architecture
 
 Person(user, "Player", "Plays the Guild Wars web game")
 
-System_Boundary(browser, "Web Browser") {
-  Container(vite, "Vite Dev Server", "JavaScript", "Builds and serves client code\nHot Module Replacement")
+Container(browser, "Web Browser", "Chrome/Firefox/Safari", "User's browser environment")
+Container(nodejs, "Node.js Server", "Express.js", "Game engine and state management")
 
-  System_Boundary(client, "Client Application") {
-    Component(main, "main.js", "JavaScript", "Application entry point")
-    Component(app, "App.js", "JavaScript", "Main game controller\nEvent routing and state management")
+System_Boundary(client, "Client Application") {
+  Component(main, "main.js", "JavaScript", "Entry point, initializes App")
+  Component(app, "App.js", "JavaScript", "Game controller, event routing, state management")
 
-    System_Boundary(rendering, "Rendering System") {
-      Component(renderer, "WorldRenderer.js", "Three.js", "Scene setup, mesh management\nGeometry rendering and color updates")
-      Component(camera, "CameraController.js", "Three.js", "Orthographic camera control\nGaze-lock panning, zoom, rotation")
-      Component(colors, "TerrainColors.js", "JavaScript", "Color palette mappings\nTerrain and district color definitions")
-    }
+  System_Boundary(rendering, "Rendering System") {
+    Component(renderer, "WorldRenderer.js", "Three.js", "Scene setup, mesh management, geometry")
+    Component(camera, "CameraController.js", "Three.js", "Orthographic camera, gaze-lock panning, zoom, rotation")
+    Component(colors, "TerrainColors.js", "JavaScript", "Color palette for terrain and districts")
+  }
 
-    System_Boundary(input, "Input Handling") {
-      Component(handler, "InputHandler.js", "JavaScript", "Click and hover detection\nPoint-in-polygon and line-distance algorithms")
-      Component(eventbus, "EventBus.js", "JavaScript", "Client-side event pub/sub\nDecouples UI and game logic")
-    }
+  System_Boundary(input, "Input System") {
+    Component(handler, "InputHandler.js", "JavaScript", "Click/hover detection, point-in-polygon, line-distance")
+    Component(eventbus, "EventBus.js", "JavaScript", "Client event pub/sub system")
+  }
 
-    System_Boundary(ui, "UI System") {
-      Component(uimgr, "UIManager.js", "HTML/CSS", "Panel layout and visibility\nError/success dialogs")
-      Component(terrain_panel, "TerrainTypePanel.js", "HTML/CSS", "Terrain and edge type selection UI")
-      Component(district_panel, "DistrictClassPanel.js", "HTML/CSS", "District class selection UI")
-    }
+  System_Boundary(ui, "UI System") {
+    Component(uimgr, "UIManager.js", "HTML/CSS", "Panel layout, dialogs, phase UI switching")
+    Component(terrain_panel, "TerrainTypePanel.js", "HTML/CSS", "Terrain and edge type selection")
+    Component(district_panel, "DistrictClassPanel.js", "HTML/CSS", "District class selection")
+  }
 
-    System_Boundary(api, "API Client") {
-      Component(gameapi, "GameAPI.js", "JavaScript", "REST API wrapper\nRequest/response handling")
-    }
+  System_Boundary(api, "API Client") {
+    Component(gameapi, "GameAPI.js", "JavaScript", "REST API wrapper")
   }
 }
 
-System_Boundary(server, "Node.js Server") {
-  Container(express, "Express.js", "JavaScript", "HTTP server and routing\nStatic file serving")
+System_Boundary(server, "Game Engine") {
+  Component(index, "index.js", "Express.js", "HTTP server, REST endpoints, routing")
+  Component(statemanager, "GameStateManager.js", "JavaScript", "Singleton game state store")
+  Component(setup, "SetupPhase.js", "JavaScript", "Setup state machine, terrain/edge/district assignment")
+  Component(phasemgr, "PhaseManager.js", "JavaScript", "Game phase transitions")
 
-  System_Boundary(engine, "Game Engine") {
-    Component(statemanager, "GameStateManager.js", "JavaScript", "Singleton game state\nWorld and city data storage")
-    Component(setup_phase, "SetupPhase.js", "JavaScript", "Setup phase state machine\nTerrain, edge, district assignment")
-    Component(phase_mgr, "PhaseManager.js", "JavaScript", "Phase transitions\nUpkeep, Planning, Execution, Bills")
+  System_Boundary(voronoi, "Voronoi Engine") {
+    Component(mergedvoro, "MergedVoronoiGenerator.js", "JavaScript", "Terrain region generation (15 regions)")
+    Component(cityvoro, "CityVoronoiGenerator.js", "JavaScript", "City district subdivision (6 districts)")
+    Component(delaunay, "DelaunayTriangulator.js", "JavaScript", "Bowyer-Watson triangulation")
+    Component(point, "Point.js", "JavaScript", "2D point data structure")
+    Component(triangle, "Triangle.js", "JavaScript", "Triangle with circumcircle math")
+  }
 
-    System_Boundary(voronoi, "Voronoi Generation") {
-      Component(merged_voronoi, "MergedVoronoiGenerator.js", "JavaScript", "Multi-scale Voronoi with region merging")
-      Component(city_voronoi, "CityVoronoiGenerator.js", "JavaScript", "City district grid subdivision")
-      Component(delaunay, "DelaunayTriangulator.js", "JavaScript", "Bowyer-Watson triangulation algorithm")
-      Component(point, "Point.js", "JavaScript", "2D point data structure")
-      Component(triangle, "Triangle.js", "JavaScript", "Triangle with circumcircle calculations")
-      Component(edge, "Edge.js", "JavaScript", "Edge representation for Delaunay")
-    }
-
-    System_Boundary(domain, "Domain Models") {
-      Component(faction, "Faction.js", "JavaScript", "Base faction class (auto ID >= 100)")
-      Component(guild, "Guild.js", "JavaScript", "Player/NPC guilds (ID 1-99)")
-      Component(district, "District.js", "JavaScript", "City districts (extends Faction)")
-      Component(character, "GuildCharacter.js", "JavaScript", "Guild members with attributes")
-      Component(threat, "Threat.js", "JavaScript", "Threats to districts")
-      Component(tradeable, "Tradeable.js", "JavaScript", "Trade resources")
-      Component(destination, "TradingDestination.js", "JavaScript", "Trade route endpoints")
-    }
+  System_Boundary(domain, "Domain Models") {
+    Component(faction, "Faction.js", "JavaScript", "Base faction (ID >= 100)")
+    Component(guild, "Guild.js", "JavaScript", "Guild factions (ID 1-99)")
+    Component(district, "District.js", "JavaScript", "City districts")
+    Component(character, "GuildCharacter.js", "JavaScript", "Guild members with stats")
   }
 }
 
-System_Boundary(database, "Persistence") {
-  Container(gamestate, "Game State", "JSON", "Full game state snapshot\nSerializable for save/load")
-}
+Container(gamestate, "Game State", "JSON Serializable", "Full game snapshot for persistence")
 
-user --> vite : Opens browser\nto localhost:5173
+' Relationships from User
+Rel(user, browser, "Opens in browser", "HTTP")
 
-vite --> main : Serves
+' Browser to Client
+Rel(browser, main, "Loads", "JavaScript")
+Rel(main, app, "Creates instance", "JavaScript")
 
-main --> app : Creates
+' App to subsystems
+Rel(app, renderer, "Renders world", "Three.js API")
+Rel(app, handler, "Initializes input", "Event listeners")
+Rel(app, uimgr, "Creates UI", "HTML/DOM")
+Rel(app, gameapi, "Calls API", "Fetch")
 
-app --> renderer : Renders terrain/edges/districts
-app --> handler : Detects clicks
-app --> uimgr : Shows UI panels
-app --> gameapi : Calls API endpoints
+' Input system
+Rel(handler, eventbus, "Emits events", "EventBus")
+Rel(eventbus, app, "Delivers events", "Callbacks")
 
-handler --> eventbus : Emits events
-terrain_panel --> eventbus : Emits TERRAIN_ASSIGNED
-district_panel --> eventbus : Emits DISTRICT_CLASS_ASSIGNED
+' UI system
+Rel(terrain_panel, eventbus, "Emits TERRAIN_ASSIGNED", "EventBus")
+Rel(district_panel, eventbus, "Emits DISTRICT_CLASS_ASSIGNED", "EventBus")
+Rel(uimgr, terrain_panel, "Shows during Terrain phase", "DOM manipulation")
+Rel(uimgr, district_panel, "Shows during CitySubdivision", "DOM manipulation")
 
-eventbus --> app : Delivers events
-uimgr --> terrain_panel : Shows when Terrain phase
-uimgr --> district_panel : Shows when CitySubdivision phase
+' Rendering system
+Rel(renderer, colors, "Looks up colors", "TerrainColors.get()")
+Rel(camera, renderer, "Updates camera view", "Three.js scene")
 
-gameapi --> express : HTTP POST/GET requests
+' API communication
+Rel(gameapi, index, "HTTP POST/GET", "REST JSON")
+Rel(gameapi, browser, "Receives JSON", "HTTP response")
 
-express --> statemanager : Reads/updates state
-express --> setup_phase : Executes setup actions
+' Server side
+Rel(index, statemanager, "Reads/Updates", "Direct access")
+Rel(index, setup, "Executes commands", "Method calls")
+Rel(index, phasemgr, "Transitions phases", "Method calls")
 
-setup_phase --> merged_voronoi : Generates terrain regions
-setup_phase --> city_voronoi : Subdivides cities
+' Setup phase
+Rel(setup, mergedvoro, "Generates regions", "VoronoiWorldGenerator.generate()")
+Rel(setup, cityvoro, "Subdivides cities", "CityVoronoiGenerator.generate()")
+Rel(setup, statemanager, "Updates state", "GameStateManager.worldTerrainData")
 
-merged_voronoi --> delaunay : Triangulates points
-delaunay --> point : Uses points
-delaunay --> triangle : Creates triangles
-delaunay --> edge : Finds edges
+' Voronoi engine
+Rel(mergedvoro, delaunay, "Triangulates", "DelaunayTriangulator")
+Rel(delaunay, point, "Uses points", "Point objects")
+Rel(delaunay, triangle, "Creates triangles", "Triangle objects")
 
-setup_phase --> statemanager : Updates with results
+' Domain models
+Rel(statemanager, guild, "Manages", "Guild instances")
+Rel(statemanager, district, "Manages", "District instances")
+Rel(guild, character, "Has members", "GuildCharacter[]*")
 
-statemanager --> gamestate : Persists state
+' Persistence
+Rel(statemanager, gamestate, "Serializes to", "JSON")
 
-gameapi --> express : Receives JSON response
-renderer --> colors : Looks up colors
-camera --> renderer : Updates view
+' Rendering receives data
+Rel(setup, renderer, "Sends terrain data", "setTerrainData(regions, edges)")
+Rel(setup, renderer, "Sends city data", "setCityDistrictData(districts)")
 
-note right of vite
-  Proxies /api to localhost:3001
-  Enables HMR for rapid development
+' Notes
+note on link from app to gameapi
+  POST /api/setup/init
+  POST /api/setup/terrain/assign
+  POST /api/setup/terrain/edge
+  POST /api/setup/terrain/done
+  POST /api/setup/subdivision/assign
 end note
 
-note right of handler
-  Region detection: Point-in-polygon (winding number)
-  Edge detection: Point-to-line-segment distance (1.5 unit threshold)
-  District detection: Point-in-polygon
+note on link from handler to renderer
+  Region: point-in-polygon
+  Edge: point-to-line-segment
+  District: point-in-polygon
 end note
 
-note right of camera
-  Orthographic camera at (25, 60, 25)
-  Looking at (25, 0, 25)
-  Gaze-lock panning: raycast to y=0 plane, calculate offset
-  Zoom: 0.5x to 3.0x via orthographic scale
-  Rotation: Q/E snap 90°, orbits around center point
+note on link from camera to renderer
+  Orthographic at (25,60,25)
+  Looking at (25,0,25)
+  Gaze-lock: raycast to y=0 plane
+  Zoom: 0.5x to 3.0x
+  Rotate: Q/E snap 90°
 end note
 
-note right of setup_phase
-  5 steps:
-  1. Generate terrain (15 regions)
-  2. Assign terrain types
-  3. Assign edge types
-  4. Assign district classes
-  5. Complete setup
-end note
+SHOW_LEGEND()
 
 @enduml
