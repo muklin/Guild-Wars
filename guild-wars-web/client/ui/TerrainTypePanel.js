@@ -79,6 +79,14 @@ export default class TerrainTypePanel {
     container.appendChild(buttonContainer)
   }
 
+  addFinishButton(container) {
+    const finishBtn = document.createElement('button')
+    finishBtn.textContent = 'Finish Terrain Setup'
+    finishBtn.style.cssText = 'width:100%;padding:10px;margin-top:15px;background:#3d5a3d;color:#fff;border:1px solid #4a7c59;cursor:pointer;border-radius:3px'
+    finishBtn.addEventListener('click', () => this.eventBus.emit('TERRAIN_COMPLETE'))
+    container.appendChild(finishBtn)
+  }
+
   setMode(mode) {
     this.mode = mode
     if (this.container) {

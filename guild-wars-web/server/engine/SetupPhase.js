@@ -11,6 +11,7 @@ export default class SetupPhase {
     this.selectedRegionId = null
     this.selectedDistrictId = null
     this.terrainPlacements = []
+    this.edgePlacements = []
     this.districtClassAssignments = new Map()
   }
 
@@ -76,6 +77,26 @@ export default class SetupPhase {
     region.assignedType = terrainType
     this.terrainPlacements.push({ regionId, terrainType })
     this.log.push(`Assigned ${terrainType} to region ${regionId}`)
+
+    return {
+      ok: true,
+      log: this.log
+    }
+  }
+
+  assignEdgeType(edgeId, edgeType) {
+    const edge = this.gameStateManager.worldTerrainData.edges[edgeId]
+    if (!edge) {
+      throw new Error(`Edge ${edgeId} not found`)
+    }
+
+    if (edge.assignedType) {
+      throw new Error(`Edge ${edgeId} is already assigned ${edge.assignedType}`)
+    }
+
+    edge.assignedType = edgeType
+    this.edgePlacements.push({ edgeId, edgeType })
+    this.log.push(`Assigned ${edgeType} to edge ${edgeId}`)
 
     return {
       ok: true,

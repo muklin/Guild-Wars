@@ -12,6 +12,7 @@ export default class App {
     this.eventBus = new EventBus()
     this.gameState = null
     this.selectedRegionId = null
+    this.selectedEdgeId = null
     this.selectedTerrainType = null
   }
 
@@ -41,10 +42,17 @@ export default class App {
   }
 
   setupEventListeners() {
-    // Terrain placement
+    // Terrain and edge placement
     this.eventBus.on('REGION_CLICKED', (regionId) => {
       this.selectedRegionId = regionId
+      this.selectedEdgeId = null
       console.log('Region selected:', regionId)
+    })
+
+    this.eventBus.on('EDGE_CLICKED', (edge) => {
+      this.selectedEdgeId = edge.id
+      this.selectedRegionId = null
+      console.log('Edge selected:', edge.id)
     })
 
     this.eventBus.on('TERRAIN_ASSIGNED', async (data) => {
@@ -60,6 +68,27 @@ export default class App {
           this.renderer.updateRegionColor(this.selectedRegionId, data.terrainType)
           this.uiManager.showSuccess(`Assigned ${data.terrainType} to region ${this.selectedRegionId}`)
           this.selectedRegionId = null
+        } else {
+          this.uiManager.showError(response.error)
+        }
+      } catch (error) {
+        this.uiManager.showError(error.message)
+      }
+    })
+
+    this.eventBus.on('EDGE_ASSIGNED', async (data) => {
+      if (!this.selectedEdgeId) {
+        this.uiManager.showError('Please select an edge first')
+        return
+      }
+
+      try {
+        const response = await GameAPI.assignEdge(this.selectedEdgeId, data.edgeType)
+        if (response.ok) {
+          this.gameState = response
+          this.renderer.updateEdgeColor(this.selectedEdgeId, data.edgeType)
+          this.uiManager.showSuccess(`Assigned ${data.edgeType} to edge ${this.selectedEdgeId}`)
+          this.selectedEdgeId = null
         } else {
           this.uiManager.showError(response.error)
         }

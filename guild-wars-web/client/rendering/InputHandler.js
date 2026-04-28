@@ -35,6 +35,14 @@ export default class InputHandler {
   onMouseClick(e) {
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
 
+    // Try edge click first (smaller hit area)
+    const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
+    if (edge) {
+      this.eventBus.emit('EDGE_CLICKED', edge)
+      return
+    }
+
+    // Then try region click
     const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
     if (region) {
       this.eventBus.emit('REGION_CLICKED', region.id)

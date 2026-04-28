@@ -77,7 +77,8 @@ export default class UIManager {
 
     if (step === 'Terrain') {
       this.terrainTypePanel.render(leftPanel)
-      rightPanel.innerHTML = '<h2>Terrain Setup</h2><p>Click a region to select it, then choose a terrain type.</p>'
+      this.terrainTypePanel.addFinishButton(leftPanel)
+      rightPanel.innerHTML = '<h2>Terrain Setup</h2><p>Click a region to select it, then choose a terrain type from the left. Or click an edge to select it and assign a cliff or river.</p>'
     } else if (step === 'CitySubdivision') {
       leftPanel.innerHTML = ''
       rightPanel.innerHTML = '<h2>City Districts</h2><p>Click to assign district classes.</p>'

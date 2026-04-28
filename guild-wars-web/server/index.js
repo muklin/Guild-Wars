@@ -61,6 +61,24 @@ app.post('/api/setup/terrain/assign', (req, res) => {
   }
 })
 
+app.post('/api/setup/terrain/edge', (req, res) => {
+  try {
+    const { edgeId, edgeType } = req.body
+    const result = setupPhase.assignEdgeType(edgeId, edgeType)
+    res.json({
+      ok: result.ok,
+      edges: gameStateManager.worldTerrainData.edges,
+      log: result.log
+    })
+  } catch (error) {
+    console.error('Edge assign error:', error)
+    res.status(400).json({
+      ok: false,
+      error: error.message
+    })
+  }
+})
+
 // POST /api/setup/terrain/done - Finish terrain placement
 app.post('/api/setup/terrain/done', (req, res) => {
   try {

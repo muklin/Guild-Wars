@@ -307,6 +307,41 @@ export default class WorldRenderer {
     return null
   }
 
+  getEdgeAtWorldPos(worldX, worldY) {
+    if (!this.terrainData || !this.terrainData.edges) return null
+
+    const threshold = 1.5 // World-space distance threshold for edge detection
+    let closestEdge = null
+    let closestDistance = threshold
+
+    for (const edgeId in this.terrainData.edges) {
+      const edge = this.terrainData.edges[edgeId]
+      const distance = this.distanceToLineSegment(
+        worldX, worldY,
+        edge.startPoint.x, edge.startPoint.y,
+        edge.endPoint.x, edge.endPoint.y
+      )
+
+      if (distance < closestDistance) {
+        closestDistance = distance
+        closestEdge = { ...edge, id: edgeId }
+      }
+    }
+
+    return closestEdge
+  }
+
+  distanceToLineSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
+    const closestX = x1 + t * dx
+    const closestY = y1 + t * dy
+    const distX = px - closestX
+    const distY = py - closestY
+    return Math.sqrt(distX * distX + distY * distY)
+  }
+
   pointInPolygon(x, y, polygon) {
     let inside = false
     for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
