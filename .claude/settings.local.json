@@ -4,7 +4,16 @@
       "Bash(sed -i 's/## Phase 3: Core UI System \\(5-7 days\\)/## Phase 3: Core UI System/' \"C:/Users/Mark/.claude/plans/purrfect-growing-parrot.md\")",
       "Bash(sed -i 's/## Phase 4: Game Loop \\\\& Playability \\(3-4 days\\)/## Phase 4: Game Loop \\\\& Playability/' \"C:/Users/Mark/.claude/plans/purrfect-growing-parrot.md\")",
       "Bash(sed -i 's/## Phase 5: Testing \\\\& Balancing \\(5-7 days\\)/## Phase 5: Testing \\\\& Balancing/' \"C:/Users/Mark/.claude/plans/purrfect-growing-parrot.md\")",
-      "Bash(grep -E \"\\\\.sln$|\\\\.csproj$\")"
+      "Bash(grep -E \"\\\\.sln$|\\\\.csproj$\")",
+      "Bash(curl -s -X POST http://localhost:3001/api/setup/init)",
+      "Bash(node test-city.js)",
+      "Bash(node test-delaunay.js)",
+      "Bash(node test-delaunay2.js)",
+      "Bash(cat)",
+      "Bash(node /tmp/test-city-poly.js)",
+      "Bash(pkill -f \"node.*dev\")",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:3001/api/state)"
     ]
   }
 }

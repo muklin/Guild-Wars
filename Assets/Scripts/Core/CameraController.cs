@@ -1,0 +1,269 @@
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+/// <summary>
+/// Main controller for 3D city camera and interaction.
+/// Handles camera orbiting, zooming, panning around the city grid.
+/// </summary>
+
+public class CameraController : MonoBehaviour {
+    /// <summary>Set to false to disable camera input (e.g., when typing in UI text fields)</summary>
+    public static bool IsInputEnabled { get; set; } = true;
+
+    [SerializeField] private Camera thisCamera;
+    private float horizontal; // Input axis values for movement
+    private float vertical; // Input axis values for movement
+
+    [Header("Movement Settings")]
+    [SerializeField, Range(0f, 0.25f)]
+    private float moveSmoothing = 0.075f; // Higher = slower camera movement (more smoothing)
+    [SerializeField] private float moveSpeed = 30f; // Base movement speed; actual speed is adjusted based on zoom level for consistent feel
+    [SerializeField] private float zoomSpeed = 1f; // Higher = faster zooming; also affects movement speed for consistent feel (see moveSpeed)
+    [SerializeField] private float panSensitivity = 1.0f; // Middle mouse drag sensitivity (1.0 = 1:1 with mouse, increase for faster panning)
+
+    private Vector3 desiredCameraPosition; // The target position the camera moves towards smoothly
+
+    [Header("Rotation Settings")]
+    [SerializeField] private float rotationSpeed = 30f;
+    [SerializeField] private bool snapRotation = true; // Prevents free rotation, only allows 90° snaps
+
+    private Quaternion desiredCameraRotation;
+    private float zoomOrthographicSize = 10f;
+
+    private Vector2 lastMousePosition; // For middle mouse panning
+    private bool isMiddleMousePressed = false;
+    private Vector3 gazeLockWorldPoint; // The world point locked under the cursor when panning started
+
+    [SerializeField, Range(45f, 75f)] private float camFieldOfView = 60f;
+
+    private Vector3 startLocation = new Vector3(-15f, 35f, -15f);
+    private Quaternion startRotation = Quaternion.Euler(30f, 45f, 0f);
+
+    private void Start() {
+        if (thisCamera == null)
+            thisCamera = GetComponent<Camera>();
+        thisCamera.tag = "MainCamera";
+        thisCamera.clearFlags = CameraClearFlags.SolidColor;
+        thisCamera.backgroundColor = new Color(0.1f, 0.1f, 0.1f, 1f);
+
+        // Add lighting
+        var lightGO = new GameObject("DirectionalLight");
+        var light = lightGO.AddComponent<Light>();
+        light.type = LightType.Directional;
+        light.intensity = 1.2f;
+        lightGO.transform.rotation = Quaternion.Euler(45f, 45f, 0f);
+
+        // Isometric orthographic setup
+        thisCamera.orthographic = true;
+        thisCamera.orthographicSize = 10f;
+        thisCamera.nearClipPlane = 0.3f;
+        thisCamera.farClipPlane = 1000f;
+
+        // Initialize camera position and rotation
+        desiredCameraPosition = startLocation;
+        desiredCameraRotation = startRotation;
+        UpdateCameraPosition();
+    }
+
+    private void Update() {
+        CheckMovement();
+        CheckZoom();
+        CheckRotation();
+        CheckPan();
+    }
+
+    private void LateUpdate() {
+        MoveCamera();
+    }
+
+    private void CheckMovement() {
+        if (!IsInputEnabled)
+            return;
+
+        var keyboard = Keyboard.current;
+        if (keyboard == null)
+            return;
+
+        horizontal = 0f;
+        vertical = 0f;
+
+        if (keyboard[Key.W].isPressed || keyboard[Key.UpArrow].isPressed)
+            vertical += 1f;
+        if (keyboard[Key.S].isPressed || keyboard[Key.DownArrow].isPressed)
+            vertical -= 1f;
+        if (keyboard[Key.A].isPressed || keyboard[Key.LeftArrow].isPressed)
+            horizontal -= 1f;
+        if (keyboard[Key.D].isPressed || keyboard[Key.RightArrow].isPressed)
+            horizontal += 1f;
+
+        if (horizontal == 0f && vertical == 0f)
+            return;
+
+        // Adjust movement speed based on zoomSpeed level
+        float adjustedMoveSpeed = 1 / zoomSpeed;
+
+        Quaternion facingRotation = Quaternion.Euler(0f, desiredCameraRotation.eulerAngles.y, 0f);
+        desiredCameraPosition += facingRotation * Vector3.right * horizontal * adjustedMoveSpeed * moveSpeed * Time.deltaTime;
+        desiredCameraPosition += facingRotation * Vector3.forward * vertical * adjustedMoveSpeed * moveSpeed * Time.deltaTime;
+    }
+
+    private void CheckZoom() {
+        if (!IsInputEnabled)
+            return;
+
+        var mouse = Mouse.current;
+        if (mouse == null)
+            return;
+
+        float scrollValue = mouse.scroll.ReadValue().y;
+        if (scrollValue == 0f)
+            return;
+
+        // Normalize scroll to -1 or +1
+        scrollValue = scrollValue < 0f ? -1f : 1f; // zoom out: -1, zoom in: +1
+
+        // adjust orthographicSize (larger = more zoomed out)
+        float zoomDelta = -scrollValue * 2f; // Negative because larger size = zoom out
+        zoomOrthographicSize = Mathf.Clamp(zoomOrthographicSize + zoomDelta, 1f, 18f);
+
+    }
+
+    private void CheckRotation() {
+        if (!IsInputEnabled)
+            return;
+
+        var keyboard = Keyboard.current;
+        if (keyboard == null)
+            return;
+
+        float snapDegreeValue = 90f;
+        float rotationAngle = 0;
+
+        if (snapRotation) {
+            if (keyboard[Key.E].wasPressedThisFrame)
+                rotationAngle = snapDegreeValue;
+
+            if (keyboard[Key.Q].wasPressedThisFrame)
+                rotationAngle = -snapDegreeValue;
+        } else {
+            if (keyboard[Key.E].isPressed)
+                rotationAngle = rotationSpeed * Time.deltaTime;
+
+            if (keyboard[Key.Q].isPressed)
+                rotationAngle = -rotationSpeed * Time.deltaTime;
+        }
+
+        if (rotationAngle == 0)
+            return;
+
+        RotateBy(rotationAngle);
+    }
+
+    private void CheckPan() {
+        if (!IsInputEnabled)
+            return;
+
+        var mouse = Mouse.current;
+        if (mouse == null)
+            return;
+
+        // Track middle mouse button state
+        if (mouse.middleButton.wasPressedThisFrame) {
+            isMiddleMousePressed = true;
+            lastMousePosition = mouse.position.ReadValue();
+
+            // Cast ray to find the world point under the cursor
+            Ray ray = thisCamera.ScreenPointToRay(lastMousePosition);
+            Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
+            if (groundPlane.Raycast(ray, out float distance)) {
+                gazeLockWorldPoint = ray.origin + ray.direction * distance;
+            }
+        } else if (mouse.middleButton.wasReleasedThisFrame) {
+            isMiddleMousePressed = false;
+        }
+
+        // Pan camera to keep gaze-locked point under cursor
+        if (isMiddleMousePressed) {
+            Vector2 currentMousePos = mouse.position.ReadValue();
+
+            // Cast ray at current mouse position
+            Ray currentRay = thisCamera.ScreenPointToRay(currentMousePos);
+            Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
+
+            if (groundPlane.Raycast(currentRay, out float currentDistance)) {
+                Vector3 currentWorldPoint = currentRay.origin + currentRay.direction * currentDistance;
+
+                // Move camera so that gazeLockWorldPoint appears at currentMousePos
+                Vector3 offset = gazeLockWorldPoint - currentWorldPoint;
+                desiredCameraPosition += offset;
+            }
+
+            lastMousePosition = currentMousePos;
+        }
+    }
+
+    private void RotateBy(float angleAroundY) {
+        try {
+            Vector3 screenCenter = GetScreenCenterPoint();
+            Quaternion desiredRotation = Quaternion.AngleAxis(angleAroundY, Vector3.up);
+            Vector3 directionFromOrbit = desiredCameraPosition - screenCenter;
+            directionFromOrbit = desiredRotation * directionFromOrbit;
+            desiredCameraPosition = screenCenter + directionFromOrbit;
+            desiredCameraRotation = desiredRotation * desiredCameraRotation;
+        } catch (System.Exception e) {
+            Debug.LogError($"Error in RotateBy: {e.Message}");
+            return;
+        }
+
+    }
+
+    /// <summary>
+    /// Focus the camera on a world point with a given radius. Smoothly moves and zooms the camera to frame the area.
+    /// </summary>
+    public void FocusOn(Vector3 worldCenter, float radius) {
+        Vector3 camDir = desiredCameraRotation * Vector3.forward;
+        desiredCameraPosition = worldCenter - camDir * 35f;
+        desiredCameraPosition.y = 35f;
+        zoomOrthographicSize = Mathf.Max(radius * 1.25f, 3f);
+    }
+
+    private void MoveCamera() {
+        Vector3 screenCenter = GetScreenCenterPoint();
+
+        if (transform.position != desiredCameraPosition)
+            transform.position = Vector3.Lerp(transform.position, desiredCameraPosition, moveSmoothing);
+
+        if (transform.rotation != desiredCameraRotation)
+            transform.rotation = Quaternion.Lerp(transform.rotation, desiredCameraRotation, moveSmoothing);
+
+        if (thisCamera.orthographicSize != zoomOrthographicSize)
+            thisCamera.orthographicSize = zoomOrthographicSize;
+    }
+
+    private Vector3 GetScreenCenterPoint() {
+        Vector3 screenCenterPoint = Vector3.zero;
+        Ray screenCenterRay = thisCamera.ScreenPointToRay(new Vector2(Screen.width / 2, Screen.height / 2));
+        if (Physics.Raycast(screenCenterRay, out RaycastHit hitPoint, 1000f))
+            screenCenterPoint = hitPoint.point;
+        else {
+            Debug.LogError("Screen center raycast not hitting anything");
+            //Debug.LogWarning("Screen center raycast not hitting anything");
+        }
+        return screenCenterPoint;
+    }
+
+
+    private void UpdateCameraPosition() {
+        thisCamera.fieldOfView = camFieldOfView;
+        if (transform.position == desiredCameraPosition && transform.rotation == desiredCameraRotation)
+            return;
+
+        transform.position = desiredCameraPosition;
+        transform.rotation = desiredCameraRotation;
+
+        thisCamera.orthographicSize = zoomOrthographicSize;
+
+
+    }
+
+}

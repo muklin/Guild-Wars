@@ -1,199 +1,160 @@
-@startuml GuildWars Architecture
+@startuml architecture
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
 
-LAYOUT_WITH_LEGEND()
-
-title GuildWars Unity — C4 Component Diagram
-
-' ─── External ────────────────────────────────────────────────────────────────
-
-Person(player, "Player", "Single human player controlling one Guild")
-System_Ext(unity, "Unity Engine", "MonoBehaviour lifecycle, physics, rendering, Input")
-
-' ─── System boundary ─────────────────────────────────────────────────────────
-
-System_Boundary(gw, "GuildWars Game") {
-
-    ' ── Bootstrap ──────────────────────────────────────────────────────────
-    Container_Boundary(bootstrap, "Bootstrap") {
-        Component(bootstrapper, "GameBootstrapper", "MonoBehaviour", "Sets up camera; creates core managers; spawns empty city grid at startup; triggers SessionZeroManager then GamePhaseManager")
-    }
-
-    ' ── Core ───────────────────────────────────────────────────────────────
-    Container_Boundary(core, "Core") {
-        Component(szm,  "SessionZeroManager","Singleton MonoBehaviour", "Owns SessionZeroPhase; drives one-time city/guild creation before the game loop starts")
-        Component(gsm,  "GameStateManager",  "Singleton MonoBehaviour", "Single source of truth: Guilds, Districts, Factions, Threats, TradingDestinations, phase + round counters")
-        Component(gpm,  "GamePhaseManager",  "Singleton MonoBehaviour", "Drives the repeating game loop: Upkeep → Planning → Execution → Bills; started after Session Zero ends")
-        Component(events, "EventSystem",     "Singleton MonoBehaviour", "Pub/sub event bus decoupling all systems")
-    }
-
-    ' ── Phases ─────────────────────────────────────────────────────────────
-    Container_Boundary(phases, "Phases  [IPhaseHandler]") {
-        Component(sz,  "SessionZeroPhase",  "MonoBehaviour", "4-step city creation: Terrain → Districts → HQ → Guild Setup. Owned by SessionZeroManager, not GamePhaseManager.")
-        Component(up,  "UpkeepPhase",       "MonoBehaviour", "Distributes district resources to controlling guilds")
-        Component(pl,  "PlanningPhase",     "MonoBehaviour", "Accepts one action per guild squad; NPC guilds submit via NPCGuildController")
-        Component(ex,  "ExecutionPhase",    "MonoBehaviour", "Dequeues actions and runs them through ActionResolver")
-        Component(bi,  "BillsPhase",        "MonoBehaviour", "Pays district upkeep and character salaries; strips control on failure")
-    }
-
-    ' ── Actions ────────────────────────────────────────────────────────────
-    Container_Boundary(actions, "Actions  [ActionBase]") {
-        Component(aq,  "ActionQueue",            "Plain class", "Priority queue of submitted actions")
-        Component(ar,  "ActionResolver",         "Plain class", "Validates and executes each action; fires result events")
-        Component(pvp, "PvPAction",              "ActionBase",  "1v1 challenge; d20+ability vs d20+ability; winner earns 1 Round Point")
-        Component(dc,  "DistrictControlAction",  "ActionBase",  "Transfers district ownership; requires 50+ standing and adjacency")
-        Component(sr,  "StealResourcesAction",   "ActionBase",  "Steals 25-75% of district resources; triggers PvP if controlled")
-        Component(npc, "NPCGuildController",     "MonoBehaviour","Generates random valid actions for NPC guilds each planning phase")
-    }
-
-    ' ── Domain model ───────────────────────────────────────────────────────
-    Container_Boundary(domain, "Domain Model") {
-        Component(faction,  "Faction",            "Base class",  "Base for all societal actors. Produces/Needs typed Tradeable lists; victory threshold; HQ standing bonus")
-        Component(guild,    "Guild",              "Faction",     "Extends Faction. Members, gold, resource stockpile, faction standings, controlled districts, Session Zero tokens. IDs 1–99 reserved.")
-        Component(dist,     "District",           "Faction",     "Extends Faction. IS the faction for its territory. FactionLabel, 1 produced resource (grows), 3+ consumed, DistrictClass, adjacency graph, threat reference")
-        Component(trade,    "TradingDestination", "Faction",     "Extends Faction. Off-map trade partner. Produces = what guilds import; Needs = what guilds export.")
-        Component(classfac, "ClassFaction",       "Faction",     "Extends Faction. Social class defined in Session Zero (e.g. Upper/Middle/Lower Classes). Spans whole city.")
-        Component(char_,    "GuildCharacter",     "Plain class", "Name, class, level, D&D 5e stats, HP, incapacitation state")
-        Component(tradeable,"Tradeable",          "Base class",  "Base for all tradeable items. Has Name and Id.")
-        Component(resource, "Resource",           "Tradeable",   "Physical goods that can be stockpiled across rounds (e.g. grain, gold, weapons, timber)")
-        Component(service,  "Service",            "Tradeable",   "Recurring activities that renew each round (e.g. protection, transport, labour, blessings)")
-        Component(threat,   "Threat",             "Plain class", "HP, DC, mitigation criteria; used as world-map threat and PvE template")
-        Component(terrain,  "TerrainFeature",     "Plain class", "TerrainType + description placed on a grid cell during Session Zero")
-        Component(edgef,    "EdgeFeature",        "Plain class", "Cliff or River spanning 1-2+ contiguous edges; validated for continuity")
-    }
-
-    ' ── Data / Config ──────────────────────────────────────────────────────
-    Container_Boundary(data, "Data & Config") {
-        Component(cfg,  "GameConfig",     "ScriptableObject", "Salary formula, victory threshold, standing constants")
-        Component(tdb,  "ThreatDatabase", "ScriptableObject", "Editor-configurable PvE threat templates")
-        Component(save, "SaveLoadSystem", "Plain class",       "JSON serialisation of game state per round")
-    }
-
-    ' ── 3D City ────────────────────────────────────────────────────────────
-    Container_Boundary(city, "3D City Visualisation") {
-        Component(layout,  "CityLayout",             "MonoBehaviour", "Maps district IDs to grid positions; stores TerrainFeatures per cell")
-        Component(spawner, "BuildingSpawner",       "MonoBehaviour", "Spawns DistrictVisual GameObjects for each district")
-        Component(viz,     "CityVisualization",     "MonoBehaviour", "Owns main camera; handles movement, zoom, rotation; isometric orthographic view")
-        Component(cam,     "CameraController",      "MonoBehaviour", "Camera control helper; orbit, zoom, rotation snaps")
-        Component(ray,     "CityRaycaster",         "MonoBehaviour", "Raycasts player clicks onto district visuals; fires UI_SELECT_DISTRICT")
-        Component(voronoi, "VoronoiWorldGenerator", "MonoBehaviour", "Generates 50×50 Voronoi terrain regions from Delaunay triangulation")
-        Component(terrsel, "TerrainSelectionController","MonoBehaviour", "Handles click-to-select-region input; assigns terrain types")
-        Component(edgesel, "EdgeSelectionController", "MonoBehaviour", "Handles edge selection for cliffs/rivers; validates continuity")
-        Component(edge,    "VoronoiEdge",           "MonoBehaviour", "Clickable edge component between regions")
-        Component(colors,  "TerrainColors",         "Static class",  "Maps TerrainType → Color for region display")
-    }
-
-    ' ── UI ─────────────────────────────────────────────────────────────────
-    Container_Boundary(ui, "UI  [UIPanel]") {
-        Component(uimgr, "UIManager",              "Singleton MonoBehaviour", "Creates and shows/hides all panels in response to phase events")
-        Component(szui,  "SessionZeroUIPanel",     "UIPanel", "Step-by-step city and guild creation form (Terrain / Districts / HQ / Guild)")
-        Component(terrui,"TerrainTypePanel",       "UIPanel", "Region/edge selection and terrain type assignment during terrain setup")
-        Component(gsui,  "GameStatePanel",         "UIPanel", "Phase name + round number, always visible")
-        Component(guui,  "GuildStatusPanel",       "UIPanel", "Per-guild: gold, resources, roster, leader, veto tokens, districts")
-        Component(asui,  "ActionSubmissionPanel",  "UIPanel", "Action type + target selection during Planning phase")
-        Component(exui,  "ExecutionDisplayPanel",  "UIPanel", "Scrolling action log with combat rolls and outcomes")
-        Component(rsui,  "ResourcePanel",          "UIPanel", "District production/consumption and guild balance sheet")
-        Component(fsui,  "FactionStandingPanel",   "UIPanel", "0-100 standing bars per faction per guild; highlights winners")
-    }
-
-    ' ── Veto ───────────────────────────────────────────────────────────────
-    Container_Boundary(veto, "Veto System") {
-        Component(vm,  "VetoManager",       "Plain class",  "Tracks open veto calls and resolves majority vote")
-        Component(vs,  "VotingSystem",      "Plain class",  "Records yes/no votes; resolves on all-voted")
-        Component(vtk, "VetoToken",         "Plain class",  "One token per guild; consumed when veto is called")
-        Component(vst, "VetoableStatement", "Plain class",  "Wraps an action with the statement text subject to veto")
-    }
-
-    ' ── Combat ─────────────────────────────────────────────────────────────
-    Container_Boundary(combat, "Combat") {
-        Component(cs,  "CombatSystem", "Plain class", "Resolves attack rolls: d20 + ability modifier vs AC; applies damage")
-        Component(dr,  "DiceRoller",   "Plain class", "Stateless random die roll utilities (d4, d6, d8, d10, d12, d20)")
-    }
+Person(player, "Player", "Human players controlling one Guild each")
+System(system_7a3d22, "Guild Wars Client", "3D Game, Unity Engine")
+System(system_bc0d74, "Guild Wars Server", "Stores Server Data and Adjudicates Client actions")
+Container_Boundary(bootstrap, "Bootstrap") {
+  Component(bootstrapper, "GameBootstrapper", "MonoBehaviour", "Sets up camera; creates core managers; spawns empty city grid at startup; triggers SessionZeroManager then GamePhaseManager")
 }
-
-' ─── Relationships ────────────────────────────────────────────────────────────
+Container_Boundary(core, "Core") {
+  Component(szm, "SessionZeroManager", "Singleton MonoBehaviour", "Owns SessionZeroPhase; drives one-time city/guild creation before the game loop starts")
+  Component(gsm, "GameStateManager", "Singleton MonoBehaviour", "Single source of truth: Guilds, Districts, Factions, Threats, TradingDestinations, phase + round counters")
+  Component(gpm, "GamePhaseManager", "Singleton MonoBehaviour", "Drives the repeating game loop: Upkeep → Planning → Execution → Bills; started after Session Zero ends")
+  Component(events, "EventSystem", "Singleton MonoBehaviour", "Pub/sub event bus decoupling all systems")
+}
+Container_Boundary(phases, "Phases  [IPhaseHandler]") {
+  Component(sz, "SessionZeroPhase", "MonoBehaviour", "4-step city creation: Terrain → Districts → HQ → Guild Setup. Owned by SessionZeroManager, not GamePhaseManager.")
+  Component(up, "UpkeepPhase", "MonoBehaviour", "Distributes district resources to controlling guilds")
+  Component(pl, "PlanningPhase", "MonoBehaviour", "Accepts one action per guild squad; NPC guilds submit via NPCGuildController")
+  Component(ex, "ExecutionPhase", "MonoBehaviour", "Dequeues actions and runs them through ActionResolver")
+  Component(bi, "BillsPhase", "MonoBehaviour", "Pays district upkeep and character salaries; strips control on failure")
+}
+Container_Boundary(actions, "Actions  [ActionBase]") {
+  Component(aq, "ActionQueue", "Plain class", "Priority queue of submitted actions")
+  Component(ar, "ActionResolver", "Plain class", "Validates and executes each action; fires result events")
+  Component(pvp, "PvPAction", "ActionBase", "1v1 challenge; d20+ability vs d20+ability; winner earns 1 Round Point")
+  Component(dc, "DistrictControlAction", "ActionBase", "Transfers district ownership; requires 50+ standing and adjacency")
+  Component(sr, "StealResourcesAction", "ActionBase", "Steals 25-75% of district resources; triggers PvP if controlled")
+  Component(npc, "NPCGuildController", "MonoBehaviour", "Generates random valid actions for NPC guilds each planning phase")
+}
+Container_Boundary(domain, "Domain Model") {
+  Component(faction, "Faction", "Base class", "Base for all societal actors. Produces/Needs typed Tradeable lists; victory threshold; HQ standing bonus")
+  Component(guild, "Guild", "Faction", "Extends Faction. Members, gold, resource stockpile, faction standings, controlled districts, Session Zero tokens. IDs 1–99 reserved.")
+  Component(dist, "District", "Faction", "Extends Faction. IS the faction for its territory. FactionLabel, 1 produced resource (grows), 3+ consumed, DistrictClass, adjacency graph, threat reference")
+  Component(trade, "TradingDestination", "Faction", "Extends Faction. Off-map trade partner. Produces = what guilds import; Needs = what guilds export.")
+  Component(classfac, "ClassFaction", "Faction", "Extends Faction. Social class defined in Session Zero (e.g. Upper/Middle/Lower Classes). Spans whole city.")
+  Component(char_, "GuildCharacter", "Plain class", "Name, class, level, D&D 5e stats, HP, incapacitation state")
+  Component(tradeable, "Tradeable", "Base class", "Base for all tradeable items. Has Name and Id.")
+  Component(resource, "Resource", "Tradeable", "Physical goods that can be stockpiled across rounds (e.g. grain, gold, weapons, timber)")
+  Component(service, "Service", "Tradeable", "Recurring activities that renew each round (e.g. protection, transport, labour, blessings)")
+  Component(threat, "Threat", "Plain class", "HP, DC, mitigation criteria; used as world-map threat and PvE template")
+  Component(terrain, "TerrainFeature", "Plain class", "TerrainType + description placed on a grid cell during Session Zero")
+  Component(edgef, "EdgeFeature", "Plain class", "Cliff or River spanning 1-2+ contiguous edges; validated for continuity")
+}
+Container_Boundary(data, "Data & Config") {
+  Component(cfg, "GameConfig", "ScriptableObject", "Salary formula, victory threshold, standing constants")
+  Component(tdb, "ThreatDatabase", "ScriptableObject", "Editor-configurable PvE threat templates")
+  Component(save, "SaveLoadSystem", "Plain class", "JSON serialisation of game state per round")
+}
+Container_Boundary(city, "3D City Visualisation") {
+  Component(layout, "CityLayout", "MonoBehaviour", "Maps district IDs to grid positions; stores TerrainFeatures per cell")
+  Component(spawner, "BuildingSpawner", "MonoBehaviour", "Spawns DistrictVisual GameObjects for each district")
+  Component(viz, "CityVisualization", "MonoBehaviour", "Owns main camera; handles movement, zoom, rotation; isometric orthographic view")
+  Component(cam, "CameraController", "MonoBehaviour", "Camera control helper; orbit, zoom, rotation snaps")
+  Component(ray, "CityRaycaster", "MonoBehaviour", "Raycasts player clicks onto district visuals; fires UI_SELECT_DISTRICT")
+  Component(voronoi, "VoronoiWorldGenerator", "MonoBehaviour", "Generates 50×50 Voronoi terrain regions from Delaunay triangulation")
+  Component(terrsel, "TerrainSelectionController", "MonoBehaviour", "Handles click-to-select-region input; assigns terrain types")
+  Component(edgesel, "EdgeSelectionController", "MonoBehaviour", "Handles edge selection for cliffs/rivers; validates continuity")
+  Component(edge, "VoronoiEdge", "MonoBehaviour", "Clickable edge component between regions")
+  Component(colors, "TerrainColors", "Static class", "Maps TerrainType → Color for region display")
+}
+Container_Boundary(ui, "UI  [UIPanel]") {
+  Component(uimgr, "UIManager", "Singleton MonoBehaviour", "Creates and shows/hides all panels in response to phase events")
+  Component(szui, "SessionZeroUIPanel", "UIPanel", "Step-by-step city and guild creation form (Terrain / Districts / HQ / Guild)")
+  Component(terrui, "TerrainTypePanel", "UIPanel", "Region/edge selection and terrain type assignment during terrain setup")
+  Component(gsui, "GameStatePanel", "UIPanel", "Phase name + round number, always visible")
+  Component(guui, "GuildStatusPanel", "UIPanel", "Per-guild: gold, resources, roster, leader, veto tokens, districts")
+  Component(asui, "ActionSubmissionPanel", "UIPanel", "Action type + target selection during Planning phase")
+  Component(exui, "ExecutionDisplayPanel", "UIPanel", "Scrolling action log with combat rolls and outcomes")
+  Component(rsui, "ResourcePanel", "UIPanel", "District production/consumption and guild balance sheet")
+  Component(fsui, "FactionStandingPanel", "UIPanel", "0-100 standing bars per faction per guild; highlights winners")
+}
+Container_Boundary(veto, "Veto System") {
+  Component(vm, "VetoManager", "Plain class", "Tracks open veto calls and resolves majority vote")
+  Component(vs, "VotingSystem", "Plain class", "Records yes/no votes; resolves on all-voted")
+  Component(vtk, "VetoToken", "Plain class", "One token per guild; consumed when veto is called")
+  Component(vst, "VetoableStatement", "Plain class", "Wraps an action with the statement text subject to veto")
+}
+Container_Boundary(combat, "Combat") {
+  Component(cs, "CombatSystem", "Plain class", "Resolves attack rolls: d20 + ability modifier vs AC; applies damage")
+  Component(dr, "DiceRoller", "Plain class", "Stateless random die roll utilities (d4, d6, d8, d10, d12, d20)")
+}
 
 Rel(player, unity, "Keyboard / mouse input")
 Rel(unity, bootstrapper, "Start()")
-Rel(bootstrapper, szm,    "Creates / finds; calls Begin()")
-Rel(bootstrapper, gsm,    "Creates / finds")
-Rel(bootstrapper, gpm,    "Creates / finds")
+Rel(bootstrapper, szm, "Creates / finds; calls Begin()")
+Rel(bootstrapper, gsm, "Creates / finds")
+Rel(bootstrapper, gpm, "Creates / finds")
 Rel(bootstrapper, events, "Creates / finds")
-Rel(bootstrapper, uimgr,  "Creates / finds")
-Rel(bootstrapper, viz,    "SpawnCityVisualization() immediately (empty grid)")
-Rel(bootstrapper, gpm,    "BeginRound() on SESSION_ZERO_END")
-Rel(szm, sz,   "OnPhaseStart / Update / End")
+Rel(bootstrapper, uimgr, "Creates / finds")
+Rel(bootstrapper, viz, "SpawnCityVisualization() immediately (empty grid)")
+Rel(bootstrapper, gpm, "BeginRound() on SESSION_ZERO_END")
+Rel(szm, sz, "OnPhaseStart / Update / End")
 Rel(szm, events, "SESSION_ZERO_END on completion")
-
-Rel(gpm, up,  "OnPhaseStart / Update / End")
-Rel(gpm, pl,  "OnPhaseStart / Update / End")
-Rel(gpm, ex,  "OnPhaseStart / Update / End")
-Rel(gpm, bi,  "OnPhaseStart / Update / End")
+Rel(gpm, up, "OnPhaseStart / Update / End")
+Rel(gpm, pl, "OnPhaseStart / Update / End")
+Rel(gpm, ex, "OnPhaseStart / Update / End")
+Rel(gpm, bi, "OnPhaseStart / Update / End")
 Rel(gpm, gsm, "SetCurrentPhase(); AdvanceRound()")
-
-Rel(sz,  gsm, "AddDistrict / Faction / Threat / TradingDest / Guild")
-Rel(sz,  layout, "AddTerrainFeature()")
-Rel(pl,  npc, "RequestNPCActions()")
-Rel(npc, aq,  "TryEnqueueAction()")
-Rel(ex,  ar,  "ExecuteAllActions()")
-Rel(ar,  pvp, "Execute()")
-Rel(ar,  dc,  "Execute()")
-Rel(ar,  sr,  "Execute()")
-Rel(pvp, cs,  "ResolveAttack()")
-Rel(sr,  cs,  "ResolveAttack() — if controlled district")
-Rel(cs,  dr,  "Roll()")
-
-Rel(gsm, guild,    "CRUD (Guilds list)")
-Rel(gsm, dist,     "CRUD (Districts list)")
-Rel(gsm, faction,  "CRUD (pure Factions / ClassFactions list)")
-Rel(gsm, threat,   "CRUD")
-Rel(gsm, trade,    "CRUD (TradingDestinations list)")
-
-' Faction hierarchy (extends)
-Rel(guild,    faction,  "extends")
-Rel(dist,     faction,  "extends")
-Rel(trade,    faction,  "extends")
-Rel(classfac, faction,  "extends")
-Rel(resource, tradeable,"extends")
-Rel(service,  tradeable,"extends")
-
-' Faction ↔ Tradeable
+Rel(sz, gsm, "AddDistrict / Faction / Threat / TradingDest / Guild")
+Rel(sz, layout, "AddTerrainFeature()")
+Rel(pl, npc, "RequestNPCActions()")
+Rel(npc, aq, "TryEnqueueAction()")
+Rel(ex, ar, "ExecuteAllActions()")
+Rel(ar, pvp, "Execute()")
+Rel(ar, dc, "Execute()")
+Rel(ar, sr, "Execute()")
+Rel(pvp, cs, "ResolveAttack()")
+Rel(sr, cs, "ResolveAttack() — if controlled district")
+Rel(cs, dr, "Roll()")
+Rel(gsm, guild, "CRUD (Guilds list)")
+Rel(gsm, dist, "CRUD (Districts list)")
+Rel(gsm, faction, "CRUD (pure Factions / ClassFactions list)")
+Rel(gsm, threat, "CRUD")
+Rel(gsm, trade, "CRUD (TradingDestinations list)")
+Rel(guild, faction, "extends")
+Rel(dist, faction, "extends")
+Rel(trade, faction, "extends")
+Rel(classfac, faction, "extends")
+Rel(resource, tradeable, "extends")
+Rel(service, tradeable, "extends")
 Rel(faction, tradeable, "Produces / Needs")
-
-Rel(dist,  threat,  "ThreatSource reference")
-Rel(dist,  terrain, "(stored in CityLayout per grid cell)")
-
+Rel(dist, threat, "ThreatSource reference")
+Rel(dist, terrain, "(stored in CityLayout per grid cell)")
 Rel(events, uimgr, "PHASE_CHANGED, SESSION_ZERO_START/END, etc.")
-Rel(uimgr, szui,  "Show/Hide on SESSION_ZERO_START/END")
-Rel(uimgr, gsui,  "Always visible")
-Rel(uimgr, guui,  "Always visible")
-Rel(uimgr, asui,  "Show during Planning")
-Rel(uimgr, exui,  "Show during Execution")
-Rel(szui, sz,     "PlaceTerrainFeature / PlaceDistrict / PlacePlayerHQ / CreatePlayerGuild")
-Rel(asui, pl,     "SubmitAction()")
-Rel(ray,  events, "UI_SELECT_DISTRICT")
-
-Rel(layout,  gsm,     "GetAllDistricts()")
-Rel(spawner, layout,  "GenerateGridLayout()")
-Rel(spawner, viz,     "Provides GameObjects")
-Rel(viz,     cam,     "Uses for camera control")
-
-Rel(sz,      voronoi, "Generate() Voronoi regions on terrain step")
-Rel(sz,      terrsel, "Initialize terrain region selection")
-Rel(sz,      edgesel, "Initialize edge feature selection")
+Rel(uimgr, szui, "Show/Hide on SESSION_ZERO_START/END")
+Rel(uimgr, gsui, "Always visible")
+Rel(uimgr, guui, "Always visible")
+Rel(uimgr, asui, "Show during Planning")
+Rel(uimgr, exui, "Show during Execution")
+Rel(szui, sz, "PlaceTerrainFeature / PlaceDistrict / PlacePlayerHQ / CreatePlayerGuild")
+Rel(asui, pl, "SubmitAction()")
+Rel(ray, events, "UI_SELECT_DISTRICT")
+Rel(layout, gsm, "GetAllDistricts()")
+Rel(spawner, layout, "GenerateGridLayout()")
+Rel(spawner, viz, "Provides GameObjects")
+Rel(viz, cam, "Uses for camera control")
+Rel(sz, voronoi, "Generate() Voronoi regions on terrain step")
+Rel(sz, terrsel, "Initialize terrain region selection")
+Rel(sz, edgesel, "Initialize edge feature selection")
 Rel(terrsel, voronoi, "SetRegionTerrain / HighlightRegion")
 Rel(edgesel, voronoi, "AddEdgeFeature / HighlightEdge")
-Rel(voronoi, colors,  "For(TerrainType) → Color")
-Rel(terrui,  terrsel, "AssignTerrain() region mode")
-Rel(terrui,  edgesel, "TryCreateFeature() edge mode")
-Rel(terrui,  sz,      "PlaceTerrainFeature / FinishTerrainPlacement")
-
-Rel(gpm,  cfg, "Load GameConfig from Resources")
-Rel(bi,   cfg, "Salary formula constants")
+Rel(voronoi, colors, "For(TerrainType) → Color")
+Rel(terrui, terrsel, "AssignTerrain() region mode")
+Rel(terrui, edgesel, "TryCreateFeature() edge mode")
+Rel(terrui, sz, "PlaceTerrainFeature / FinishTerrainPlacement")
+Rel(gpm, cfg, "Load GameConfig from Resources")
+Rel(bi, cfg, "Salary formula constants")
 Rel(save, gsm, "GetStateSnapshot() → JSON")
-
-Rel(vm,  vtk, "ConsumeToken()")
-Rel(vm,  vs,  "RecordVote()")
-Rel(vm,  vst, "Resolves against")
+Rel(vm, vtk, "ConsumeToken()")
+Rel(vm, vs, "RecordVote()")
+Rel(vm, vst, "Resolves against")
+Rel(player, system_7a3d22, "Plays")
+Rel(system_7a3d22, system_bc0d74, "")
+Rel(player, system_7a3d22, "Plays")
+Rel(system_7a3d22, system_bc0d74, "")
+Rel(player, system_7a3d22, "Plays")
+Rel(system_7a3d22, system_bc0d74, "")
 
 @enduml
