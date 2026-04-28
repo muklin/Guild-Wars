@@ -317,6 +317,7 @@ export default class MergedVoronoiGenerator {
             edges.set(edgeId, {
               regionA: i,
               regionB: j,
+              vertices: shared,
               startPoint: shared[0],
               endPoint: shared[shared.length - 1],
               assignedType: null

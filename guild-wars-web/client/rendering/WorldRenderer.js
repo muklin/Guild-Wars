@@ -223,33 +223,52 @@ export default class WorldRenderer {
   }
 
   buildEdgeMesh(edge, edgeId) {
-    const p1 = edge.startPoint
-    const p2 = edge.endPoint
-    if (!p1 || !p2 || typeof p1.x !== 'number' || typeof p1.y !== 'number') {
+    // Use all edge vertices if available, otherwise fall back to start/end points
+    const edgeVertices = edge.vertices || [edge.startPoint, edge.endPoint]
+
+    if (!edgeVertices || edgeVertices.length < 2) {
+      return null
+    }
+
+    // Validate all vertices
+    if (edgeVertices.some(v => !v || typeof v.x !== 'number' || typeof v.y !== 'number')) {
       return null
     }
 
     const thickness = 0.5
-    const dx = p2.x - p1.x
-    const dy = p2.y - p1.y
-    const len = Math.sqrt(dx * dx + dy * dy)
-    if (len === 0) return null
+    const vertices = []
+    const triangles = []
 
-    const perpX = (-dy / len) * (thickness / 2)
-    const perpY = (dx / len) * (thickness / 2)
+    // Create quad-strip following all edge vertices
+    for (let i = 0; i < edgeVertices.length; i++) {
+      const p1 = edgeVertices[i]
+      const p2 = edgeVertices[(i + 1) % edgeVertices.length]
 
-    const vertices = [
-      p1.x - perpX, 0.06, p1.y - perpY,
-      p1.x + perpX, 0.06, p1.y + perpY,
-      p2.x + perpX, 0.06, p2.y + perpY,
-      p2.x - perpX, 0.06, p2.y - perpY
-    ]
+      // Calculate perpendicular for this segment
+      const dx = p2.x - p1.x
+      const dy = p2.y - p1.y
+      const len = Math.sqrt(dx * dx + dy * dy)
 
-    if (vertices.some(v => !isFinite(v))) {
-      return null
+      if (len > 0.001) {
+        const perpX = (-dy / len) * (thickness / 2)
+        const perpY = (dx / len) * (thickness / 2)
+
+        const idx = i * 2
+        vertices.push(
+          p1.x - perpX, 0.06, p1.y - perpY,  // Left vertex
+          p1.x + perpX, 0.06, p1.y + perpY   // Right vertex
+        )
+
+        if (i < edgeVertices.length - 1) {
+          triangles.push(idx, idx + 1, idx + 3)
+          triangles.push(idx, idx + 3, idx + 2)
+        }
+      }
     }
 
-    const triangles = [0, 1, 2, 0, 2, 3]
+    if (vertices.length === 0 || triangles.length === 0) {
+      return null
+    }
 
     let geometry
     try {
