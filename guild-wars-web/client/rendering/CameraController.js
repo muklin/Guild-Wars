@@ -40,6 +40,11 @@ export default class CameraController {
   onKeyDown(e) {
     const rotationStep = Math.PI / 2 // 90 degrees
 
+    // Skip D if shift is pressed (debug mode uses Shift+D)
+    if (e.code === 'KeyD' && e.shiftKey) {
+      return
+    }
+
     if (e.code === 'KeyQ') {
       this.azimuth -= rotationStep
       this.updateCameraPosition()
@@ -60,6 +65,10 @@ export default class CameraController {
   }
 
   onKeyUp(e) {
+    // Also skip D on key up if shift was pressed during the press
+    if (e.code === 'KeyD' && e.shiftKey) {
+      return
+    }
     this.keys[e.code.toLowerCase()] = false
   }
 
