@@ -124,26 +124,22 @@ export default class CameraController {
     const x = screenX - rect.left
     const y = screenY - rect.top
 
-    // Convert to NDC
-    const ndcX = (x / rect.width) * 2 - 1
-    const ndcY = -(y / rect.height) * 2 + 1
+    // For orthographic camera, convert screen position directly to world position
+    const aspect = rect.width / rect.height
+    const frustumHeight = 80
+    const frustumWidth = frustumHeight * aspect
+    const frustumHalfHeight = frustumHeight / 2
+    const frustumHalfWidth = frustumWidth / 2
 
-    // Unproject to world space
-    const vector = new THREE.Vector3(ndcX, ndcY, 0.5)
-    vector.unproject(this.camera)
+    // Normalized screen coordinates (-1 to 1)
+    const normX = (x / rect.width) * 2 - 1
+    const normY = -(y / rect.height) * 2 + 1
 
-    // Ray from camera through unprojected point
-    const rayOrigin = this.camera.position.clone()
-    const rayDirection = vector.sub(rayOrigin).normalize()
+    // World position at the same height as camera
+    const worldX = this.targetPosition.x + normX * frustumHalfWidth / this.camera.zoom
+    const worldZ = this.targetPosition.z + normY * frustumHalfHeight / this.camera.zoom
 
-    // Find intersection with y=0 plane (terrain)
-    if (Math.abs(rayDirection.y) < 0.0001) return null // Ray parallel to plane
-
-    const t = -rayOrigin.y / rayDirection.y
-    if (t < 0) return null // Intersection behind camera
-
-    const intersection = rayOrigin.clone().addScaledVector(rayDirection, t)
-    return intersection
+    return new THREE.Vector3(worldX, 0, worldZ)
   }
 
   updateCameraPosition() {
