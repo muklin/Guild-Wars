@@ -19,6 +19,7 @@ export default class CameraController {
     // Panning state
     this.isPanning = false
     this.panStartTerrainPos = null
+    this.gazeLockWorldPoint = null // World point locked under cursor during middle mouse drag
 
     // Keyboard state
     this.keys = {}
@@ -76,31 +77,25 @@ export default class CameraController {
       this.isPanning = true
       this.lastMouseX = e.clientX
       this.lastMouseY = e.clientY
+
+      // Gaze lock: find world point under cursor at drag start
+      const worldPoint = this.raycastToTerrain(e.clientX, e.clientY)
+      this.gazeLockWorldPoint = worldPoint
       e.preventDefault()
     }
   }
 
   onMouseMove(e) {
-    if (this.isPanning) {
-      const dx = e.clientX - this.lastMouseX
-      const dy = e.clientY - this.lastMouseY
+    if (this.isPanning && this.gazeLockWorldPoint) {
+      // Get current world point under cursor
+      const currentWorldPoint = this.raycastToTerrain(e.clientX, e.clientY)
 
-      // Pan using camera's local axes
-      const right = new THREE.Vector3()
-      const up = new THREE.Vector3(0, 1, 0)
-      this.camera.getWorldDirection(right)
-      right.cross(up).normalize()
-
-      // Scale pan speed by distance and zoom
-      const panScale = (this.distance / 45) * this.camera.zoom
-      const panSpeed = 0.1
-
-      const movement = new THREE.Vector3()
-      movement.addScaledVector(right, -dx * panSpeed * panScale)
-      movement.addScaledVector(up, dy * panSpeed * panScale)
-
-      this.targetPosition.add(movement)
-      this.updateCameraPosition()
+      if (currentWorldPoint) {
+        // Calculate offset to keep gaze-lock point under cursor
+        const offset = new THREE.Vector3().subVectors(this.gazeLockWorldPoint, currentWorldPoint)
+        this.targetPosition.add(offset)
+        this.updateCameraPosition()
+      }
 
       this.lastMouseX = e.clientX
       this.lastMouseY = e.clientY
@@ -178,7 +173,7 @@ export default class CameraController {
 
   update() {
     // Handle WASD camera movement (horizontal panning)
-    const moveSpeed = 0.3
+    const moveSpeed = 1.5
     let moved = false
 
     if (this.keys['keyw']) {

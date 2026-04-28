@@ -15,6 +15,11 @@ export default class WorldRenderer {
     this.isPaused = false
     this.godMode = false
     this.originalMaterials = new Map()
+    this.debugObjects = []
+    this.showDebug = false
+    this.raycaster = new THREE.Raycaster()
+    this.mouse = new THREE.Vector2()
+    this.vertexData = new Map() // Maps mesh UUID to vertex info
   }
 
   init() {
@@ -65,7 +70,12 @@ export default class WorldRenderer {
         this.toggleGodMode()
         e.preventDefault()
       }
+      if (e.code === 'KeyD') {
+        this.toggleDebugVisualization()
+        e.preventDefault()
+      }
     })
+    document.addEventListener('mousemove', (e) => this.onMouseMove(e))
     this.animate()
   }
 
@@ -73,6 +83,7 @@ export default class WorldRenderer {
     console.log('setTerrainData called with', regions.length, 'regions and', Object.keys(edges || {}).length, 'edges')
     this.terrainData = { regions, edges: edges || {} }
     this.renderTerrain(regions)
+    this.drawVoronoiCenters(regions)
     if (edges && Object.keys(edges).length > 0) {
       this.renderEdges(edges)
     }
@@ -82,21 +93,22 @@ export default class WorldRenderer {
     this.regionMeshes.forEach(mesh => this.scene.remove(mesh))
     this.regionMeshes.clear()
 
+    console.log(`%c=== TERRAIN RENDERING ===`, 'color: #0f0; font-weight: bold')
     console.log(`Rendering ${regions.length} regions`)
     let successCount = 0
     regions.forEach(region => {
-      console.log(`  Region ${region.id}: ${region.polygon.length} verts`)
       const mesh = this.buildRegionMesh(region)
       if (mesh) {
         this.scene.add(mesh)
         this.regionMeshes.set(region.id, mesh)
         successCount++
+        console.log(`  ✓ Region ${region.id}: ${region.polygon.length} verts, bbox=${mesh.geometry.boundingBox.min.x.toFixed(1)}-${mesh.geometry.boundingBox.max.x.toFixed(1)}`)
       } else {
-        console.log(`    → FAILED to build mesh`)
+        console.log(`  ✗ Region ${region.id}: ${region.polygon.length} verts → FAILED`)
       }
     })
-    console.log(`Successfully created ${successCount} region meshes`)
-    console.log(`Scene now has ${this.scene.children.length} children`)
+    console.log(`%c✓ Created ${successCount}/${regions.length} meshes | Scene: ${this.scene.children.length} children`, 'color: #0f0')
+    console.log(`Camera: frustum left=${this.camera.left.toFixed(1)} right=${this.camera.right.toFixed(1)} top=${this.camera.top.toFixed(1)} bottom=${this.camera.bottom.toFixed(1)}`)
   }
 
   buildRegionMesh(region) {
@@ -105,14 +117,10 @@ export default class WorldRenderer {
       return null
     }
 
-
-    const insetPolygon = this.insetPolygon(region.polygon, 0.05)
-    if (!insetPolygon || insetPolygon.length < 3) {
-      console.warn(`Region ${region.id} inset polygon too small:`, insetPolygon?.length)
-      return null
-    }
-
-    const vertices = insetPolygon.reverse().map(v => [v.x || 0, 0.1, v.y || 0]).flat()
+    // Use raw polygon vertices - inset can break concave shapes by moving them across edges
+    const polygon = [...region.polygon]
+    polygon.reverse()
+    const vertices = polygon.map(v => [v.x || 0, 0.05, v.y || 0]).flat()
     if (vertices.length === 0) {
       console.warn(`Region ${region.id} has empty vertices array`)
       return null
@@ -123,7 +131,7 @@ export default class WorldRenderer {
     }
 
     const triangles = []
-    for (let i = 1; i < insetPolygon.length - 1; i++) {
+    for (let i = 1; i < polygon.length - 1; i++) {
       triangles.push(0, i, i + 1)
     }
 
@@ -132,7 +140,7 @@ export default class WorldRenderer {
       return null
     }
 
-    console.log(`Region ${region.id}: ${insetPolygon.length} verts → ${triangles.length/3} triangles`)
+    console.log(`Region ${region.id}: ${polygon.length} verts → ${triangles.length/3} triangles`)
 
     let geometry
     try {
@@ -145,6 +153,7 @@ export default class WorldRenderer {
       const indexAttribute = new THREE.BufferAttribute(indexArray, 1)
       geometry.setIndex(indexAttribute)
       geometry.computeVertexNormals()
+      geometry.computeBoundingBox()
     } catch (e) {
       console.error(`Error creating geometry for region ${region.id}:`, e)
       return null
@@ -249,6 +258,7 @@ export default class WorldRenderer {
       const indexAttribute = new THREE.BufferAttribute(indexArray, 1)
       geometry.setIndex(indexAttribute)
       geometry.computeVertexNormals()
+      geometry.computeBoundingBox()
     } catch (e) {
       console.error(`Error creating edge geometry ${edgeId}:`, e)
       return null
@@ -366,6 +376,108 @@ export default class WorldRenderer {
       })
       this.originalMaterials.clear()
       console.log('God Mode OFF')
+    }
+  }
+
+  toggleDebugVisualization() {
+    this.showDebug = !this.showDebug
+    this.debugObjects.forEach(obj => {
+      obj.visible = this.showDebug
+    })
+    console.log(`Debug visualization ${this.showDebug ? 'ON' : 'OFF'}`)
+  }
+
+  drawVoronoiCenters(regions) {
+    // Remove old debug objects
+    this.debugObjects.forEach(obj => this.scene.remove(obj))
+    this.debugObjects = []
+
+    // Draw seed points as small spheres
+    const seedGeometry = new THREE.SphereGeometry(0.3, 8, 8)
+    const seedMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    regions.forEach(region => {
+      const seed = new THREE.Mesh(seedGeometry, seedMaterial)
+      seed.position.set(region.seedPoint.x, 0.15, region.seedPoint.y)
+      seed.visible = this.showDebug
+      this.scene.add(seed)
+      this.debugObjects.push(seed)
+    })
+
+    // Draw polygon vertices as small cubes
+    const vertGeometry = new THREE.BoxGeometry(0.2, 0.2, 0.2)
+    const vertMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+    regions.forEach(region => {
+      region.polygon.forEach((vertex, vertexIndex) => {
+        const vert = new THREE.Mesh(vertGeometry, vertMaterial)
+        vert.position.set(vertex.x, 0.2, vertex.y)
+        vert.visible = this.showDebug
+        this.scene.add(vert)
+        this.debugObjects.push(vert)
+        // Store vertex metadata for hover display
+        this.vertexData.set(vert.uuid, {
+          regionId: region.id,
+          vertexIndex,
+          x: vertex.x,
+          y: vertex.y,
+          mesh: vert
+        })
+      })
+    })
+
+    console.log(`Drew ${regions.length} seed points and ${regions.reduce((sum, r) => sum + r.polygon.length, 0)} vertices`)
+  }
+
+  onMouseMove(event) {
+    if (!this.showDebug || !this.camera) return
+
+    // Convert mouse position to normalized device coordinates
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+
+    // Raycasting
+    this.raycaster.setFromCamera(this.mouse, this.camera)
+    const intersects = this.raycaster.intersectObjects(this.debugObjects)
+
+    let tooltip = document.getElementById('debug-tooltip')
+    if (!tooltip) {
+      tooltip = document.createElement('div')
+      tooltip.id = 'debug-tooltip'
+      tooltip.style.cssText = `
+        position: fixed;
+        background: rgba(0, 200, 0, 0.9);
+        color: #fff;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-family: monospace;
+        pointer-events: none;
+        z-index: 1000;
+        display: none;
+        border: 1px solid #0f0;
+      `
+      document.body.appendChild(tooltip)
+    }
+
+    if (intersects.length > 0) {
+      const object = intersects[0].object
+      const vertexInfo = this.vertexData.get(object.uuid)
+
+      if (vertexInfo) {
+        tooltip.style.display = 'block'
+        tooltip.style.left = event.clientX + 10 + 'px'
+        tooltip.style.top = event.clientY + 10 + 'px'
+        tooltip.innerHTML = `
+          Region ${vertexInfo.regionId}<br>
+          Vertex ${vertexInfo.vertexIndex}<br>
+          x: ${vertexInfo.x.toFixed(2)}<br>
+          y: ${vertexInfo.y.toFixed(2)}
+        `
+      } else {
+        tooltip.style.display = 'none'
+      }
+    } else {
+      tooltip.style.display = 'none'
     }
   }
 }

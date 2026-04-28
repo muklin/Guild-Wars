@@ -1,9 +1,12 @@
+import TerrainTypePanel from './TerrainTypePanel.js'
+
 export default class UIManager {
   constructor(eventBus, renderer) {
     this.eventBus = eventBus
     this.renderer = renderer
     this.panels = new Map()
     this.currentStep = null
+    this.terrainTypePanel = new TerrainTypePanel(eventBus)
   }
 
   init() {
@@ -69,14 +72,18 @@ export default class UIManager {
 
   showSetupPhase(step) {
     this.currentStep = step
+    const leftPanel = this.panels.get('left')
     const rightPanel = this.panels.get('right')
-    rightPanel.innerHTML = this.getSetupPanelContent(step)
-  }
 
-  getSetupPanelContent(step) {
-    if (step === 'Terrain') return '<h2>Terrain Setup</h2>'
-    if (step === 'CitySubdivision') return '<h2>City Districts</h2>'
-    return '<h2>Setup</h2>'
+    if (step === 'Terrain') {
+      this.terrainTypePanel.render(leftPanel)
+      rightPanel.innerHTML = '<h2>Terrain Setup</h2><p>Click a region to select it, then choose a terrain type.</p>'
+    } else if (step === 'CitySubdivision') {
+      leftPanel.innerHTML = ''
+      rightPanel.innerHTML = '<h2>City Districts</h2><p>Click to assign district classes.</p>'
+    } else {
+      rightPanel.innerHTML = '<h2>Setup</h2>'
+    }
   }
 
   showError(message) {

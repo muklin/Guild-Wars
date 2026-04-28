@@ -26,15 +26,11 @@ export default class MergedVoronoiGenerator {
       if (trianglesWithSeed.length === 0) continue
 
       const circumcenters = trianglesWithSeed.map(t => t.circumcenter)
-      let polygon = this.fineGenerator.sortByAngle(seedPoint, circumcenters)
-      polygon = polygon.reverse()
+      const polygon = this.fineGenerator.sortByAngle(seedPoint, circumcenters)
+      polygon.reverse()
 
-      // Clip to padded boundary to keep geometry reasonable without breaking non-overlap
-      // Use -10 to 60 instead of 0 to 50 to avoid aggressive edge clipping
-      const clipBounds = { min: -10, max: worldSize + 10 }
-      polygon = this.clipToBox(polygon, clipBounds)
-
-      if (polygon && polygon.length >= 3) {
+      // Keep unclipped Voronoi - mathematically guaranteed non-overlapping
+      if (polygon.length >= 3) {
         regions.push({
           id: i,
           seedPoint,
