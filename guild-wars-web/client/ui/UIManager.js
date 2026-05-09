@@ -1,6 +1,14 @@
 import TerrainTypePanel from './TerrainTypePanel.js'
 import DistrictClassPanel from './DistrictClassPanel.js'
 
+const STAGES = [
+  { step: 'Terrain',         label: 'Terrain Setup',       event: 'TERRAIN_COMPLETE' },
+  { step: 'CitySubdivision', label: 'City District Setup', event: 'SUBDIVISION_COMPLETE' },
+  { step: 'StreetSetup',     label: 'Street Setup',        event: 'STREET_SETUP_COMPLETE' },
+  { step: 'GuildCreation',   label: 'Guild Design',        event: null }
+]
+const STEP_ORDER = ['Terrain', 'CitySubdivision', 'StreetSetup', 'GuildCreation', 'Complete']
+
 export default class UIManager {
   constructor(eventBus, renderer) {
     this.eventBus = eventBus
@@ -23,7 +31,6 @@ export default class UIManager {
     document.body.appendChild(uiContainer)
     this.createTopBar(uiContainer)
     this.createLeftPanels(uiContainer)
-    //this.createRightPanels(uiContainer)
     this.createCenterPanels(uiContainer)
     this.createErrorPopup(uiContainer)
   }
@@ -31,15 +38,16 @@ export default class UIManager {
   createTopBar(container) {
     const topBar = document.createElement('div')
     topBar.id = 'top-bar'
-    topBar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:120px;background:rgba(0,0,0,0.8);border-bottom:2px solid #444;padding:10px;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;justify-content:space-between;align-items:flex-start'
+    topBar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:80px;background:rgba(0,0,0,0.85);border-bottom:2px solid #444;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;align-items:stretch'
 
-    const title = document.createElement('div')
-    title.textContent = 'Setup Phase'
-    topBar.appendChild(title)
+    const lifecycle = document.createElement('div')
+    lifecycle.id = 'lifecycle-bar'
+    lifecycle.style.cssText = 'flex:1;display:flex;align-items:stretch'
+    topBar.appendChild(lifecycle)
 
     const newGameBtn = document.createElement('button')
     newGameBtn.textContent = 'New Game'
-    newGameBtn.style.cssText = 'padding:8px 16px;background:#8b1a1a;color:#fff;border:1px solid #c44;border-radius:3px;cursor:pointer;font-size:14px;pointer-events:auto'
+    newGameBtn.style.cssText = 'margin:10px;padding:8px 16px;background:#8b1a1a;color:#fff;border:1px solid #c44;border-radius:3px;cursor:pointer;font-size:13px;white-space:nowrap;align-self:center'
     newGameBtn.addEventListener('click', () => {
       if (confirm('Start a new game? All current terrain will be discarded.')) {
         this.eventBus.emit('NEW_GAME')
@@ -53,23 +61,15 @@ export default class UIManager {
   createLeftPanels(container) {
     const leftPanel = document.createElement('div')
     leftPanel.id = 'left-panel'
-    leftPanel.style.cssText = 'position:fixed;left:0;top:120px;width:200px;height:calc(100% - 120px);background:rgba(0,0,0,0.7);border-right:2px solid #444;padding:10px;color:#fff;z-index:20;pointer-events:auto'
+    leftPanel.style.cssText = 'position:fixed;left:0;top:80px;width:200px;height:calc(100% - 80px);background:rgba(0,0,0,0.7);border-right:2px solid #444;padding:10px;color:#fff;z-index:20;pointer-events:auto'
     container.appendChild(leftPanel)
     this.panels.set('left', leftPanel)
-  }
-
-  createRightPanels(container) {
-    const rightPanel = document.createElement('div')
-    rightPanel.id = 'right-panel'
-    rightPanel.style.cssText = 'position:fixed;right:0;top:120px;width:400px;height:calc(100% - 120px);background:rgba(0,0,0,0.7);border-left:2px solid #444;padding:10px;color:#fff;z-index:20;pointer-events:auto'
-    container.appendChild(rightPanel)
-    this.panels.set('right', rightPanel)
   }
 
   createCenterPanels(container) {
     const centerPanel = document.createElement('div')
     centerPanel.id = 'center-panel'
-    centerPanel.style.cssText = 'position:fixed;left:200px;right:400px;top:120px;z-index:10'
+    centerPanel.style.cssText = 'position:fixed;left:200px;right:0;top:80px;z-index:10'
     container.appendChild(centerPanel)
     this.panels.set('center', centerPanel)
   }
@@ -102,19 +102,48 @@ export default class UIManager {
 
   showSetupPhase(step) {
     this.currentStep = step
+    this._renderLifecycleBar(step)
+
     const leftPanel = this.panels.get('left')
-    const rightPanel = this.panels.get('right')
+    leftPanel.innerHTML = ''
 
     if (step === 'Terrain') {
       this.terrainTypePanel.render(leftPanel)
-      this.terrainTypePanel.addFinishButton(leftPanel)
-      //rightPanel.innerHTML = '<h2>Terrain Setup</h2><p>Click a region to select it, then choose a terrain type from the left. Or click an edge to select it and assign a cliff or river.</p>'
     } else if (step === 'CitySubdivision') {
       this.districtClassPanel.render(leftPanel)
-      //rightPanel.innerHTML = '<h2>City Districts</h2><p>Click a district to select it, then choose a class from the left panel.</p>'
-    } else {
-      //rightPanel.innerHTML = '<h2>Setup</h2>'
     }
+  }
+
+  _renderLifecycleBar(activeStep) {
+    const bar = document.getElementById('lifecycle-bar')
+    if (!bar) return
+    bar.innerHTML = ''
+
+    const currentIndex = STEP_ORDER.indexOf(activeStep)
+
+    STAGES.forEach((stage, i) => {
+      const stageIndex = STEP_ORDER.indexOf(stage.step)
+      const isActive = stage.step === activeStep
+      const isComplete = stageIndex < currentIndex
+
+      const cell = document.createElement('div')
+      cell.style.cssText = `flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px 4px;border-right:1px solid #333;background:${isActive ? 'rgba(74,124,89,0.3)' : isComplete ? 'rgba(255,255,255,0.05)' : 'transparent'};${isActive ? 'border-bottom:2px solid #4a7c59;' : ''}`
+
+      const name = document.createElement('div')
+      name.textContent = (isComplete ? '✓ ' : '') + stage.label
+      name.style.cssText = `font-size:12px;font-weight:${isActive ? 'bold' : 'normal'};color:${isActive ? '#fff' : isComplete ? '#777' : '#555'};text-align:center;margin-bottom:4px`
+      cell.appendChild(name)
+
+      if (isActive && stage.event) {
+        const doneBtn = document.createElement('button')
+        doneBtn.textContent = 'Done'
+        doneBtn.style.cssText = 'padding:3px 14px;background:#4a7c59;color:#fff;border:1px solid #6a9c79;border-radius:3px;cursor:pointer;font-size:11px'
+        doneBtn.addEventListener('click', () => this.eventBus.emit(stage.event))
+        cell.appendChild(doneBtn)
+      }
+
+      bar.appendChild(cell)
+    })
   }
 
   showError(message) {

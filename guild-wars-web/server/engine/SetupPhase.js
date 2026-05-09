@@ -25,6 +25,12 @@ export default class SetupPhase {
     this.gameStateManager.worldTerrainData = worldData
     this.log.push(`Generated ${worldData.regions.length} terrain regions`)
 
+    // Annotate each region with isEdge so client can filter terrain buttons
+    const worldSize = 50
+    for (const region of worldData.regions) {
+      region.isEdge = this.touchesBoundary(region, worldSize)
+    }
+
     // Find city region (largest central region)
     const cityRegion = this.findCityRegion(worldData.regions, worldData.fineCells)
     if (cityRegion) {
@@ -57,7 +63,7 @@ export default class SetupPhase {
         fineCellCount.set(cell.parentRegionId, (fineCellCount.get(cell.parentRegionId) || 0) + 1)
       }
     }
-    const centralRegions = regions.filter(r => !this.touchesBoundary(r, 50, fineCells))
+    const centralRegions = regions.filter(r => !this.touchesBoundary(r, 50))
     const pool = centralRegions.length > 0 ? centralRegions : regions
     if (fineCellCount.size > 0) {
       return pool.reduce((a, b) =>
@@ -68,33 +74,46 @@ export default class SetupPhase {
     return pool.reduce((a, b) => a.polygon.length > b.polygon.length ? a : b)
   }
 
-  touchesBoundary(region, worldSize, fineCells) {
-    if (fineCells) {
-      const regionCells = fineCells.filter(c => c.parentRegionId === region.id)
-      if (regionCells.length > 0) {
-        const margin = worldSize * 0.1  // 10% of world size
-        return regionCells.some(c =>
-          c.seedPoint.x < margin || c.seedPoint.x > worldSize - margin ||
-          c.seedPoint.y < margin || c.seedPoint.y > worldSize - margin
-        )
-      }
-    }
-    // Fallback for old saves without fine cells
-    const margin = 0.5
+  touchesBoundary(region, worldSize) {
+    // After Step 5.5 server-side clip, edge regions have polygon vertices at exactly
+    // x=0, x=worldSize, y=0, or y=worldSize (Sutherland-Hodgman produces exact values).
+    // Interior regions only have circumcenter vertices strictly inside those bounds.
+    if (!region.polygon || region.polygon.length === 0) return false
+    const eps = 0.01
     return region.polygon.some(v =>
-      v.x < margin || v.x > (worldSize - margin) ||
-      v.y < margin || v.y > (worldSize - margin)
+      v.x < eps || v.x > worldSize - eps ||
+      v.y < eps || v.y > worldSize - eps
     )
   }
 
   assignTerrainToRegion(regionId, terrainType, description = '') {
-    const region = this.gameStateManager.worldTerrainData.regions.find(r => r.id === regionId)
+    const regions = this.gameStateManager.worldTerrainData.regions
+    const region = regions.find(r => r.id === regionId)
     if (!region) {
       throw new Error(`Region ${regionId} not found`)
     }
 
     if (region.assignedType) {
       throw new Error(`Region ${regionId} is already assigned ${region.assignedType}`)
+    }
+
+    const EDGE_ONLY_TYPES = ['Desert', 'Mountains', 'Sea']
+    if (EDGE_ONLY_TYPES.includes(terrainType) && !region.isEdge) {
+      throw new Error(`${terrainType} can only be placed on edge regions`)
+    }
+
+    if (terrainType === 'Sea' || terrainType === 'Lake') {
+      const forbidden = terrainType === 'Sea' ? 'Lake' : 'Sea'
+      const edges = this.gameStateManager.worldTerrainData.edges
+      for (const edge of Object.values(edges)) {
+        const otherId = edge.regionA === regionId ? edge.regionB : edge.regionB === regionId ? edge.regionA : null
+        if (otherId !== null) {
+          const other = regions.find(r => r.id === otherId)
+          if (other?.assignedType === forbidden) {
+            throw new Error(`${terrainType} cannot be adjacent to ${forbidden}`)
+          }
+        }
+      }
     }
 
     region.assignedType = terrainType
@@ -118,6 +137,17 @@ export default class SetupPhase {
       throw new Error(`Edge ${edgeId} is already assigned ${edge.assignedType}`)
     }
 
+    if (edgeType === 'River') {
+      const regions = this.gameStateManager.worldTerrainData.regions
+      for (const regionId of [edge.regionA, edge.regionB]) {
+        if (regionId == null) continue
+        const r = regions.find(r => r.id === regionId)
+        if (r?.assignedType === 'Lake' || r?.assignedType === 'Sea') {
+          throw new Error('Rivers cannot run along the edge of a Lake or Sea')
+        }
+      }
+    }
+
     edge.assignedType = edgeType
     edge.description = description
     this.edgePlacements.push({ edgeId, edgeType, description })
@@ -132,6 +162,15 @@ export default class SetupPhase {
   finishTerrain() {
     this.currentStep = 'CitySubdivision'
     this.log.push('Terrain placement complete. Moving to city subdivision.')
+    return {
+      ok: true,
+      log: this.log
+    }
+  }
+
+  finishStreetSetup() {
+    this.currentStep = 'GuildCreation'
+    this.log.push('Street setup complete. Moving to guild design.')
     return {
       ok: true,
       log: this.log
@@ -155,8 +194,8 @@ export default class SetupPhase {
   }
 
   finishSubdivision() {
-    this.currentStep = 'DistrictSetup'
-    this.log.push('City subdivision complete. Moving to district setup.')
+    this.currentStep = 'StreetSetup'
+    this.log.push('City subdivision complete. Moving to street setup.')
     return {
       ok: true,
       log: this.log

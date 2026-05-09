@@ -88,6 +88,19 @@ export default class App {
         const response = await GameAPI.finishSubdivision()
         if (response.ok) {
           this.gameState = response
+          this.uiManager.showSetupPhase('StreetSetup')
+        } else {
+          this.uiManager.showError(response.error)
+        }
+      } catch (error) {
+        this.uiManager.showError(error.message)
+      }
+    })
+
+    this.eventBus.on('STREET_SETUP_COMPLETE', async () => {
+      try {
+        const response = await GameAPI.finishStreetSetup()
+        if (response.ok) {
           this.uiManager.showSetupPhase('GuildCreation')
         } else {
           this.uiManager.showError(response.error)
@@ -150,10 +163,7 @@ export default class App {
       this.pendingEdgeType = null
       this._refreshTerrainPanel()
     } else {
-      this.uiManager.terrainTypePanel?.showContext('edge', {
-        edgeCount: this.selectedEdgeIds.size,
-        pendingType: this.pendingEdgeType
-      })
+      this._refreshTerrainPanel()
     }
   }
 
@@ -161,7 +171,7 @@ export default class App {
     if (this.selectedRegionId === null) return
     this.pendingTerrainType = terrainType
     this.renderer.previewRegionType(this.selectedRegionId, terrainType)
-    this.uiManager.terrainTypePanel?.showContext('region', { pendingType: terrainType })
+    this._refreshTerrainPanel()
   }
 
   async _handleTerrainApply({ description }) {
@@ -190,10 +200,7 @@ export default class App {
     for (const edgeId of this.selectedEdgeIds) {
       this.renderer.previewEdgeType(edgeId, edgeType)
     }
-    this.uiManager.terrainTypePanel?.showContext('edge', {
-      edgeCount: this.selectedEdgeIds.size,
-      pendingType: edgeType
-    })
+    this._refreshTerrainPanel()
   }
 
   async _handleEdgeApply({ description }) {
@@ -244,13 +251,45 @@ export default class App {
     this.pendingEdgeType = null
   }
 
+  _getAdjacentTypes(regionId) {
+    const edges = this.gameState?.worldTerrainData?.edges || {}
+    const regions = this.gameState?.worldTerrainData?.regions || []
+    const regionMap = new Map(regions.map(r => [r.id, r]))
+    const adjacentTypes = []
+    for (const edge of Object.values(edges)) {
+      const otherId = edge.regionA === regionId ? edge.regionB : edge.regionB === regionId ? edge.regionA : null
+      if (otherId !== null) {
+        const other = regionMap.get(otherId)
+        if (other?.assignedType) adjacentTypes.push(other.assignedType)
+      }
+    }
+    return adjacentTypes
+  }
+
+  _getEdgeAdjacentTypes(edgeId) {
+    const edge = this.gameState?.worldTerrainData?.edges?.[edgeId]
+    if (!edge) return []
+    const regions = this.gameState?.worldTerrainData?.regions || []
+    return [edge.regionA, edge.regionB]
+      .filter(id => id != null)
+      .map(id => regions.find(r => r.id === id)?.assignedType)
+      .filter(Boolean)
+  }
+
   _refreshTerrainPanel() {
     if (this.selectedRegionId !== null) {
-      this.uiManager.terrainTypePanel?.showContext('region', { pendingType: this.pendingTerrainType })
+      const region = this.gameState?.worldTerrainData?.regions?.find(r => r.id === this.selectedRegionId)
+      this.uiManager.terrainTypePanel?.showContext('region', {
+        pendingType: this.pendingTerrainType,
+        isEdge: region?.isEdge ?? false,
+        adjacentTypes: this._getAdjacentTypes(this.selectedRegionId)
+      })
     } else if (this.selectedEdgeIds.size > 0) {
+      const firstEdgeId = [...this.selectedEdgeIds][0]
       this.uiManager.terrainTypePanel?.showContext('edge', {
         edgeCount: this.selectedEdgeIds.size,
-        pendingType: this.pendingEdgeType
+        pendingType: this.pendingEdgeType,
+        adjacentTypes: firstEdgeId ? this._getEdgeAdjacentTypes(firstEdgeId) : []
       })
     } else {
       this.uiManager.terrainTypePanel?.showContext('none')

@@ -155,11 +155,30 @@ app.post('/api/setup/subdivision/done', async (req, res) => {
     await autoSave()
     res.json({
       ok: true,
-      step: 'DistrictSetup',
+      step: 'StreetSetup',
       log: result.log
     })
   } catch (error) {
     console.error('Subdivision done error:', error)
+    res.status(400).json({
+      ok: false,
+      error: error.message
+    })
+  }
+})
+
+// POST /api/setup/streetsetup/done - Finish street setup
+app.post('/api/setup/streetsetup/done', async (req, res) => {
+  try {
+    const result = setupPhase.finishStreetSetup()
+    await autoSave()
+    res.json({
+      ok: true,
+      step: 'GuildCreation',
+      log: result.log
+    })
+  } catch (error) {
+    console.error('Street setup done error:', error)
     res.status(400).json({
       ok: false,
       error: error.message

@@ -43,6 +43,10 @@ export default class GameAPI {
     return this.request('/setup/subdivision/done', 'POST')
   }
 
+  static async finishStreetSetup() {
+    return this.request('/setup/streetsetup/done', 'POST')
+  }
+
   static async placeDistrict(formData) {
     return this.request('/setup/district', 'POST', formData)
   }

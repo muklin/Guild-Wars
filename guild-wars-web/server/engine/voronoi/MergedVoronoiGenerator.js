@@ -450,55 +450,74 @@ export default class MergedVoronoiGenerator {
   }
 
   generateBoundaryEdges(fineCells, regionCount) {
-    // Group fine cells by their parent merged region
-    const cellsByRegion = new Map()
-    for (let i = 0; i < regionCount; i++) cellsByRegion.set(i, [])
+    // Build vertex → cells map by reference so we can find which cells share
+    // each polygon segment without an O(n²) cell-pair scan.
+    const vertexCells = new Map()
     for (const cell of fineCells) {
-      const bucket = cellsByRegion.get(cell.parentRegionId)
-      if (bucket) bucket.push(cell)
+      for (const v of cell.polygon) {
+        if (!vertexCells.has(v)) vertexCells.set(v, [])
+        vertexCells.get(v).push(cell)
+      }
     }
 
-    const edges = {}
-    // Global point index: id → {id, x, y}.  All edges share this pool so
-    // points that appear in multiple edges (shared corners) are stored once.
     const edgePointsMap = new Map()
+    const segmentsByKey = new Map() // edgeKey → [{v1, v2}]
+    const metaByKey     = new Map() // edgeKey → {regionA, regionB}
+    const registeredPairs = new Set()
 
-    for (let a = 0; a < regionCount; a++) {
-      for (let b = a + 1; b < regionCount; b++) {
-        const cellsA = cellsByRegion.get(a) || []
-        const cellsB = cellsByRegion.get(b) || []
-        if (cellsA.length === 0 || cellsB.length === 0) continue
+    for (const cell of fineCells) {
+      const regionA = cell.parentRegionId
+      const poly    = cell.polygon
+      for (let i = 0; i < poly.length; i++) {
+        const va = poly[i]
+        const vb = poly[(i + 1) % poly.length]
+        if (va.id === undefined || vb.id === undefined) continue
 
-        // Collect all fine-cell boundary segments that cross the A/B border.
-        // Reference equality holds because adjacent fine cells share the same
-        // circumcenter objects from the single fine Delaunay triangulation.
-        const segments = []
-        for (const ca of cellsA) {
-          for (const cb of cellsB) {
-            const shared = this.findSharedEdge(ca.polygon, cb.polygon)
-            if (shared && shared.length >= 2) {
-              segments.push({ v1: shared[0], v2: shared[shared.length - 1] })
-            }
-          }
-        }
-        if (segments.length === 0) continue
+        // Canonical key — each physical edge is processed exactly once
+        const lo = Math.min(va.id, vb.id), hi = Math.max(va.id, vb.id)
+        const pairKey = `${lo}:${hi}`
+        if (registeredPairs.has(pairKey)) continue
+        registeredPairs.add(pairKey)
 
-        const polyline = this.sortSegmentsIntoPolyline(segments)
-        if (polyline.length < 2) continue
+        // Cells containing BOTH va and vb are the two cells on opposite sides
+        // of this Delaunay edge (reference equality preserved throughout).
+        const cellsOfB = new Set(vertexCells.get(vb) || [])
+        const sharedCells = (vertexCells.get(va) || []).filter(c => cellsOfB.has(c))
+        const neighborIds = [...new Set(sharedCells.map(c => c.parentRegionId).filter(r => r !== regionA))]
 
-        // Register each polyline point in the global index
-        for (const v of polyline) {
+        // Only register edges between two DIFFERENT merged regions.
+        // Skip same-region internal boundaries and world-boundary segments.
+        if (neighborIds.length === 0) continue
+
+        const regionB = neighborIds[0]
+        const rA = Math.min(regionA, regionB)
+        const rB = Math.max(regionA, regionB)
+        const edgeKey = `${rA}-${rB}`
+
+        for (const v of [va, vb]) {
           if (!edgePointsMap.has(v.id)) {
             edgePointsMap.set(v.id, { id: v.id, x: v.x, y: v.y })
           }
         }
 
-        edges[`${a}-${b}`] = {
-          regionA: a,
-          regionB: b,
-          pointIds: polyline.map(v => v.id),
-          assignedType: null
+        if (!segmentsByKey.has(edgeKey)) {
+          segmentsByKey.set(edgeKey, [])
+          metaByKey.set(edgeKey, { regionA: rA, regionB: rB })
         }
+        segmentsByKey.get(edgeKey).push({ v1: va, v2: vb })
+      }
+    }
+
+    const edges = {}
+    for (const [edgeKey, segments] of segmentsByKey) {
+      const meta     = metaByKey.get(edgeKey)
+      const polyline = this.sortSegmentsIntoPolyline(segments)
+      if (polyline.length < 2) continue
+      edges[edgeKey] = {
+        regionA:      meta.regionA,
+        regionB:      meta.regionB,
+        pointIds:     polyline.map(v => v.id),
+        assignedType: null
       }
     }
 
@@ -509,25 +528,37 @@ export default class MergedVoronoiGenerator {
     if (segments.length === 0) return []
     if (segments.length === 1) return [segments[0].v1, segments[0].v2]
 
-    const result = [segments[0].v1, segments[0].v2]
-    const used = new Set([0])
+    // Build adjacency: vertex → [{segIdx, otherVertex}]
+    const adj = new Map()
+    for (let i = 0; i < segments.length; i++) {
+      const { v1, v2 } = segments[i]
+      if (!adj.has(v1)) adj.set(v1, [])
+      if (!adj.has(v2)) adj.set(v2, [])
+      adj.get(v1).push({ idx: i, other: v2 })
+      adj.get(v2).push({ idx: i, other: v1 })
+    }
+
+    // Find an endpoint: a vertex connected to exactly one segment
+    // (chain ends). Fall back to segments[0].v1 for loops (shouldn't occur).
+    let start = segments[0].v1
+    for (const [v, links] of adj) {
+      if (links.length === 1) { start = v; break }
+    }
+
+    const result = [start]
+    const used   = new Set()
+    let current  = start
 
     while (used.size < segments.length) {
-      const last = result[result.length - 1]
+      const links = adj.get(current) || []
       let found = false
-      for (let i = 0; i < segments.length; i++) {
-        if (used.has(i)) continue
-        if (segments[i].v1 === last) {
-          result.push(segments[i].v2)
-          used.add(i)
-          found = true
-          break
-        } else if (segments[i].v2 === last) {
-          result.push(segments[i].v1)
-          used.add(i)
-          found = true
-          break
-        }
+      for (const { idx, other } of links) {
+        if (used.has(idx)) continue
+        used.add(idx)
+        result.push(other)
+        current = other
+        found = true
+        break
       }
       if (!found) break
     }
