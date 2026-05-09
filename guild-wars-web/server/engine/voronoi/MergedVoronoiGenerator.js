@@ -57,18 +57,21 @@ export default class MergedVoronoiGenerator {
       delaunayPoints.push(new Point(x, y))
     }
 
-    // Staggered frame sentinels so no opposite-side pair shares a coordinate,
-    // preventing collinear degenerate triangles (d≈0 → circumcenter at origin).
-    const sm       = worldSize * 0.15
-    const nSteps   = 8
-    const halfStep = worldSize / (2 * nSteps)
+    // Sentinels placed 3× worldSize outside the map boundary so that every
+    // sentinel-triangle circumcenter lands far outside [0, worldSize]. This prevents
+    // boundary-cell Voronoi vertices from appearing inside or near the map edge.
+    // Opposite sides are staggered by step/2 (a vs b) so no pair shares a coordinate,
+    // which would produce collinear degenerate triangles with d≈0.
+    const sm     = worldSize * 3   // e.g. 150 for worldSize=50
+    const nSteps = 8
+    const step   = worldSize / nSteps
     for (let i = 0; i <= nSteps; i++) {
-      const t  = (i / nSteps) * worldSize
-      const ts = t + halfStep
-      delaunayPoints.push(new Point(t,  -sm))
-      delaunayPoints.push(new Point(ts, worldSize + sm))
-      delaunayPoints.push(new Point(-sm,            t))
-      delaunayPoints.push(new Point(worldSize + sm, ts))
+      const a = i * step - step / 4  // -1.5625, 4.6875, ..., 48.4375
+      const b = i * step + step / 4  //  1.5625, 7.8125, ..., 51.5625
+      delaunayPoints.push(new Point(a, -sm))
+      delaunayPoints.push(new Point(b, worldSize + sm))
+      delaunayPoints.push(new Point(-sm,            a))
+      delaunayPoints.push(new Point(worldSize + sm, b))
     }
     delaunayPoints.push(new Point(-sm,            -sm))
     delaunayPoints.push(new Point(worldSize + sm, -sm))
@@ -153,6 +156,15 @@ export default class MergedVoronoiGenerator {
     // Step 5: Boundary edges via reference equality on unclipped polygons
     const { edges, edgePoints } = this.generateBoundaryEdges(validFineCells, regionCount)
     console.log(`Generated ${Object.keys(edges).length} boundary edges, ${edgePoints.length} edge points`)
+
+    // Step 5.5: Clip fine cell polygons to world bounds for client rendering.
+    // Must happen AFTER edge detection — clipping creates new vertex objects that
+    // break the reference equality used by findSharedEdge. Clipped polygons improve
+    // click-detection accuracy and eliminate huge sentinel-extended polys from the renderer.
+    for (const cell of validFineCells) {
+      const clipped = this.clipToWorldBoundsProper(cell.polygon, 0, worldSize, 0, worldSize)
+      if (clipped.length >= 3) cell.polygon = clipped
+    }
 
     // Step 6: Build merged region convex hulls (used for click hit-testing fallback)
     const vertsByRegion = new Map()

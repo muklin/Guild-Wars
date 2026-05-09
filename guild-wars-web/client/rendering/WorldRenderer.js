@@ -138,10 +138,13 @@ export default class WorldRenderer {
     )
     if (polygon.length < 3) return null
 
-    // Fan-triangulate from seed. Voronoi cells are star-shaped so this is always valid.
-    // region.polygon is CW in 2D → fan triangles (seed, v[i], v[i+1]) yield +y normal.
-    const seed = region.seedPoint
-    const vertices = [seed.x, 0.05, seed.y]
+    // Fan-triangulate from centroid of the clipped polygon. Using seedPoint risks placing
+    // the apex outside the clipped polygon for boundary cells (seed near x=0 or y=0 edge),
+    // creating degenerate triangles. Centroid of a convex polygon is always interior.
+    const cx = polygon.reduce((s, v) => s + v.x, 0) / polygon.length
+    const cy = polygon.reduce((s, v) => s + v.y, 0) / polygon.length
+    const seed = { x: cx, y: cy }
+    const vertices = [cx, 0.05, cy]
     for (const v of polygon) {
       vertices.push(v.x || 0, 0.05, v.y || 0)
     }

@@ -18,3 +18,25 @@
   }
 }
 
+
+
+
+
+Terrain Validation Rules:
+1. Deserts, mountains and the sea, may only be selected on terrains on the edge of the map.
+2. Sea Tiles and Lake Tiles may not be adjacent.  (if an tile is selected with an adjacent sea tile, do not show lake as an option, and vice versa.)
+2. River tiles
+  - may not run along the edges of Lakes, or the sea.
+  - must have end points on one of the following: Sea, Lake, or the edge of the map. 
+
+
+  
+Setup Phase will have The following stages:
+1. Terrain Setup
+2. City District Setup
+3. Street Setup
+4. Guild Design 
+
+Each of these stages should be shown in a Lifecycle diagram across the top of the page, in the Setup Phase Panel.
+A "Done" button under each Stage name will allow the user to progress to the next stage. 
+These done buttons should only be visible for the current stage. 

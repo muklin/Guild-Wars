@@ -1,6 +1,7 @@
 import TerrainColors from '../rendering/TerrainColors.js'
 
-const TERRAIN_TYPES = ['Plains', 'Forest', 'Mountains', 'Desert', 'Swamp', 'Hills', 'Lake', 'Delta']
+//const TERRAIN_TYPES = ['Plains', 'Forest', 'Mountains', 'Desert', 'Swamp', 'Hills', 'Lake', 'Delta']
+const TERRAIN_TYPES = ['Plains', 'Forest', 'Mountains', 'Desert', 'Swamp', 'Hills', 'Lake', 'Sea']
 const EDGE_TYPES = ['River', 'Cliff']
 
 export default class TerrainTypePanel {

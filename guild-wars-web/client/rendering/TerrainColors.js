@@ -7,10 +7,9 @@ export default {
   Forest: 0x218c21,
   Lake: 0x1a5abf,
   Sea: 0x1a3a7a,
-  Delta: 0x66bf99,
+  //Delta: 0x66bf99,
   Hills: 0x8d7359,
   Swamp: 0x4a6b4a,
-  Wasteland: 0x5a4a3a,
   unassigned: 0xb8a680,
 
   // Edge types
