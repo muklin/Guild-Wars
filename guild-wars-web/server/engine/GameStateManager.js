@@ -116,7 +116,8 @@ export default class GameStateManager {
       successionMethod: this.successionMethod,
       worldTerrainData: this.worldTerrainData,
       cityDistrictData: this.cityDistrictData,
-      buildingData: this.buildingData
+      buildingData: this.buildingData,
+      nextFactionAutoId: this.nextFactionAutoId
     }
   }
 
@@ -143,6 +144,12 @@ export default class GameStateManager {
     this.worldTerrainData = data.worldTerrainData || this.worldTerrainData
     this.cityDistrictData = data.cityDistrictData || this.cityDistrictData
     this.buildingData = data.buildingData || this.buildingData
+    if (data.nextFactionAutoId) {
+      this.nextFactionAutoId = data.nextFactionAutoId
+    } else {
+      const ids = Array.from(this.factions.keys())
+      this.nextFactionAutoId = ids.length > 0 ? Math.max(...ids) + 1 : 100
+    }
   }
 
   clear() {

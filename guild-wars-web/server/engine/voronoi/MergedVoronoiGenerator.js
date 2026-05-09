@@ -47,7 +47,6 @@ export default class MergedVoronoiGenerator {
   }
 
   generateRawVoronoi(regionCount, worldSize) {
-    // Generate unclipped Voronoi cells (used for merging)
     const seedPoints = []
     const delaunayPoints = []
 
@@ -58,11 +57,29 @@ export default class MergedVoronoiGenerator {
       delaunayPoints.push(new Point(x, y))
     }
 
+    // Staggered frame sentinels so no opposite-side pair shares a coordinate,
+    // preventing collinear degenerate triangles (d≈0 → circumcenter at origin).
+    const sm       = worldSize * 0.15
+    const nSteps   = 8
+    const halfStep = worldSize / (2 * nSteps)
+    for (let i = 0; i <= nSteps; i++) {
+      const t  = (i / nSteps) * worldSize
+      const ts = t + halfStep
+      delaunayPoints.push(new Point(t,  -sm))
+      delaunayPoints.push(new Point(ts, worldSize + sm))
+      delaunayPoints.push(new Point(-sm,            t))
+      delaunayPoints.push(new Point(worldSize + sm, ts))
+    }
+    delaunayPoints.push(new Point(-sm,            -sm))
+    delaunayPoints.push(new Point(worldSize + sm, -sm))
+    delaunayPoints.push(new Point(-sm,            worldSize + sm))
+    delaunayPoints.push(new Point(worldSize + sm, worldSize + sm))
+
     const triangulator = new DelaunayTriangulator(delaunayPoints)
     triangulator.bowyerWatson()
 
     const regions = []
-    for (let i = 0; i < seedPoints.length; i++) {
+    for (let i = 0; i < regionCount; i++) {   // only real seeds, not sentinels
       const seedPoint = seedPoints[i]
       const delaunayPoint = delaunayPoints[i]
 
@@ -75,11 +92,10 @@ export default class MergedVoronoiGenerator {
       const circumcenters = trianglesWithSeed.map(t => t.circumcenter)
       const sortedVertices = this.fineGenerator.sortByAngle(seedPoint, circumcenters)
 
-      // NO CLIPPING - keep raw polygon
       regions.push({
         id: i,
         seedPoint,
-        polygon: sortedVertices.reverse(), // Reverse for correct winding
+        polygon: sortedVertices.reverse(),
         assignedType: null,
         gridX: Math.floor(seedPoint.x / 10),
         gridZ: Math.floor(seedPoint.y / 10),
@@ -91,46 +107,128 @@ export default class MergedVoronoiGenerator {
   }
 
   generate(regionCount = 15, worldSize = 50) {
-    // Generate fine-grained Voronoi cells WITHOUT clipping first
-    const fineCount = Math.max(regionCount * 4, 60)
-    console.log(`Generating merged Voronoi: ${fineCount} fine cells → ${regionCount} regions`)
+    const fineCount = Math.max(regionCount * 10, 150)
+    console.log(`Generating: ${fineCount} fine cells → ${regionCount} merged regions`)
 
-    // Generate raw Delaunay/Voronoi without clipping
-    const fineVoronoi = this.generateRawVoronoi(fineCount, worldSize)
-    const fineCells = fineVoronoi.regions
+    // Step 1: Single triangulation for all fine cells. Staggered sentinels keep
+    // every real seed interior → bounded, valid circumcenter polygons.
+    const { regions: allFineCells } = this.generateRawVoronoi(fineCount, worldSize)
+    const validFineCells = allFineCells.filter(c =>
+      c.polygon && c.polygon.length >= 3 &&
+      c.seedPoint.x >= 0 && c.seedPoint.x <= worldSize &&
+      c.seedPoint.y >= 0 && c.seedPoint.y <= worldSize
+    )
+    console.log(`${validFineCells.length}/${fineCount} fine cells valid`)
 
-    // Select seed points from largest fine cells
-    const selectedSeeds = this.selectSeeds(fineCells, regionCount, worldSize)
+    // Step 2: Pick region seeds using greedy farthest-point from interior cells
+    // so seeds are evenly spread across the map, not biased toward large boundary cells.
+    const selectedSeeds = this.selectSeeds(validFineCells, regionCount, worldSize)
     console.log(`Selected ${selectedSeeds.length} seed points`)
 
-    // Generate proper Voronoi from selected seeds (guarantees no overlap)
-    const mergedVoronoi = this.generateVoronoiFromSeeds(selectedSeeds, worldSize)
-    const mergedRegions = mergedVoronoi.regions.map((region, idx) => ({
-      ...region,
-      id: idx
+    // Step 3: Assign each fine cell to its nearest seed
+    for (const cell of validFineCells) {
+      cell.parentRegionId = this.findNearestSeed(cell.seedPoint, selectedSeeds)
+    }
+
+    // Step 4: Assign global vertex IDs. Must happen before any clipping —
+    // clipping creates new vertex objects, breaking the shared circumcenter
+    // references that findSharedEdge relies on.
+    let nextVertexId = 0
+    const seenVertices = new Set()
+    for (const cell of validFineCells) {
+      for (const v of cell.polygon) {
+        if (!seenVertices.has(v)) { seenVertices.add(v); v.id = nextVertexId++ }
+      }
+    }
+
+    // Step 5: Boundary edges via reference equality on unclipped polygons
+    const { edges, edgePoints } = this.generateBoundaryEdges(validFineCells, regionCount)
+    console.log(`Generated ${Object.keys(edges).length} boundary edges, ${edgePoints.length} edge points`)
+
+    // Step 6: Build merged region convex hulls (used for click hit-testing fallback)
+    const vertsByRegion = new Map()
+    for (let i = 0; i < selectedSeeds.length; i++) vertsByRegion.set(i, [])
+    for (const cell of validFineCells) {
+      const bucket = vertsByRegion.get(cell.parentRegionId)
+      if (bucket) {
+        for (const v of cell.polygon) {
+          if (isFinite(v.x) && isFinite(v.y)) bucket.push(v)
+        }
+      }
+    }
+    const regions = selectedSeeds.map((seed, i) => ({
+      id: i,
+      seedPoint: seed,
+      polygon: this.convexHull(vertsByRegion.get(i) || []),
+      assignedType: null,
+      description: ''
     }))
 
-    // Generate edges for merged regions
-    const edges = this.generateEdges(mergedRegions)
+    return { worldSize, regions, fineCells: validFineCells, edges, edgePoints }
+  }
 
-    return {
-      worldSize,
-      regions: mergedRegions,
-      edges
+  clipToWorldBoundsProper(polygon, minX, maxX, minY, maxY) {
+    const clip = (pts, inside, intersect) => {
+      if (pts.length === 0) return []
+      const out = []
+      for (let i = 0; i < pts.length; i++) {
+        const cur = pts[i], nxt = pts[(i + 1) % pts.length]
+        const ci = inside(cur), ni = inside(nxt)
+        if (ci) out.push(cur)
+        if (ci !== ni) out.push(intersect(cur, nxt))
+      }
+      return out
     }
+    const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })
+    let poly = [...polygon]
+    poly = clip(poly, p => p.x >= minX, (a, b) => lerp(a, b, (minX - a.x) / (b.x - a.x)))
+    poly = clip(poly, p => p.x <= maxX, (a, b) => lerp(a, b, (maxX - a.x) / (b.x - a.x)))
+    poly = clip(poly, p => p.y >= minY, (a, b) => lerp(a, b, (minY - a.y) / (b.y - a.y)))
+    poly = clip(poly, p => p.y <= maxY, (a, b) => lerp(a, b, (maxY - a.y) / (b.y - a.y)))
+    return poly
   }
 
   selectSeeds(fineCells, count, worldSize) {
-    // Select seeds by largest area (most dominant fine cells)
-    const sorted = [...fineCells]
-      .map((cell, idx) => ({
-        idx,
-        cell,
-        area: this.polygonArea(cell.polygon)
-      }))
-      .sort((a, b) => b.area - a.area)
+    // Prefer interior cells so region seeds are evenly spread, not boundary-biased.
+    const margin = worldSize * 0.15
+    const pool = fineCells.filter(c =>
+      c.seedPoint.x >= margin && c.seedPoint.x <= worldSize - margin &&
+      c.seedPoint.y >= margin && c.seedPoint.y <= worldSize - margin
+    )
+    const source = pool.length >= count ? pool : fineCells
 
-    return sorted.slice(0, count).map(s => s.cell.seedPoint)
+    // Greedy farthest-point: each new seed maximises its minimum distance to
+    // already-selected seeds, ensuring even spatial coverage.
+    const selected = []
+    const used = new Set()
+
+    // Start from the cell closest to world centre
+    const cx = worldSize / 2, cy = worldSize / 2
+    let bestIdx = 0, bestDist = Infinity
+    for (let i = 0; i < source.length; i++) {
+      const d = (source[i].seedPoint.x - cx) ** 2 + (source[i].seedPoint.y - cy) ** 2
+      if (d < bestDist) { bestDist = d; bestIdx = i }
+    }
+    selected.push(source[bestIdx].seedPoint)
+    used.add(bestIdx)
+
+    while (selected.length < count) {
+      let farthest = -1, farthestDist = -Infinity
+      for (let i = 0; i < source.length; i++) {
+        if (used.has(i)) continue
+        let minDist = Infinity
+        for (const s of selected) {
+          const d = (source[i].seedPoint.x - s.x) ** 2 + (source[i].seedPoint.y - s.y) ** 2
+          if (d < minDist) minDist = d
+        }
+        if (minDist > farthestDist) { farthestDist = minDist; farthest = i }
+      }
+      if (farthest === -1) break
+      selected.push(source[farthest].seedPoint)
+      used.add(farthest)
+    }
+
+    return selected
   }
 
   findNearestSeed(point, seeds) {
@@ -318,8 +416,8 @@ export default class MergedVoronoiGenerator {
               regionA: i,
               regionB: j,
               vertices: shared,
-              startPoint: shared[0],
-              endPoint: shared[shared.length - 1],
+              startPoint: shared[0].id,
+              endPoint: shared[shared.length - 1].id,
               assignedType: null
             })
           }
@@ -330,19 +428,95 @@ export default class MergedVoronoiGenerator {
     return Object.fromEntries(edges)
   }
 
-  findSharedEdge(polygon1, polygon2) {
-    const shared = []
-    for (const v1 of polygon1) {
-      for (const v2 of polygon2) {
-        const dx = v1.x - v2.x
-        const dy = v1.y - v2.y
-        if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
-          shared.push(v1)
-          break
+  generateBoundaryEdges(fineCells, regionCount) {
+    // Group fine cells by their parent merged region
+    const cellsByRegion = new Map()
+    for (let i = 0; i < regionCount; i++) cellsByRegion.set(i, [])
+    for (const cell of fineCells) {
+      const bucket = cellsByRegion.get(cell.parentRegionId)
+      if (bucket) bucket.push(cell)
+    }
+
+    const edges = {}
+    // Global point index: id → {id, x, y}.  All edges share this pool so
+    // points that appear in multiple edges (shared corners) are stored once.
+    const edgePointsMap = new Map()
+
+    for (let a = 0; a < regionCount; a++) {
+      for (let b = a + 1; b < regionCount; b++) {
+        const cellsA = cellsByRegion.get(a) || []
+        const cellsB = cellsByRegion.get(b) || []
+        if (cellsA.length === 0 || cellsB.length === 0) continue
+
+        // Collect all fine-cell boundary segments that cross the A/B border.
+        // Reference equality holds because adjacent fine cells share the same
+        // circumcenter objects from the single fine Delaunay triangulation.
+        const segments = []
+        for (const ca of cellsA) {
+          for (const cb of cellsB) {
+            const shared = this.findSharedEdge(ca.polygon, cb.polygon)
+            if (shared && shared.length >= 2) {
+              segments.push({ v1: shared[0], v2: shared[shared.length - 1] })
+            }
+          }
+        }
+        if (segments.length === 0) continue
+
+        const polyline = this.sortSegmentsIntoPolyline(segments)
+        if (polyline.length < 2) continue
+
+        // Register each polyline point in the global index
+        for (const v of polyline) {
+          if (!edgePointsMap.has(v.id)) {
+            edgePointsMap.set(v.id, { id: v.id, x: v.x, y: v.y })
+          }
+        }
+
+        edges[`${a}-${b}`] = {
+          regionA: a,
+          regionB: b,
+          pointIds: polyline.map(v => v.id),
+          assignedType: null
         }
       }
     }
-    return shared
+
+    return { edges, edgePoints: Array.from(edgePointsMap.values()) }
+  }
+
+  sortSegmentsIntoPolyline(segments) {
+    if (segments.length === 0) return []
+    if (segments.length === 1) return [segments[0].v1, segments[0].v2]
+
+    const result = [segments[0].v1, segments[0].v2]
+    const used = new Set([0])
+
+    while (used.size < segments.length) {
+      const last = result[result.length - 1]
+      let found = false
+      for (let i = 0; i < segments.length; i++) {
+        if (used.has(i)) continue
+        if (segments[i].v1 === last) {
+          result.push(segments[i].v2)
+          used.add(i)
+          found = true
+          break
+        } else if (segments[i].v2 === last) {
+          result.push(segments[i].v1)
+          used.add(i)
+          found = true
+          break
+        }
+      }
+      if (!found) break
+    }
+
+    return result
+  }
+
+  findSharedEdge(polygon1, polygon2) {
+    // Use reference equality: adjacent regions share the same circumcenter objects
+    return polygon1.filter(v => polygon2.includes(v))
   }
 
   clipToBox(polygon, bounds) {

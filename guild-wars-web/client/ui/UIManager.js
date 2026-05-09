@@ -23,7 +23,7 @@ export default class UIManager {
     document.body.appendChild(uiContainer)
     this.createTopBar(uiContainer)
     this.createLeftPanels(uiContainer)
-    this.createRightPanels(uiContainer)
+    //this.createRightPanels(uiContainer)
     this.createCenterPanels(uiContainer)
     this.createErrorPopup(uiContainer)
   }
@@ -31,8 +31,22 @@ export default class UIManager {
   createTopBar(container) {
     const topBar = document.createElement('div')
     topBar.id = 'top-bar'
-    topBar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:120px;background:rgba(0,0,0,0.8);border-bottom:2px solid #444;padding:10px;color:#fff;font-family:Arial;z-index:20;pointer-events:auto'
-    topBar.innerHTML = '<div>Setup Phase</div>'
+    topBar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:120px;background:rgba(0,0,0,0.8);border-bottom:2px solid #444;padding:10px;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;justify-content:space-between;align-items:flex-start'
+
+    const title = document.createElement('div')
+    title.textContent = 'Setup Phase'
+    topBar.appendChild(title)
+
+    const newGameBtn = document.createElement('button')
+    newGameBtn.textContent = 'New Game'
+    newGameBtn.style.cssText = 'padding:8px 16px;background:#8b1a1a;color:#fff;border:1px solid #c44;border-radius:3px;cursor:pointer;font-size:14px;pointer-events:auto'
+    newGameBtn.addEventListener('click', () => {
+      if (confirm('Start a new game? All current terrain will be discarded.')) {
+        this.eventBus.emit('NEW_GAME')
+      }
+    })
+    topBar.appendChild(newGameBtn)
+
     container.appendChild(topBar)
   }
 
@@ -94,12 +108,12 @@ export default class UIManager {
     if (step === 'Terrain') {
       this.terrainTypePanel.render(leftPanel)
       this.terrainTypePanel.addFinishButton(leftPanel)
-      rightPanel.innerHTML = '<h2>Terrain Setup</h2><p>Click a region to select it, then choose a terrain type from the left. Or click an edge to select it and assign a cliff or river.</p>'
+      //rightPanel.innerHTML = '<h2>Terrain Setup</h2><p>Click a region to select it, then choose a terrain type from the left. Or click an edge to select it and assign a cliff or river.</p>'
     } else if (step === 'CitySubdivision') {
       this.districtClassPanel.render(leftPanel)
-      rightPanel.innerHTML = '<h2>City Districts</h2><p>Click a district to select it, then choose a class from the left panel.</p>'
+      //rightPanel.innerHTML = '<h2>City Districts</h2><p>Click a district to select it, then choose a class from the left panel.</p>'
     } else {
-      rightPanel.innerHTML = '<h2>Setup</h2>'
+      //rightPanel.innerHTML = '<h2>Setup</h2>'
     }
   }
 

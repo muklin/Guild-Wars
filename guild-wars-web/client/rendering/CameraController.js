@@ -8,7 +8,7 @@ export default class CameraController {
     // Orbital parameters (spherical coordinates)
     this.targetPosition = new THREE.Vector3(25, 0, 25) // Point to orbit around on terrain
     this.distance = 45 // Fixed distance from target (for isometric view)
-    this.azimuth = Math.PI / 4 // 45 degrees (NE direction)
+    this.azimuth = 0 ; // Math.PI / 4 // 45 degrees (NE direction)
     this.elevation = Math.PI / 6 // 30 degrees above horizontal
 
     // Zoom (orthographic camera scale)
@@ -88,7 +88,7 @@ export default class CameraController {
       this.lastMouseY = e.clientY
 
       // Gaze lock: find world point under cursor at drag start
-      const worldPoint = this.raycastToTerrain(e.clientX, e.clientY)
+      const worldPoint = this.raycastToGroundPlane(e.clientX, e.clientY)
       this.gazeLockWorldPoint = worldPoint
       e.preventDefault()
     }
@@ -97,7 +97,7 @@ export default class CameraController {
   onMouseMove(e) {
     if (this.isPanning && this.gazeLockWorldPoint) {
       // Get current world point under cursor
-      const currentWorldPoint = this.raycastToTerrain(e.clientX, e.clientY)
+      const currentWorldPoint = this.raycastToGroundPlane(e.clientX, e.clientY)
 
       if (currentWorldPoint) {
         // Calculate offset to keep gaze-lock point under cursor
@@ -118,28 +118,32 @@ export default class CameraController {
     }
   }
 
-  raycastToTerrain(screenX, screenY) {
+  raycastToGroundPlane(screenX, screenY) {
     // Get canvas position
     const rect = this.renderer.domElement.getBoundingClientRect()
     const x = screenX - rect.left
     const y = screenY - rect.top
 
-    // For orthographic camera, convert screen position directly to world position
-    const aspect = rect.width / rect.height
-    const frustumHeight = 80
-    const frustumWidth = frustumHeight * aspect
-    const frustumHalfHeight = frustumHeight / 2
-    const frustumHalfWidth = frustumWidth / 2
+    // Convert to NDC
+    const ndcX = (x / rect.width) * 2 - 1
+    const ndcY = -(y / rect.height) * 2 + 1
 
-    // Normalized screen coordinates (-1 to 1)
-    const normX = (x / rect.width) * 2 - 1
-    const normY = -(y / rect.height) * 2 + 1
+    // Unproject to world space
+    const vector = new THREE.Vector3(ndcX, ndcY, 0.5)
+    vector.unproject(this.camera)
 
-    // World position at the same height as camera
-    const worldX = this.targetPosition.x + normX * frustumHalfWidth / this.camera.zoom
-    const worldZ = this.targetPosition.z + normY * frustumHalfHeight / this.camera.zoom
+    // Ray from camera through unprojected point
+    const rayOrigin = this.camera.position.clone()
+    const rayDirection = vector.sub(rayOrigin).normalize()
 
-    return new THREE.Vector3(worldX, 0, worldZ)
+    // Find intersection with y=0 plane (terrain)
+    if (Math.abs(rayDirection.y) < 0.0001) return null
+
+    const t = -rayOrigin.y / rayDirection.y
+    if (t < 0) return null
+
+    const intersection = rayOrigin.clone().addScaledVector(rayDirection, t)
+    return intersection
   }
 
   updateCameraPosition() {
@@ -181,28 +185,22 @@ export default class CameraController {
     const moveSpeed = 1.5
     let moved = false
 
+    const ca = Math.cos(this.azimuth)
+    const sa = Math.sin(this.azimuth)
     if (this.keys['keyw']) {
-      const moveDir = new THREE.Vector3(0, 0, -1)
-      moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.azimuth)
-      this.targetPosition.addScaledVector(moveDir, moveSpeed)
+      this.targetPosition.addScaledVector(new THREE.Vector3(-ca, 0, -sa), moveSpeed)
       moved = true
     }
     if (this.keys['keys']) {
-      const moveDir = new THREE.Vector3(0, 0, 1)
-      moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.azimuth)
-      this.targetPosition.addScaledVector(moveDir, moveSpeed)
+      this.targetPosition.addScaledVector(new THREE.Vector3(ca, 0, sa), moveSpeed)
       moved = true
     }
     if (this.keys['keya']) {
-      const moveDir = new THREE.Vector3(-1, 0, 0)
-      moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.azimuth)
-      this.targetPosition.addScaledVector(moveDir, moveSpeed)
+      this.targetPosition.addScaledVector(new THREE.Vector3(-sa, 0, ca), moveSpeed)
       moved = true
     }
     if (this.keys['keyd']) {
-      const moveDir = new THREE.Vector3(1, 0, 0)
-      moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.azimuth)
-      this.targetPosition.addScaledVector(moveDir, moveSpeed)
+      this.targetPosition.addScaledVector(new THREE.Vector3(sa, 0, -ca), moveSpeed)
       moved = true
     }
 

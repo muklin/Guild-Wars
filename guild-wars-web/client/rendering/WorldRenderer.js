@@ -9,19 +9,21 @@ export default class WorldRenderer {
     this.renderer = null
     this.cameraController = null
     this.regionMeshes = new Map()
+    this.fineCellMeshes = new Map()      // fineCellId  → mesh
+    this.regionFineCells = new Map()     // parentRegionId → [fineCellId, ...]
     this.edgeMeshes = new Map()
+    this.edgePointsById = new Map()      // pointId → {id, x, y}
+    this.cornerMeshes = new Map()
     this.districtMeshes = new Map()
     this.terrainData = null
     this.cityDistrictData = null
     this.worldSize = 50
     this.isPaused = false
-    this.godMode = false
     this.originalMaterials = new Map()
     this.debugObjects = []
     this.showDebug = false
-    this.raycaster = new THREE.Raycaster()
-    this.mouse = new THREE.Vector2()
-    this.vertexData = new Map() // Maps mesh UUID to vertex info
+    this.hoveredRegionId = null
+    this.hoveredEdgeId = null
   }
 
   init() {
@@ -62,33 +64,20 @@ export default class WorldRenderer {
 
     this.cameraController = new CameraController(this.camera, this.renderer)
     window.addEventListener('resize', () => this.onWindowResize())
-    document.addEventListener('keydown', (e) => {
-      if (e.code === 'Space') {
-        this.isPaused = !this.isPaused
-        console.log(`Render loop ${this.isPaused ? 'PAUSED' : 'RESUMED'}`)
-        e.preventDefault()
-      }
-      if (e.code === 'KeyG') {
-        this.toggleGodMode()
-        e.preventDefault()
-      }
-      if (e.code === 'KeyD' && e.shiftKey) {
-        this.toggleDebugVisualization()
-        e.preventDefault()
-      }
-    })
-    document.addEventListener('mousemove', (e) => this.onMouseMove(e))
+
     this.animate()
   }
 
-  setTerrainData(regions, edges) {
-    console.log('setTerrainData called with', regions.length, 'regions and', Object.keys(edges || {}).length, 'edges')
-    this.terrainData = { regions, edges: edges || {} }
-    this.renderTerrain(regions)
+  setTerrainData(regions, edges, fineCells, edgePoints) {
+    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (fineCells || []).length, 'fine cells,', (edgePoints || []).length, 'edge points')
+    this.edgePointsById = new Map((edgePoints || []).map(p => [p.id, p]))
+    this.terrainData = { regions, edges: edges || {}, fineCells: fineCells || [] }
+    this.renderTerrain(regions, fineCells || [])
     this.drawVoronoiCenters(regions)
     if (edges && Object.keys(edges).length > 0) {
       this.renderEdges(edges)
     }
+    this.renderCorners(regions)
   }
 
   setCityDistrictData(districts) {
@@ -97,26 +86,45 @@ export default class WorldRenderer {
     this.renderDistricts(districts)
   }
 
-  renderTerrain(regions) {
+  renderTerrain(regions, fineCells) {
+    // Clear all terrain meshes
     this.regionMeshes.forEach(mesh => this.scene.remove(mesh))
     this.regionMeshes.clear()
+    this.fineCellMeshes.forEach(mesh => this.scene.remove(mesh))
+    this.fineCellMeshes.clear()
+    this.regionFineCells.clear()
 
-    console.log(`%c=== TERRAIN RENDERING ===`, 'color: #0f0; font-weight: bold')
-    console.log(`Rendering ${regions.length} regions`)
-    let successCount = 0
-    regions.forEach(region => {
-      const mesh = this.buildRegionMesh(region)
-      if (mesh) {
-        this.scene.add(mesh)
-        this.regionMeshes.set(region.id, mesh)
-        successCount++
-        console.log(`  ✓ Region ${region.id}: ${region.polygon.length} verts, bbox=${mesh.geometry.boundingBox.min.x.toFixed(1)}-${mesh.geometry.boundingBox.max.x.toFixed(1)}`)
-      } else {
-        console.log(`  ✗ Region ${region.id}: ${region.polygon.length} verts → FAILED`)
+    if (fineCells && fineCells.length > 0) {
+      // Render each fine cell individually; colour from its parent merged region
+      const regionMap = new Map(regions.map(r => [r.id, r]))
+      let count = 0
+      for (const cell of fineCells) {
+        const parent = regionMap.get(cell.parentRegionId)
+        const mesh = this.buildRegionMesh({ ...cell, assignedType: parent?.assignedType ?? null })
+        if (mesh) {
+          this.scene.add(mesh)
+          this.fineCellMeshes.set(cell.id, mesh)
+          if (!this.regionFineCells.has(cell.parentRegionId)) {
+            this.regionFineCells.set(cell.parentRegionId, [])
+          }
+          this.regionFineCells.get(cell.parentRegionId).push(cell.id)
+          count++
+        }
       }
-    })
-    console.log(`%c✓ Created ${successCount}/${regions.length} meshes | Scene: ${this.scene.children.length} children`, 'color: #0f0')
-    console.log(`Camera: frustum left=${this.camera.left.toFixed(1)} right=${this.camera.right.toFixed(1)} top=${this.camera.top.toFixed(1)} bottom=${this.camera.bottom.toFixed(1)}`)
+      console.log(`Rendered ${count}/${fineCells.length} fine cells across ${this.regionFineCells.size} merged regions`)
+    } else {
+      // Fallback: render merged region polygons (for saves without fine cells)
+      let successCount = 0
+      regions.forEach(region => {
+        const mesh = this.buildRegionMesh(region)
+        if (mesh) {
+          this.scene.add(mesh)
+          this.regionMeshes.set(region.id, mesh)
+          successCount++
+        }
+      })
+      console.log(`Rendered ${successCount}/${regions.length} merged region meshes (fallback)`)
+    }
   }
 
   buildRegionMesh(region) {
@@ -125,41 +133,37 @@ export default class WorldRenderer {
       return null
     }
 
-    // Use raw polygon vertices - inset can break concave shapes by moving them across edges
-    const polygon = [...region.polygon]
-    polygon.reverse()
-    const vertices = polygon.map(v => [v.x || 0, 0.05, v.y || 0]).flat()
-    if (vertices.length === 0) {
-      console.warn(`Region ${region.id} has empty vertices array`)
-      return null
+    const polygon = this.clipPolygonToBox(
+      region.polygon, 0, this.worldSize, 0, this.worldSize
+    )
+    if (polygon.length < 3) return null
+
+    // Fan-triangulate from seed. Voronoi cells are star-shaped so this is always valid.
+    // region.polygon is CW in 2D → fan triangles (seed, v[i], v[i+1]) yield +y normal.
+    const seed = region.seedPoint
+    const vertices = [seed.x, 0.05, seed.y]
+    for (const v of polygon) {
+      vertices.push(v.x || 0, 0.05, v.y || 0)
     }
     if (vertices.some(v => !isFinite(v))) {
-      console.warn(`Region ${region.id} has non-finite vertices:`, vertices.slice(0, 12))
+      console.warn(`Region ${region.id} has non-finite vertices after clip`)
       return null
     }
 
     const triangles = []
-    for (let i = 1; i < polygon.length - 1; i++) {
-      triangles.push(0, i, i + 1)
+    for (let i = 0; i < polygon.length; i++) {
+      const a = i + 1
+      const b = ((i + 1) % polygon.length) + 1
+      triangles.push(0, a, b)
     }
 
-    if (triangles.length === 0) {
-      console.warn(`Region ${region.id} has no triangles`)
-      return null
-    }
-
-    console.log(`Region ${region.id}: ${polygon.length} verts → ${triangles.length/3} triangles`)
+    if (triangles.length === 0) return null
 
     let geometry
     try {
-      const vertexArray = new Float32Array(vertices)
-      const indexArray = new Uint32Array(triangles)
-      console.log(`Region ${region.id} arrays: verts=${vertexArray.byteLength}, indices=${indexArray.byteLength}`)
-
       geometry = new THREE.BufferGeometry()
-      geometry.setAttribute('position', new THREE.BufferAttribute(vertexArray, 3))
-      const indexAttribute = new THREE.BufferAttribute(indexArray, 1)
-      geometry.setIndex(indexAttribute)
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
+      geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(triangles), 1))
       geometry.computeVertexNormals()
       geometry.computeBoundingBox()
     } catch (e) {
@@ -223,69 +227,48 @@ export default class WorldRenderer {
   }
 
   buildEdgeMesh(edge, edgeId) {
-    // Use all edge vertices if available, otherwise fall back to start/end points
-    const edgeVertices = edge.vertices || [edge.startPoint, edge.endPoint]
-
-    if (!edgeVertices || edgeVertices.length < 2) {
-      return null
-    }
-
-    // Validate all vertices
-    if (edgeVertices.some(v => !v || typeof v.x !== 'number' || typeof v.y !== 'number')) {
-      return null
-    }
+    // Resolve ordered point list from the indexed edge point pool
+    const points = edge.pointIds
+      ? edge.pointIds.map(id => this.edgePointsById.get(id)).filter(Boolean)
+      : edge.vertices   // fallback for old saves with embedded vertices
+    if (!points || points.length < 2) return null
 
     const thickness = 0.5
-    const vertices = []
-    const triangles = []
+    const allVerts = []
+    const allIdx = []
 
-    // Create quad-strip following all edge vertices
-    for (let i = 0; i < edgeVertices.length; i++) {
-      const p1 = edgeVertices[i]
-      const p2 = edgeVertices[(i + 1) % edgeVertices.length]
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i]
+      const p2 = points[i + 1]
+      if (!p1 || !p2 || !isFinite(p1.x) || !isFinite(p2.x)) continue
 
-      // Calculate perpendicular for this segment
       const dx = p2.x - p1.x
       const dy = p2.y - p1.y
       const len = Math.sqrt(dx * dx + dy * dy)
+      if (len === 0) continue
 
-      if (len > 0.001) {
-        const perpX = (-dy / len) * (thickness / 2)
-        const perpY = (dx / len) * (thickness / 2)
+      const perpX = (-dy / len) * (thickness / 2)
+      const perpY = (dx / len) * (thickness / 2)
 
-        const idx = i * 2
-        vertices.push(
-          p1.x - perpX, 0.06, p1.y - perpY,  // Left vertex
-          p1.x + perpX, 0.06, p1.y + perpY   // Right vertex
-        )
-
-        if (i < edgeVertices.length - 1) {
-          triangles.push(idx, idx + 1, idx + 3)
-          triangles.push(idx, idx + 3, idx + 2)
-        }
-      }
+      const base = allVerts.length / 3
+      allVerts.push(
+        p1.x - perpX, 0.06, p1.y - perpY,
+        p1.x + perpX, 0.06, p1.y + perpY,
+        p2.x + perpX, 0.06, p2.y + perpY,
+        p2.x - perpX, 0.06, p2.y - perpY
+      )
+      // CW winding in 2D → +y normal → visible from above
+      allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
     }
 
-    if (vertices.length === 0 || triangles.length === 0) {
-      return null
-    }
+    if (allVerts.length === 0) return null
 
     let geometry
     try {
-      const vertexArray = new Float32Array(vertices)
-      const indexArray = new Uint32Array(triangles)
-
-      if (!isFinite(vertexArray.byteLength) || !isFinite(indexArray.byteLength)) {
-        console.warn(`Edge ${edgeId} has invalid array byte lengths`, vertexArray.byteLength, indexArray.byteLength)
-        return null
-      }
-
       geometry = new THREE.BufferGeometry()
-      geometry.setAttribute('position', new THREE.BufferAttribute(vertexArray, 3))
-      const indexAttribute = new THREE.BufferAttribute(indexArray, 1)
-      geometry.setIndex(indexAttribute)
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allVerts), 3))
+      geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(allIdx), 1))
       geometry.computeVertexNormals()
-      geometry.computeBoundingBox()
     } catch (e) {
       console.error(`Error creating edge geometry ${edgeId}:`, e)
       return null
@@ -293,25 +276,29 @@ export default class WorldRenderer {
 
     const color = edge.assignedType ? TerrainColors.get(edge.assignedType) : TerrainColors.unassigned
     const material = new THREE.MeshStandardMaterial({
-      color: color,
-      roughness: 0.6,
-      metalness: 0,
-      emissive: color,
-      emissiveIntensity: 0.5
+      color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5
     })
 
     const mesh = new THREE.Mesh(geometry, material)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
     mesh.userData = { edgeId }
     return mesh
   }
 
   updateRegionColor(regionId, terrainType) {
-    const mesh = this.regionMeshes.get(regionId)
-    if (mesh) {
-      const color = TerrainColors.get(terrainType) || TerrainColors.unassigned
-      mesh.material.color.setHex(color)
+    const color = TerrainColors.get(terrainType) || TerrainColors.unassigned
+    const cellIds = this.regionFineCells.get(regionId) || []
+    for (const cellId of cellIds) {
+      const mesh = this.fineCellMeshes.get(cellId)
+      if (mesh) {
+        mesh.material.color.setHex(color)
+        mesh.material.emissive.setHex(color)
+      }
+    }
+    // Fallback for saves rendered without fine cells
+    const regionMesh = this.regionMeshes.get(regionId)
+    if (regionMesh) {
+      regionMesh.material.color.setHex(color)
+      regionMesh.material.emissive.setHex(color)
     }
   }
 
@@ -329,6 +316,81 @@ export default class WorldRenderer {
       const color = TerrainColors.get(districtClass) || TerrainColors.Neutral
       mesh.material.color.setHex(color)
     }
+  }
+
+  renderCorners(regions) {
+    this.cornerMeshes.forEach(mesh => this.scene.remove(mesh))
+    this.cornerMeshes.clear()
+
+    // Find all unique corner points
+    const cornerMap = new Map() // key: "x,y" -> { point, regionIds[] }
+
+    for (let i = 0; i < regions.length; i++) {
+      const region = regions[i]
+      for (const vertex of region.polygon) {
+        const key = `${vertex.x.toFixed(4)},${vertex.y.toFixed(4)}`
+        if (!cornerMap.has(key)) {
+          cornerMap.set(key, { point: vertex, regionIds: [] })
+        }
+        cornerMap.get(key).regionIds.push(i)
+      }
+    }
+
+    // Build meshes only for corners where 3+ regions meet
+    let cornerCount = 0
+    for (const [key, data] of cornerMap) {
+      if (data.regionIds.length >= 3) {
+        const mesh = this.buildCornerMesh(data.point, data.regionIds)
+        if (mesh) {
+          this.scene.add(mesh)
+          this.cornerMeshes.set(key, mesh)
+          cornerCount++
+        }
+      }
+    }
+    console.log(`Rendered ${cornerCount} terrain corners`)
+  }
+
+  buildCornerMesh(cornerPoint, regionIds) {
+    // Create a small ngon (fan-triangulated polygon) at the corner
+    const radius = 0.3 // Size of corner polygon
+    const vertexCount = Math.min(regionIds.length, 8) // Cap at 8-sided polygon
+    const vertices = []
+    const triangles = []
+
+    // Center vertex
+    vertices.push(cornerPoint.x, 0.065, cornerPoint.y)
+
+    // Outer vertices in a circle around the corner
+    for (let i = 0; i < vertexCount; i++) {
+      const angle = (i / vertexCount) * Math.PI * 2
+      const x = cornerPoint.x + Math.cos(angle) * radius
+      const y = cornerPoint.y + Math.sin(angle) * radius
+      vertices.push(x, 0.065, y)
+    }
+
+    // Fan triangulation: center to each outer edge (reversed to CW in 2D → +y normal)
+    for (let i = 0; i < vertexCount; i++) {
+      const next = (i + 1) % vertexCount
+      triangles.push(0, next + 1, i + 1)
+    }
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
+    geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(triangles), 1))
+    geometry.computeVertexNormals()
+
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x666666,
+      roughness: 0.6,
+      metalness: 0,
+      emissive: 0x444444,
+      emissiveIntensity: 0.3
+    })
+
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.userData = { cornerPoint }
+    return mesh
   }
 
   renderDistricts(districts) {
@@ -387,6 +449,20 @@ export default class WorldRenderer {
   getRegionAtWorldPos(worldX, worldY) {
     if (!this.terrainData) return null
 
+    // Fine cells give accurate hit detection (each is star-shaped from its seed).
+    // The merged region convex hull is only an approximation and can mis-assign clicks.
+    const fineCells = this.terrainData.fineCells
+    if (fineCells && fineCells.length > 0) {
+      const regionMap = new Map(this.terrainData.regions.map(r => [r.id, r]))
+      for (const cell of fineCells) {
+        if (cell.polygon && this.pointInPolygon(worldX, worldY, cell.polygon)) {
+          return regionMap.get(cell.parentRegionId) || null
+        }
+      }
+      return null
+    }
+
+    // Fallback: merged region polygons (old saves without fine cells)
     for (const region of this.terrainData.regions) {
       if (this.pointInPolygon(worldX, worldY, region.polygon)) {
         return region
@@ -398,25 +474,36 @@ export default class WorldRenderer {
   getEdgeAtWorldPos(worldX, worldY) {
     if (!this.terrainData || !this.terrainData.edges) return null
 
-    const threshold = 1.5 // World-space distance threshold for edge detection
+    const threshold = 1.5
     let closestEdge = null
     let closestDistance = threshold
 
     for (const edgeId in this.terrainData.edges) {
       const edge = this.terrainData.edges[edgeId]
-      const distance = this.distanceToLineSegment(
-        worldX, worldY,
-        edge.startPoint.x, edge.startPoint.y,
-        edge.endPoint.x, edge.endPoint.y
-      )
+      const ids = edge.pointIds
+      if (!ids || ids.length < 2) continue
 
-      if (distance < closestDistance) {
-        closestDistance = distance
-        closestEdge = { ...edge, id: edgeId }
+      for (let i = 0; i < ids.length - 1; i++) {
+        const p1 = this.edgePointsById.get(ids[i])
+        const p2 = this.edgePointsById.get(ids[i + 1])
+        if (!p1 || !p2) continue
+        const distance = this.distanceToLineSegment(worldX, worldY, p1.x, p1.y, p2.x, p2.y)
+        if (distance < closestDistance) {
+          closestDistance = distance
+          closestEdge = { ...edge, id: edgeId }
+        }
       }
     }
 
     return closestEdge
+  }
+
+  // startPoint/endPoint are vertex IDs that index into edge.vertices.
+  // (Falls back to treating them as embedded objects for old saves.)
+  resolveEdgeVertex(edge, ref) {
+    if (ref && typeof ref === 'object') return ref
+    if (!edge.vertices) return null
+    return edge.vertices.find(v => v.id === ref) || null
   }
 
   distanceToLineSegment(px, py, x1, y1, x2, y2) {
@@ -439,6 +526,77 @@ export default class WorldRenderer {
       }
     }
     return null
+  }
+
+  getCornerAtWorldPos(worldX, worldY, threshold = 0.5) {
+    if (!this.terrainData || !this.terrainData.regions) return null
+
+    // Find all unique vertices and which (region, vertex-index) pairs reference them
+    const cornerMap = new Map() // key: "x,y" -> { point, regionIds[], vertexIndices[] }
+
+    for (let i = 0; i < this.terrainData.regions.length; i++) {
+      const region = this.terrainData.regions[i]
+      region.polygon.forEach((vertex, vertexIndex) => {
+        const key = `${vertex.x.toFixed(4)},${vertex.y.toFixed(4)}`
+        if (!cornerMap.has(key)) {
+          cornerMap.set(key, { point: vertex, regionIds: [], vertexIndices: [] })
+        }
+        const entry = cornerMap.get(key)
+        entry.regionIds.push(i)
+        entry.vertexIndices.push(vertexIndex)
+      })
+    }
+
+    for (const [, data] of cornerMap) {
+      const dist = Math.sqrt(
+        Math.pow(worldX - data.point.x, 2) + Math.pow(worldY - data.point.y, 2)
+      )
+      if (dist < threshold && data.regionIds.length >= 2) {
+        return data
+      }
+    }
+
+    return null
+  }
+
+  getCenterAtWorldPos(worldX, worldY, threshold = 0.5) {
+    if (!this.terrainData || !this.terrainData.regions) return null
+
+    for (let i = 0; i < this.terrainData.regions.length; i++) {
+      const region = this.terrainData.regions[i]
+      const dist = Math.sqrt(
+        Math.pow(worldX - region.seedPoint.x, 2) + Math.pow(worldY - region.seedPoint.y, 2)
+      )
+      if (dist < threshold) {
+        return {
+          regionId: region.id,
+          position: region.seedPoint
+        }
+      }
+    }
+
+    return null
+  }
+
+  clipPolygonToBox(polygon, minX, maxX, minY, maxY) {
+    const clip = (pts, inside, intersect) => {
+      if (pts.length === 0) return []
+      const out = []
+      for (let i = 0; i < pts.length; i++) {
+        const cur = pts[i], nxt = pts[(i + 1) % pts.length]
+        const ci = inside(cur), ni = inside(nxt)
+        if (ci) out.push(cur)
+        if (ci !== ni) out.push(intersect(cur, nxt))
+      }
+      return out
+    }
+    const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })
+    let poly = [...polygon]
+    poly = clip(poly, p => p.x >= minX, (a, b) => lerp(a, b, (minX - a.x) / (b.x - a.x)))
+    poly = clip(poly, p => p.x <= maxX, (a, b) => lerp(a, b, (maxX - a.x) / (b.x - a.x)))
+    poly = clip(poly, p => p.y >= minY, (a, b) => lerp(a, b, (minY - a.y) / (b.y - a.y)))
+    poly = clip(poly, p => p.y <= maxY, (a, b) => lerp(a, b, (maxY - a.y) / (b.y - a.y)))
+    return poly
   }
 
   pointInPolygon(x, y, polygon) {
@@ -489,19 +647,64 @@ export default class WorldRenderer {
     }
   }
 
-  toggleGodMode() {
-    this.godMode = !this.godMode
+  clearHover() {
+    if (this.hoveredRegionId !== null) {
+      const cellIds = this.regionFineCells.get(this.hoveredRegionId) || []
+      for (const cellId of cellIds) {
+        const mesh = this.fineCellMeshes.get(cellId)
+        if (mesh?.material?.emissiveIntensity !== undefined) mesh.material.emissiveIntensity = 0.2
+      }
+      // Fallback for merged-region renders
+      const rm = this.regionMeshes.get(this.hoveredRegionId)
+      if (rm?.material?.emissiveIntensity !== undefined) rm.material.emissiveIntensity = 0.2
+      this.hoveredRegionId = null
+    }
+    if (this.hoveredEdgeId !== null) {
+      const mesh = this.edgeMeshes.get(this.hoveredEdgeId)
+      if (mesh?.material?.emissiveIntensity !== undefined) mesh.material.emissiveIntensity = 0.5
+      this.hoveredEdgeId = null
+    }
+  }
 
-    if (this.godMode) {
+  setRegionHover(regionId) {
+    if (this.hoveredRegionId === regionId && this.hoveredEdgeId === null) return
+    this.clearHover()
+    this.hoveredRegionId = regionId
+    const cellIds = this.regionFineCells.get(regionId) || []
+    for (const cellId of cellIds) {
+      const mesh = this.fineCellMeshes.get(cellId)
+      if (mesh?.material?.emissiveIntensity !== undefined) mesh.material.emissiveIntensity = 0.6
+    }
+    if (cellIds.length === 0) {
+      const rm = this.regionMeshes.get(regionId)
+      if (rm?.material?.emissiveIntensity !== undefined) rm.material.emissiveIntensity = 0.6
+    }
+  }
+
+  setEdgeHover(edgeId) {
+    if (this.hoveredEdgeId === edgeId && this.hoveredRegionId === null) return
+    this.clearHover()
+    this.hoveredEdgeId = edgeId
+    const mesh = this.edgeMeshes.get(edgeId)
+    if (mesh?.material?.emissiveIntensity !== undefined) mesh.material.emissiveIntensity = 0.9
+  }
+
+  toggleDebugVisualization() {
+    this.clearHover() // reset hover before swapping materials to avoid stale emissive state
+    this.showDebug = !this.showDebug
+    this.debugObjects.forEach(obj => {
+      obj.visible = this.showDebug
+    })
+
+    if (this.showDebug) {
       this.scene.children.forEach((child) => {
-        if (child.material) {
+        if (child.material && !this.debugObjects.includes(child) && !this.cornerMeshes.has(this.getMapKeyForMesh(child))) {
           this.originalMaterials.set(child, child.material)
           const hue = Math.random()
           const color = new THREE.Color().setHSL(hue, 0.7, 0.6)
           child.material = new THREE.MeshBasicMaterial({ color })
         }
       })
-      console.log('God Mode ON')
     } else {
       this.scene.children.forEach((child) => {
         if (this.originalMaterials.has(child)) {
@@ -509,16 +712,16 @@ export default class WorldRenderer {
         }
       })
       this.originalMaterials.clear()
-      console.log('God Mode OFF')
     }
+
+    console.log(`Debug mode ${this.showDebug ? 'ON' : 'OFF'}`)
   }
 
-  toggleDebugVisualization() {
-    this.showDebug = !this.showDebug
-    this.debugObjects.forEach(obj => {
-      obj.visible = this.showDebug
-    })
-    console.log(`Debug visualization ${this.showDebug ? 'ON' : 'OFF'}`)
+  getMapKeyForMesh(mesh) {
+    for (const [key, val] of this.cornerMeshes) {
+      if (val === mesh) return key
+    }
+    return null
   }
 
   drawVoronoiCenters(regions) {
@@ -531,7 +734,7 @@ export default class WorldRenderer {
     const seedMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 })
     regions.forEach(region => {
       const seed = new THREE.Mesh(seedGeometry, seedMaterial)
-      seed.position.set(region.seedPoint.x, 0.15, region.seedPoint.y)
+      seed.position.set(region.seedPoint.x, 0.0, region.seedPoint.y)
       seed.visible = this.showDebug
       this.scene.add(seed)
       this.debugObjects.push(seed)
@@ -541,77 +744,16 @@ export default class WorldRenderer {
     const vertGeometry = new THREE.BoxGeometry(0.2, 0.2, 0.2)
     const vertMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 })
     regions.forEach(region => {
-      region.polygon.forEach((vertex, vertexIndex) => {
+      region.polygon.forEach((vertex) => {
         const vert = new THREE.Mesh(vertGeometry, vertMaterial)
         vert.position.set(vertex.x, 0.2, vertex.y)
         vert.visible = this.showDebug
         this.scene.add(vert)
         this.debugObjects.push(vert)
-        // Store vertex metadata for hover display
-        this.vertexData.set(vert.uuid, {
-          regionId: region.id,
-          vertexIndex,
-          x: vertex.x,
-          y: vertex.y,
-          mesh: vert
-        })
       })
     })
 
     console.log(`Drew ${regions.length} seed points and ${regions.reduce((sum, r) => sum + r.polygon.length, 0)} vertices`)
   }
 
-  onMouseMove(event) {
-    if (!this.showDebug || !this.camera) return
-
-    // Convert mouse position to normalized device coordinates
-    const rect = this.renderer.domElement.getBoundingClientRect()
-    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
-
-    // Raycasting
-    this.raycaster.setFromCamera(this.mouse, this.camera)
-    const intersects = this.raycaster.intersectObjects(this.debugObjects)
-
-    let tooltip = document.getElementById('debug-tooltip')
-    if (!tooltip) {
-      tooltip = document.createElement('div')
-      tooltip.id = 'debug-tooltip'
-      tooltip.style.cssText = `
-        position: fixed;
-        background: rgba(0, 200, 0, 0.9);
-        color: #fff;
-        padding: 8px 12px;
-        border-radius: 4px;
-        font-size: 12px;
-        font-family: monospace;
-        pointer-events: none;
-        z-index: 1000;
-        display: none;
-        border: 1px solid #0f0;
-      `
-      document.body.appendChild(tooltip)
-    }
-
-    if (intersects.length > 0) {
-      const object = intersects[0].object
-      const vertexInfo = this.vertexData.get(object.uuid)
-
-      if (vertexInfo) {
-        tooltip.style.display = 'block'
-        tooltip.style.left = event.clientX + 10 + 'px'
-        tooltip.style.top = event.clientY + 10 + 'px'
-        tooltip.innerHTML = `
-          Region ${vertexInfo.regionId}<br>
-          Vertex ${vertexInfo.vertexIndex}<br>
-          x: ${vertexInfo.x.toFixed(2)}<br>
-          y: ${vertexInfo.y.toFixed(2)}
-        `
-      } else {
-        tooltip.style.display = 'none'
-      }
-    } else {
-      tooltip.style.display = 'none'
-    }
-  }
 }

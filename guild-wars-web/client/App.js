@@ -34,8 +34,8 @@ export default class App {
       // Setup event listeners
       this.setupEventListeners()
 
-      // Fetch initial state and start setup
-      await this.startSetup()
+      // Load existing state or start fresh
+      await this.loadState()
     } catch (error) {
       console.error('Failed to initialize app:', error)
       this.uiManager?.showError('Failed to initialize game')
@@ -154,6 +154,43 @@ export default class App {
         this.uiManager.showError(error.message)
       }
     })
+
+    this.eventBus.on('NEW_GAME', async () => {
+      await this.startSetup()
+    })
+  }
+
+  async loadState() {
+    try {
+      const state = await GameAPI.getState()
+      const regions = state.worldTerrainData?.regions || []
+
+      if (regions.length > 0) {
+        const setupStep = state.setupStep || 'Terrain'
+        this.gameState = state
+        this.renderer.setTerrainData(regions, state.worldTerrainData.edges || {}, state.worldTerrainData.fineCells || [], state.worldTerrainData.edgePoints || [])
+
+        // Districts only become visible once we leave the Terrain step
+        if (setupStep !== 'Terrain') {
+          const districts = state.cityDistrictData?.districts || []
+          if (districts.length > 0) {
+            this.renderer.setCityDistrictData(districts)
+          }
+        } else {
+          this.renderer.setCityDistrictData([])
+        }
+
+        this.inputHandler.setTerrainData(state)
+        this.uiManager.showSetupPhase(setupStep)
+        this.eventBus.emit('SETUP_STARTED')
+        console.log(`Loaded existing game state at phase: ${setupStep}`)
+      } else {
+        await this.startSetup()
+      }
+    } catch (error) {
+      console.error('Failed to load state:', error)
+      await this.startSetup()
+    }
   }
 
   async startSetup() {
@@ -161,10 +198,8 @@ export default class App {
       const response = await GameAPI.setupInit()
       if (response.ok) {
         this.gameState = response
-        this.renderer.setTerrainData(response.regions, response.edges || {})
-        if (response.districts) {
-          this.renderer.setCityDistrictData(response.districts)
-        }
+        this.renderer.setCityDistrictData([])
+        this.renderer.setTerrainData(response.regions, response.edges || {}, response.fineCells || [], response.edgePoints || [])
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')
         this.eventBus.emit('SETUP_STARTED')

@@ -12,24 +12,43 @@ export default class InputHandler {
     this.renderer = renderer
     document.addEventListener('click', (e) => this.onMouseClick(e))
     document.addEventListener('mousemove', (e) => this.onMouseMove(e))
+    document.addEventListener('keydown',  (e) => this.onkeypress(e))
   }
-
+  
   setTerrainData(data) {
     this.terrainData = data
   }
 
   screenToWorld(screenX, screenY) {
     const rect = this.renderer.renderer.domElement.getBoundingClientRect()
-    const x = screenX - rect.left
-    const y = screenY - rect.top
+    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1
+    const ndcY = -(((screenY - rect.top) / rect.height)) * 2 + 1
 
-    const ndcX = (x / rect.width) * 2 - 1
-    const ndcY = -(y / rect.height) * 2 + 1
+    const camera = this.renderer.camera
 
-    const vector = new THREE.Vector3(ndcX, ndcY, 0.5)
-    vector.unproject(this.renderer.camera)
+    // For an orthographic camera all rays are parallel (= camera look direction).
+    // Offset the ray origin by the screen position along the camera's right/up axes,
+    // then intersect with the y=0 ground plane.
+    const cameraRight    = new THREE.Vector3()
+    const cameraUp       = new THREE.Vector3()
+    const cameraBackward = new THREE.Vector3()
+    camera.matrixWorld.extractBasis(cameraRight, cameraUp, cameraBackward)
 
-    return { x: vector.x, y: vector.z }
+    const halfWidth  = (camera.right  - camera.left)   / (2 * camera.zoom)
+    const halfHeight = (camera.top    - camera.bottom)  / (2 * camera.zoom)
+
+    const rayOrigin = camera.position.clone()
+      .addScaledVector(cameraRight, ndcX * halfWidth)
+      .addScaledVector(cameraUp,    ndcY * halfHeight)
+
+    const rayDir = cameraBackward.clone().negate() // camera looks in local -Z
+
+    if (Math.abs(rayDir.y) < 0.0001) return { x: 0, y: 0 }
+    const t = -rayOrigin.y / rayDir.y
+    if (t < 0) return { x: 0, y: 0 }
+
+    rayOrigin.addScaledVector(rayDir, t)
+    return { x: rayOrigin.x, y: rayOrigin.z }
   }
 
   onMouseClick(e) {
@@ -58,15 +77,82 @@ export default class InputHandler {
 
   onMouseMove(e) {
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
-    const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-    
-    if (region) {
-      this.tooltipEl.textContent = `Region ${region.id} - ${region.assignedType || 'Unassigned'}`
-      this.tooltipEl.style.left = e.clientX + 10 + 'px'
-      this.tooltipEl.style.top = e.clientY + 10 + 'px'
-      this.tooltipEl.style.display = 'block'
-    } else {
+    const debug = this.renderer.showDebug
+
+    // Check for regionCenter first (highest priority)
+    const regionCenter = this.renderer.getCenterAtWorldPos(worldPos.x, worldPos.y, 0.5)
+    if (regionCenter) {
+      this.renderer.setRegionHover(regionCenter.regionId)
+      if (debug) {
+        this.tooltipEl.innerHTML = `
+          <div style="font-weight: bold">Region ${regionCenter.regionId} (regionCenter)</div>
+          <div style="margin-top: 4px; font-size: 0.9em">(${regionCenter.position.x.toFixed(2)}, ${regionCenter.position.y.toFixed(2)})</div>
+        `
+        this.tooltipEl.style.left = e.clientX + 10 + 'px'
+        this.tooltipEl.style.top = e.clientY + 10 + 'px'
+        this.tooltipEl.style.display = 'block'
+      } else {
+        this.tooltipEl.style.display = 'none'
+      }
+      return
+    }
+
+    // Check for vertex second
+    const corner = this.renderer.getCornerAtWorldPos(worldPos.x, worldPos.y, 0.5)
+    if (corner) {
+      this.renderer.clearHover()
+      if (debug) {
+        const regionList = corner.regionIds
+          .map((id, i) => `Region ${id} (v${corner.vertexIndices[i]})`)
+          .join(', ')
+        const vid = corner.point.id !== undefined ? `Vertex ${corner.point.id}` : 'Vertex'
+        this.tooltipEl.innerHTML = `
+          <div style="font-weight: bold">${vid} (${corner.point.x.toFixed(2)}, ${corner.point.y.toFixed(2)})</div>
+          <div style="margin-top: 4px; font-size: 0.9em">${regionList}</div>
+        `
+        this.tooltipEl.style.left = e.clientX + 10 + 'px'
+        this.tooltipEl.style.top = e.clientY + 10 + 'px'
+        this.tooltipEl.style.display = 'block'
+      } else {
+        this.tooltipEl.style.display = 'none'
+      }
+      return
+    }
+
+    // Check for edge
+    const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
+    if (edge) {
+      this.renderer.setEdgeHover(edge.id)
       this.tooltipEl.style.display = 'none'
+      return
+    }
+
+    // Fall back to region detection
+    const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+    if (region) {
+      this.renderer.setRegionHover(region.id)
+      if (debug) {
+        this.tooltipEl.textContent = `Region ${region.id} - ${region.assignedType || 'Unassigned'}`
+        this.tooltipEl.style.left = e.clientX + 10 + 'px'
+        this.tooltipEl.style.top = e.clientY + 10 + 'px'
+        this.tooltipEl.style.display = 'block'
+      } else {
+        this.tooltipEl.style.display = 'none'
+      }
+    } else {
+      this.renderer.clearHover()
+      this.tooltipEl.style.display = 'none'
+    }
+  }
+  onkeypress(e){
+    if (e.code === 'Space') {
+      this.renderer.isPaused = !this.isPaused
+      console.log(`Render loop ${this.renderer.isPaused ? 'PAUSED' : 'RESUMED'}`)
+      e.preventDefault()
+    }
+    if (e.code === 'KeyD' && e.shiftKey) {
+      this.renderer.toggleDebugVisualization()
+      e.preventDefault()
     }
   }
 }

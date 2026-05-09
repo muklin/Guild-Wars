@@ -26,7 +26,7 @@ export default class SetupPhase {
     this.log.push(`Generated ${worldData.regions.length} terrain regions`)
 
     // Find city region (largest central region)
-    const cityRegion = this.findCityRegion(worldData.regions)
+    const cityRegion = this.findCityRegion(worldData.regions, worldData.fineCells)
     if (cityRegion) {
       cityRegion.assignedType = 'City'
       this.log.push(`Identified city region: Region ${cityRegion.id}`)
@@ -42,25 +42,48 @@ export default class SetupPhase {
     return {
       step: this.currentStep,
       regions: worldData.regions,
+      fineCells: worldData.fineCells,
       edges: worldData.edges,
+      edgePoints: worldData.edgePoints,
       log: this.log
     }
   }
 
-  findCityRegion(regions) {
-    // Find largest central (non-boundary) region
-    const centralRegions = regions.filter(r => !this.touchesBoundary(r, 50))
-    if (centralRegions.length === 0) {
-      return regions.reduce((a, b) => a.polygon.length > b.polygon.length ? a : b)
+  findCityRegion(regions, fineCells) {
+    // Count fine cells per merged region — more cells = larger territory
+    const fineCellCount = new Map()
+    if (fineCells) {
+      for (const cell of fineCells) {
+        fineCellCount.set(cell.parentRegionId, (fineCellCount.get(cell.parentRegionId) || 0) + 1)
+      }
     }
-    return centralRegions.reduce((a, b) => a.polygon.length > b.polygon.length ? a : b)
+    const centralRegions = regions.filter(r => !this.touchesBoundary(r, 50, fineCells))
+    const pool = centralRegions.length > 0 ? centralRegions : regions
+    if (fineCellCount.size > 0) {
+      return pool.reduce((a, b) =>
+        (fineCellCount.get(a.id) || 0) >= (fineCellCount.get(b.id) || 0) ? a : b
+      )
+    }
+    // Fallback for old saves without fine cells
+    return pool.reduce((a, b) => a.polygon.length > b.polygon.length ? a : b)
   }
 
-  touchesBoundary(region, worldSize) {
+  touchesBoundary(region, worldSize, fineCells) {
+    if (fineCells) {
+      const regionCells = fineCells.filter(c => c.parentRegionId === region.id)
+      if (regionCells.length > 0) {
+        const margin = worldSize * 0.1  // 10% of world size
+        return regionCells.some(c =>
+          c.seedPoint.x < margin || c.seedPoint.x > worldSize - margin ||
+          c.seedPoint.y < margin || c.seedPoint.y > worldSize - margin
+        )
+      }
+    }
+    // Fallback for old saves without fine cells
     const margin = 0.5
     return region.polygon.some(v =>
       v.x < margin || v.x > (worldSize - margin) ||
-      v.z < margin || v.z > (worldSize - margin)
+      v.y < margin || v.y > (worldSize - margin)
     )
   }
 
@@ -165,5 +188,23 @@ export default class SetupPhase {
     this.selectedDistrictId = null
     this.terrainPlacements = []
     this.districtClassAssignments.clear()
+  }
+
+  serialize() {
+    return {
+      currentStep: this.currentStep,
+      terrainPlacements: this.terrainPlacements,
+      edgePlacements: this.edgePlacements,
+      districtClassAssignments: Array.from(this.districtClassAssignments.entries())
+    }
+  }
+
+  deserialize(data) {
+    if (data.currentStep) this.currentStep = data.currentStep
+    if (data.terrainPlacements) this.terrainPlacements = data.terrainPlacements
+    if (data.edgePlacements) this.edgePlacements = data.edgePlacements
+    if (data.districtClassAssignments) {
+      this.districtClassAssignments = new Map(data.districtClassAssignments)
+    }
   }
 }

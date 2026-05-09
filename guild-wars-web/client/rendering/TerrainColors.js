@@ -1,5 +1,6 @@
 export default {
   // Terrain types
+  City: 0x808080,
   Plains: 0xb2de69,
   Desert: 0xedca72,
   Mountains: 0x8d8d8d,

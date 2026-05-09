@@ -3,6 +3,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import GameStateManager from './engine/GameStateManager.js'
 import SetupPhase from './engine/SetupPhase.js'
+import { saveGame, loadGame, listSaves, deleteSave } from './persistence.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -18,17 +19,43 @@ app.use(express.static(path.join(__dirname, '../dist')))
 const gameStateManager = new GameStateManager()
 const setupPhase = new SetupPhase(gameStateManager)
 
+// Auto-save after any mutation
+async function autoSave() {
+  try {
+    await saveGame('autosave', {
+      gameState: gameStateManager.serialize(),
+      setupPhase: setupPhase.serialize()
+    })
+  } catch (e) {
+    console.error('Auto-save failed:', e.message)
+  }
+}
+
+// Auto-load on startup
+try {
+  const data = await loadGame('autosave')
+  gameStateManager.deserialize(data.gameState)
+  setupPhase.deserialize(data.setupPhase || {})
+  console.log(`Auto-loaded save from ${data.savedAt} (phase: ${data.gameState.currentPhase}, step: ${data.setupPhase?.currentStep})`)
+} catch {
+  console.log('No auto-save found, starting fresh')
+}
+
 // Routes
 
 // GET     - Return full game state
 app.get('/api/state', (req, res) => {
-  res.json(gameStateManager.getStateSnapshot())
+  res.json({
+    ...gameStateManager.getStateSnapshot(),
+    setupStep: setupPhase.currentStep
+  })
 })
 
 // POST /api/setup/init - Initialize setup phase
-app.post('/api/setup/init', (req, res) => {
+app.post('/api/setup/init', async (req, res) => {
   try {
     const result = setupPhase.initialize()
+    await autoSave()
     res.json({
       ok: true,
       ...result
@@ -43,10 +70,11 @@ app.post('/api/setup/init', (req, res) => {
 })
 
 // POST /api/setup/terrain/assign - Assign terrain to region
-app.post('/api/setup/terrain/assign', (req, res) => {
+app.post('/api/setup/terrain/assign', async (req, res) => {
   try {
     const { regionId, terrainType } = req.body
     const result = setupPhase.assignTerrainToRegion(regionId, terrainType)
+    await autoSave()
     res.json({
       ok: result.ok,
       regions: gameStateManager.worldTerrainData.regions,
@@ -61,10 +89,11 @@ app.post('/api/setup/terrain/assign', (req, res) => {
   }
 })
 
-app.post('/api/setup/terrain/edge', (req, res) => {
+app.post('/api/setup/terrain/edge', async (req, res) => {
   try {
     const { edgeId, edgeType } = req.body
     const result = setupPhase.assignEdgeType(edgeId, edgeType)
+    await autoSave()
     res.json({
       ok: result.ok,
       edges: gameStateManager.worldTerrainData.edges,
@@ -80,9 +109,10 @@ app.post('/api/setup/terrain/edge', (req, res) => {
 })
 
 // POST /api/setup/terrain/done - Finish terrain placement
-app.post('/api/setup/terrain/done', (req, res) => {
+app.post('/api/setup/terrain/done', async (req, res) => {
   try {
     const result = setupPhase.finishTerrain()
+    await autoSave()
     res.json({
       ok: true,
       step: 'CitySubdivision',
@@ -99,10 +129,11 @@ app.post('/api/setup/terrain/done', (req, res) => {
 })
 
 // POST /api/setup/subdivision/assign - Assign district class
-app.post('/api/setup/subdivision/assign', (req, res) => {
+app.post('/api/setup/subdivision/assign', async (req, res) => {
   try {
     const { districtId, districtClass } = req.body
     const result = setupPhase.assignDistrictClass(districtId, districtClass)
+    await autoSave()
     res.json({
       ok: result.ok,
       districts: gameStateManager.cityDistrictData.districts || [],
@@ -118,9 +149,10 @@ app.post('/api/setup/subdivision/assign', (req, res) => {
 })
 
 // POST /api/setup/subdivision/done - Finish city subdivision
-app.post('/api/setup/subdivision/done', (req, res) => {
+app.post('/api/setup/subdivision/done', async (req, res) => {
   try {
     const result = setupPhase.finishSubdivision()
+    await autoSave()
     res.json({
       ok: true,
       step: 'DistrictSetup',
@@ -136,10 +168,11 @@ app.post('/api/setup/subdivision/done', (req, res) => {
 })
 
 // POST /api/setup/guild - Create player guild
-app.post('/api/setup/guild', (req, res) => {
+app.post('/api/setup/guild', async (req, res) => {
   try {
     const { guildName, leaderName, leaderClass, secondName, secondClass } = req.body
     const result = setupPhase.createPlayerGuild(guildName, leaderName, leaderClass, secondName, secondClass)
+    await autoSave()
     res.json({
       ok: result.ok,
       guilds: Array.from(gameStateManager.guilds.values()),
@@ -152,6 +185,55 @@ app.post('/api/setup/guild', (req, res) => {
       ok: false,
       error: error.message
     })
+  }
+})
+
+// --- Persistence endpoints ---
+
+// GET /api/saves - list available saves
+app.get('/api/saves', async (req, res) => {
+  try {
+    res.json({ ok: true, saves: await listSaves() })
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/save - save current state to named slot
+app.post('/api/save', async (req, res) => {
+  try {
+    const name = req.body.name || 'autosave'
+    const result = await saveGame(name, {
+      gameState: gameStateManager.serialize(),
+      setupPhase: setupPhase.serialize()
+    })
+    res.json({ ok: true, ...result })
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/load - load state from named slot
+app.post('/api/load', async (req, res) => {
+  try {
+    const name = req.body.name || 'autosave'
+    const data = await loadGame(name)
+    gameStateManager.clear()
+    gameStateManager.deserialize(data.gameState)
+    setupPhase.deserialize(data.setupPhase || {})
+    res.json({ ok: true, savedAt: data.savedAt, state: gameStateManager.getStateSnapshot() })
+  } catch (error) {
+    res.status(404).json({ ok: false, error: error.message })
+  }
+})
+
+// DELETE /api/saves/:name - delete a save
+app.delete('/api/saves/:name', async (req, res) => {
+  try {
+    await deleteSave(req.params.name)
+    res.json({ ok: true })
+  } catch (error) {
+    res.status(404).json({ ok: false, error: error.message })
   }
 })
 
