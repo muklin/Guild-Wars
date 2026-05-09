@@ -87,7 +87,7 @@ export default class SetupPhase {
     )
   }
 
-  assignTerrainToRegion(regionId, terrainType) {
+  assignTerrainToRegion(regionId, terrainType, description = '') {
     const region = this.gameStateManager.worldTerrainData.regions.find(r => r.id === regionId)
     if (!region) {
       throw new Error(`Region ${regionId} not found`)
@@ -98,7 +98,8 @@ export default class SetupPhase {
     }
 
     region.assignedType = terrainType
-    this.terrainPlacements.push({ regionId, terrainType })
+    region.description = description
+    this.terrainPlacements.push({ regionId, terrainType, description })
     this.log.push(`Assigned ${terrainType} to region ${regionId}`)
 
     return {
@@ -107,7 +108,7 @@ export default class SetupPhase {
     }
   }
 
-  assignEdgeType(edgeId, edgeType) {
+  assignEdgeType(edgeId, edgeType, description = '') {
     const edge = this.gameStateManager.worldTerrainData.edges[edgeId]
     if (!edge) {
       throw new Error(`Edge ${edgeId} not found`)
@@ -118,7 +119,8 @@ export default class SetupPhase {
     }
 
     edge.assignedType = edgeType
-    this.edgePlacements.push({ edgeId, edgeType })
+    edge.description = description
+    this.edgePlacements.push({ edgeId, edgeType, description })
     this.log.push(`Assigned ${edgeType} to edge ${edgeId}`)
 
     return {

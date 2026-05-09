@@ -90,12 +90,21 @@ export default class MergedVoronoiGenerator {
       if (trianglesWithSeed.length === 0) continue
 
       const circumcenters = trianglesWithSeed.map(t => t.circumcenter)
-      const sortedVertices = this.fineGenerator.sortByAngle(seedPoint, circumcenters)
+
+      // convexHull preserves circumcenter object references (same objects, just reordered)
+      // so reference equality in findSharedEdge still works. It also guarantees convexity,
+      // fixing the ~15% of cells where sortByAngle produced non-convex polygons (due to
+      // multiple sentinel-side circumcenters clustering at similar angles).
+      // convexHull returns CCW; reverse() gives CW for +y normal in fan triangulation.
+      const polygon = this.convexHull(circumcenters)
+      polygon.reverse()
+
+      if (polygon.length < 3) continue
 
       regions.push({
         id: i,
         seedPoint,
-        polygon: sortedVertices.reverse(),
+        polygon,
         assignedType: null,
         gridX: Math.floor(seedPoint.x / 10),
         gridZ: Math.floor(seedPoint.y / 10),

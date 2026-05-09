@@ -284,22 +284,59 @@ export default class WorldRenderer {
     return mesh
   }
 
-  updateRegionColor(regionId, terrainType) {
-    const color = TerrainColors.get(terrainType) || TerrainColors.unassigned
+  _applyRegionColor(regionId, color) {
     const cellIds = this.regionFineCells.get(regionId) || []
     for (const cellId of cellIds) {
       const mesh = this.fineCellMeshes.get(cellId)
-      if (mesh) {
-        mesh.material.color.setHex(color)
-        mesh.material.emissive.setHex(color)
-      }
+      if (mesh) { mesh.material.color.setHex(color); mesh.material.emissive.setHex(color) }
     }
-    // Fallback for saves rendered without fine cells
-    const regionMesh = this.regionMeshes.get(regionId)
-    if (regionMesh) {
-      regionMesh.material.color.setHex(color)
-      regionMesh.material.emissive.setHex(color)
-    }
+    const rm = this.regionMeshes.get(regionId)
+    if (rm) { rm.material.color.setHex(color); rm.material.emissive.setHex(color) }
+  }
+
+  _regionBaseColor(regionId) {
+    const region = this.terrainData?.regions?.find(r => r.id === regionId)
+    return TerrainColors.get(region?.assignedType) || TerrainColors.unassigned
+  }
+
+  updateRegionColor(regionId, terrainType) {
+    this._applyRegionColor(regionId, TerrainColors.get(terrainType) || TerrainColors.unassigned)
+  }
+
+  selectRegion(regionId) {
+    this._applyRegionColor(regionId, 0xffffff)
+  }
+
+  deselectRegion(regionId) {
+    this._applyRegionColor(regionId, this._regionBaseColor(regionId))
+  }
+
+  previewRegionType(regionId, terrainType) {
+    const color = terrainType ? TerrainColors.get(terrainType) : 0xffffff
+    this._applyRegionColor(regionId, color)
+  }
+
+  _applyEdgeColor(edgeId, color) {
+    const mesh = this.edgeMeshes.get(edgeId)
+    if (mesh) { mesh.material.color.setHex(color); mesh.material.emissive.setHex(color) }
+  }
+
+  _edgeBaseColor(edgeId) {
+    const edge = this.terrainData?.edges?.[edgeId]
+    return edge?.assignedType ? TerrainColors.get(edge.assignedType) : TerrainColors.unassigned
+  }
+
+  selectEdge(edgeId) {
+    this._applyEdgeColor(edgeId, 0xffffff)
+  }
+
+  deselectEdge(edgeId) {
+    this._applyEdgeColor(edgeId, this._edgeBaseColor(edgeId))
+  }
+
+  previewEdgeType(edgeId, edgeType) {
+    const color = edgeType ? TerrainColors.get(edgeType) : 0xffffff
+    this._applyEdgeColor(edgeId, color)
   }
 
   updateEdgeColor(edgeId, terrainType) {

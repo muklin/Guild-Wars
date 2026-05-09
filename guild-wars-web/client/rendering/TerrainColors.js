@@ -13,6 +13,10 @@ export default {
   Wasteland: 0x5a4a3a,
   unassigned: 0xb8a680,
 
+  // Edge types
+  Cliff: 0xaaaaaa,
+  River: 0x4488ff,
+
   // District classes
   Neutral: 0xb3b3b3,
   Commerce: 0xffd700,

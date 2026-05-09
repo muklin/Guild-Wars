@@ -23,12 +23,12 @@ export default class GameAPI {
     return this.request('/setup/init', 'POST')
   }
 
-  static async assignTerrain(regionId, terrainType) {
-    return this.request('/setup/terrain/assign', 'POST', { regionId, terrainType })
+  static async assignTerrain(regionId, terrainType, description = '') {
+    return this.request('/setup/terrain/assign', 'POST', { regionId, terrainType, description })
   }
 
-  static async assignEdge(edgeId, edgeType) {
-    return this.request('/setup/terrain/edge', 'POST', { edgeId, edgeType })
+  static async assignEdge(edgeId, edgeType, description = '') {
+    return this.request('/setup/terrain/edge', 'POST', { edgeId, edgeType, description })
   }
 
   static async finishTerrain() {

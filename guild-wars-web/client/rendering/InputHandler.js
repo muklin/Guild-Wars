@@ -52,6 +52,7 @@ export default class InputHandler {
   }
 
   onMouseClick(e) {
+    if (document.getElementById('ui-container')?.contains(e.target)) return
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
 
     // Try district click first (topmost layer)
@@ -76,6 +77,11 @@ export default class InputHandler {
   }
 
   onMouseMove(e) {
+    if (document.getElementById('ui-container')?.contains(e.target)) {
+      this.renderer.clearHover()
+      this.tooltipEl && (this.tooltipEl.style.display = 'none')
+      return
+    }
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
     const debug = this.renderer.showDebug
 

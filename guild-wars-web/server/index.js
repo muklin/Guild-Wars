@@ -72,8 +72,8 @@ app.post('/api/setup/init', async (req, res) => {
 // POST /api/setup/terrain/assign - Assign terrain to region
 app.post('/api/setup/terrain/assign', async (req, res) => {
   try {
-    const { regionId, terrainType } = req.body
-    const result = setupPhase.assignTerrainToRegion(regionId, terrainType)
+    const { regionId, terrainType, description } = req.body
+    const result = setupPhase.assignTerrainToRegion(regionId, terrainType, description)
     await autoSave()
     res.json({
       ok: result.ok,
@@ -91,8 +91,8 @@ app.post('/api/setup/terrain/assign', async (req, res) => {
 
 app.post('/api/setup/terrain/edge', async (req, res) => {
   try {
-    const { edgeId, edgeType } = req.body
-    const result = setupPhase.assignEdgeType(edgeId, edgeType)
+    const { edgeId, edgeType, description } = req.body
+    const result = setupPhase.assignEdgeType(edgeId, edgeType, description)
     await autoSave()
     res.json({
       ok: result.ok,

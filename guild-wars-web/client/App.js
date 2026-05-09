@@ -11,30 +11,29 @@ export default class App {
     this.uiManager = null
     this.eventBus = new EventBus()
     this.gameState = null
+
+    // Terrain selection state
     this.selectedRegionId = null
-    this.selectedEdgeId = null
+    this.pendingTerrainType = null
+    this.selectedEdgeIds = new Set()
+    this.pendingEdgeType = null
+
+    // District selection (Phase 2)
     this.selectedDistrictId = null
-    this.selectedTerrainType = null
   }
 
   async init() {
     try {
-      // Initialize Three.js renderer
       this.renderer = new WorldRenderer()
       this.renderer.init()
 
-      // Initialize UI
       this.uiManager = new UIManager(this.eventBus, this.renderer)
       this.uiManager.init()
 
-      // Initialize input handling
       this.inputHandler = new InputHandler(this.eventBus)
       this.inputHandler.init(this.renderer)
 
-      // Setup event listeners
       this.setupEventListeners()
-
-      // Load existing state or start fresh
       await this.loadState()
     } catch (error) {
       console.error('Failed to initialize app:', error)
@@ -43,80 +42,23 @@ export default class App {
   }
 
   setupEventListeners() {
-    // Terrain and edge placement
-    this.eventBus.on('REGION_CLICKED', (regionId) => {
-      this.selectedRegionId = regionId
-      this.selectedEdgeId = null
-      console.log('Region selected:', regionId)
-    })
+    this.eventBus.on('REGION_CLICKED', (regionId) => this._handleRegionClick(regionId))
+    this.eventBus.on('EDGE_CLICKED', (edge) => this._handleEdgeClick(edge))
+    this.eventBus.on('DISTRICT_CLICKED', (districtId) => this._handleDistrictClick(districtId))
 
-    this.eventBus.on('EDGE_CLICKED', (edge) => {
-      this.selectedEdgeId = edge.id
-      this.selectedRegionId = null
-      console.log('Edge selected:', edge.id)
-    })
+    this.eventBus.on('TERRAIN_TYPE_PREVIEW', (terrainType) => this._handleTerrainPreview(terrainType))
+    this.eventBus.on('TERRAIN_APPLY', (data) => this._handleTerrainApply(data))
 
-    this.eventBus.on('DISTRICT_CLICKED', (districtId) => {
-      this.selectedDistrictId = districtId
-      this.selectedRegionId = null
-      this.selectedEdgeId = null
-      console.log('District selected:', districtId)
-    })
-
-    this.eventBus.on('TERRAIN_ASSIGNED', async (data) => {
-      if (!this.selectedRegionId) {
-        this.uiManager.showError('Please select a region first')
-        return
-      }
-
-      try {
-        const response = await GameAPI.assignTerrain(this.selectedRegionId, data.terrainType)
-        if (response.ok) {
-          this.gameState = response
-          this.renderer.updateRegionColor(this.selectedRegionId, data.terrainType)
-          this.uiManager.showSuccess(`Assigned ${data.terrainType} to region ${this.selectedRegionId}`)
-          this.selectedRegionId = null
-        } else {
-          this.uiManager.showError(response.error)
-        }
-      } catch (error) {
-        this.uiManager.showError(error.message)
-      }
-    })
-
-    this.eventBus.on('EDGE_ASSIGNED', async (data) => {
-      if (!this.selectedEdgeId) {
-        this.uiManager.showError('Please select an edge first')
-        return
-      }
-
-      try {
-        const response = await GameAPI.assignEdge(this.selectedEdgeId, data.edgeType)
-        if (response.ok) {
-          this.gameState = response
-          this.renderer.updateEdgeColor(this.selectedEdgeId, data.edgeType)
-          this.uiManager.showSuccess(`Assigned ${data.edgeType} to edge ${this.selectedEdgeId}`)
-          this.selectedEdgeId = null
-        } else {
-          this.uiManager.showError(response.error)
-        }
-      } catch (error) {
-        this.uiManager.showError(error.message)
-      }
-    })
+    this.eventBus.on('EDGE_TYPE_PREVIEW', (edgeType) => this._handleEdgePreview(edgeType))
+    this.eventBus.on('EDGE_APPLY', (data) => this._handleEdgeApply(data))
 
     this.eventBus.on('DISTRICT_CLASS_ASSIGNED', async (data) => {
-      if (!this.selectedDistrictId) {
-        this.uiManager.showError('Please select a district first')
-        return
-      }
-
+      if (!this.selectedDistrictId) return
       try {
         const response = await GameAPI.assignDistrictClass(this.selectedDistrictId, data.districtClass)
         if (response.ok) {
           this.gameState = response
           this.renderer.updateDistrictColor(this.selectedDistrictId, data.districtClass)
-          this.uiManager.showSuccess(`Assigned ${data.districtClass} to district ${this.selectedDistrictId}`)
           this.selectedDistrictId = null
         } else {
           this.uiManager.showError(response.error)
@@ -160,6 +102,161 @@ export default class App {
     })
   }
 
+  _handleRegionClick(regionId) {
+    const region = this.gameState?.worldTerrainData?.regions?.find(r => r.id === regionId)
+    if (!region || region.assignedType) return
+
+    if (this.selectedRegionId === regionId) {
+      this.renderer.deselectRegion(regionId)
+      this.selectedRegionId = null
+      this.pendingTerrainType = null
+      this._refreshTerrainPanel()
+      return
+    }
+
+    if (this.selectedRegionId !== null) {
+      this.renderer.deselectRegion(this.selectedRegionId)
+    }
+    this._clearEdgeSelection()
+
+    this.selectedRegionId = regionId
+    this.pendingTerrainType = null
+    this.renderer.selectRegion(regionId)
+    this._refreshTerrainPanel()
+  }
+
+  _handleEdgeClick(edge) {
+    if (this.selectedEdgeIds.has(edge.id)) {
+      this.selectedEdgeIds.delete(edge.id)
+      this.renderer.deselectEdge(edge.id)
+    } else {
+      if (!this._isEdgeConnectedToSelection(edge)) return
+
+      if (this.selectedEdgeIds.size === 0 && this.selectedRegionId !== null) {
+        this.renderer.deselectRegion(this.selectedRegionId)
+        this.selectedRegionId = null
+        this.pendingTerrainType = null
+      }
+
+      this.selectedEdgeIds.add(edge.id)
+      if (this.pendingEdgeType) {
+        this.renderer.previewEdgeType(edge.id, this.pendingEdgeType)
+      } else {
+        this.renderer.selectEdge(edge.id)
+      }
+    }
+
+    if (this.selectedEdgeIds.size === 0) {
+      this.pendingEdgeType = null
+      this._refreshTerrainPanel()
+    } else {
+      this.uiManager.terrainTypePanel?.showContext('edge', {
+        edgeCount: this.selectedEdgeIds.size,
+        pendingType: this.pendingEdgeType
+      })
+    }
+  }
+
+  _handleTerrainPreview(terrainType) {
+    if (this.selectedRegionId === null) return
+    this.pendingTerrainType = terrainType
+    this.renderer.previewRegionType(this.selectedRegionId, terrainType)
+    this.uiManager.terrainTypePanel?.showContext('region', { pendingType: terrainType })
+  }
+
+  async _handleTerrainApply({ description }) {
+    if (this.selectedRegionId === null || !this.pendingTerrainType) return
+    const regionId = this.selectedRegionId
+    const terrainType = this.pendingTerrainType
+    try {
+      const response = await GameAPI.assignTerrain(regionId, terrainType, description)
+      if (response.ok) {
+        const region = this.gameState?.worldTerrainData?.regions?.find(r => r.id === regionId)
+        if (region) { region.assignedType = terrainType; region.description = description }
+        this.renderer.updateRegionColor(regionId, terrainType)
+        this.selectedRegionId = null
+        this.pendingTerrainType = null
+        this._refreshTerrainPanel()
+      } else {
+        this.uiManager.showError(response.error)
+      }
+    } catch (error) {
+      this.uiManager.showError(error.message)
+    }
+  }
+
+  _handleEdgePreview(edgeType) {
+    this.pendingEdgeType = edgeType
+    for (const edgeId of this.selectedEdgeIds) {
+      this.renderer.previewEdgeType(edgeId, edgeType)
+    }
+    this.uiManager.terrainTypePanel?.showContext('edge', {
+      edgeCount: this.selectedEdgeIds.size,
+      pendingType: edgeType
+    })
+  }
+
+  async _handleEdgeApply({ description }) {
+    if (this.selectedEdgeIds.size === 0 || !this.pendingEdgeType) return
+    const edgeIds = [...this.selectedEdgeIds]
+    const edgeType = this.pendingEdgeType
+    try {
+      for (const edgeId of edgeIds) {
+        const response = await GameAPI.assignEdge(edgeId, edgeType, description)
+        if (response.ok) {
+          const edge = this.gameState?.worldTerrainData?.edges?.[edgeId]
+          if (edge) { edge.assignedType = edgeType; edge.description = description }
+          this.renderer.updateEdgeColor(edgeId, edgeType)
+        } else {
+          this.uiManager.showError(response.error)
+          return
+        }
+      }
+      this._clearEdgeSelection()
+      this._refreshTerrainPanel()
+    } catch (error) {
+      this.uiManager.showError(error.message)
+    }
+  }
+
+  _handleDistrictClick(districtId) {
+    this.selectedDistrictId = districtId
+    this.selectedRegionId = null
+    this._clearEdgeSelection()
+  }
+
+  _isEdgeConnectedToSelection(edge) {
+    if (this.selectedEdgeIds.size === 0) return true
+    const edges = this.gameState?.worldTerrainData?.edges || {}
+    for (const selId of this.selectedEdgeIds) {
+      const selEdge = edges[selId]
+      if (!selEdge) continue
+      if (edge.pointIds?.some(pid => selEdge.pointIds?.includes(pid))) return true
+    }
+    return false
+  }
+
+  _clearEdgeSelection() {
+    for (const edgeId of this.selectedEdgeIds) {
+      this.renderer.deselectEdge(edgeId)
+    }
+    this.selectedEdgeIds.clear()
+    this.pendingEdgeType = null
+  }
+
+  _refreshTerrainPanel() {
+    if (this.selectedRegionId !== null) {
+      this.uiManager.terrainTypePanel?.showContext('region', { pendingType: this.pendingTerrainType })
+    } else if (this.selectedEdgeIds.size > 0) {
+      this.uiManager.terrainTypePanel?.showContext('edge', {
+        edgeCount: this.selectedEdgeIds.size,
+        pendingType: this.pendingEdgeType
+      })
+    } else {
+      this.uiManager.terrainTypePanel?.showContext('none')
+    }
+  }
+
   async loadState() {
     try {
       const state = await GameAPI.getState()
@@ -170,7 +267,6 @@ export default class App {
         this.gameState = state
         this.renderer.setTerrainData(regions, state.worldTerrainData.edges || {}, state.worldTerrainData.fineCells || [], state.worldTerrainData.edgePoints || [])
 
-        // Districts only become visible once we leave the Terrain step
         if (setupStep !== 'Terrain') {
           const districts = state.cityDistrictData?.districts || []
           if (districts.length > 0) {
