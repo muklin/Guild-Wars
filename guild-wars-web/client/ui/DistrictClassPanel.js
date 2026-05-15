@@ -1,6 +1,6 @@
 import TerrainColors from '../rendering/TerrainColors.js'
 
-const DISTRICT_CLASSES = ['Commerce', 'Military', 'Magical', 'Religious', 'Noble', 'Slums', 'Entertainment', 'Industrial', 'Agricultural']
+const DISTRICT_CLASSES = ['Market', 'Military', 'Magical', 'Religious', 'Noble', 'Slums', 'Entertainment', 'Industry', 'Agricultural']
 
 export default class DistrictClassPanel {
   constructor(eventBus) {

@@ -35,8 +35,28 @@ export default class GameAPI {
     return this.request('/setup/terrain/done', 'POST')
   }
 
+  static async addThreat(regionId, description = '', name = '') {
+    return this.request('/setup/threat', 'POST', { regionId, description, name })
+  }
+
+  static async addTrade(regionId, description = '') {
+    return this.request('/setup/trade', 'POST', { regionId, description })
+  }
+
   static async assignDistrictClass(districtId, districtClass) {
     return this.request('/setup/subdivision/assign', 'POST', { districtId, districtClass })
+  }
+
+  static async assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null) {
+    return this.request('/setup/city/assign', 'POST', { districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass })
+  }
+
+  static async assignTerrainDistrict(regionId, districtType, description = '', producedResource = '', consumedResources = []) {
+    return this.request('/setup/terrain-district', 'POST', { regionId, districtType, description, producedResource, consumedResources })
+  }
+
+  static async assignCityEdge(edgeId, edgeType, description = '') {
+    return this.request('/setup/city/edge', 'POST', { edgeId, edgeType, description })
   }
 
   static async finishSubdivision() {

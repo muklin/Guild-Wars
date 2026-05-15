@@ -55,25 +55,21 @@ export default class InputHandler {
     if (document.getElementById('ui-container')?.contains(e.target)) return
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
 
-    // Try district click first (topmost layer)
-    const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
-    if (district) {
-      this.eventBus.emit('DISTRICT_CLICKED', district.id)
+    if (this.renderer.mode === 'city') {
+      const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
+      if (cityEdge) { this.eventBus.emit('CITY_EDGE_CLICKED', cityEdge); return }
+      const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
+      if (district) { this.eventBus.emit('DISTRICT_CLICKED', district.id); return }
+      const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+      if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
       return
     }
 
-    // Then try edge click (smaller hit area)
+    // Terrain mode
     const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
-    if (edge) {
-      this.eventBus.emit('EDGE_CLICKED', edge)
-      return
-    }
-
-    // Finally try region click
+    if (edge) { this.eventBus.emit('EDGE_CLICKED', edge); return }
     const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-    if (region) {
-      this.eventBus.emit('REGION_CLICKED', region.id)
-    }
+    if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
   }
 
   onMouseMove(e) {
@@ -85,7 +81,18 @@ export default class InputHandler {
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
     const debug = this.renderer.showDebug
 
-    // Check for regionCenter first (highest priority)
+    if (this.renderer.mode === 'city') {
+      const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
+      if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); return }
+      const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
+      if (district) { this.renderer.setDistrictHover(district.id); return }
+      const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+      if (region) { this.renderer.setRegionHover(region.id); return }
+      this.renderer.clearHover()
+      return
+    }
+
+    // Terrain mode — check region center seed points first
     const regionCenter = this.renderer.getCenterAtWorldPos(worldPos.x, worldPos.y, 0.5)
     if (regionCenter) {
       this.renderer.setRegionHover(regionCenter.regionId)
@@ -103,14 +110,12 @@ export default class InputHandler {
       return
     }
 
-    // Check for vertex second
     const corner = this.renderer.getCornerAtWorldPos(worldPos.x, worldPos.y, 0.5)
     if (corner) {
       this.renderer.clearHover()
       if (debug) {
         const regionList = corner.regionIds
-          .map((id, i) => `Region ${id} (v${corner.vertexIndices[i]})`)
-          .join(', ')
+          .map((id, i) => `Region ${id} (v${corner.vertexIndices[i]})`).join(', ')
         const vid = corner.point.id !== undefined ? `Vertex ${corner.point.id}` : 'Vertex'
         this.tooltipEl.innerHTML = `
           <div style="font-weight: bold">${vid} (${corner.point.x.toFixed(2)}, ${corner.point.y.toFixed(2)})</div>
@@ -119,21 +124,13 @@ export default class InputHandler {
         this.tooltipEl.style.left = e.clientX + 10 + 'px'
         this.tooltipEl.style.top = e.clientY + 10 + 'px'
         this.tooltipEl.style.display = 'block'
-      } else {
-        this.tooltipEl.style.display = 'none'
-      }
+      } else { this.tooltipEl.style.display = 'none' }
       return
     }
 
-    // Check for edge
     const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
-    if (edge) {
-      this.renderer.setEdgeHover(edge.id)
-      this.tooltipEl.style.display = 'none'
-      return
-    }
+    if (edge) { this.renderer.setEdgeHover(edge.id); this.tooltipEl.style.display = 'none'; return }
 
-    // Fall back to region detection
     const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
     if (region) {
       this.renderer.setRegionHover(region.id)
@@ -142,22 +139,27 @@ export default class InputHandler {
         this.tooltipEl.style.left = e.clientX + 10 + 'px'
         this.tooltipEl.style.top = e.clientY + 10 + 'px'
         this.tooltipEl.style.display = 'block'
-      } else {
-        this.tooltipEl.style.display = 'none'
-      }
+      } else { this.tooltipEl.style.display = 'none' }
     } else {
       this.renderer.clearHover()
       this.tooltipEl.style.display = 'none'
     }
   }
+  _isTyping() {
+    const el = document.activeElement
+    return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
+  }
+
   onkeypress(e){
-    if (e.code === 'Space') {
-      this.renderer.isPaused = !this.isPaused
-      console.log(`Render loop ${this.renderer.isPaused ? 'PAUSED' : 'RESUMED'}`)
-      e.preventDefault()
-    }
     if (e.code === 'KeyD' && e.shiftKey) {
       this.renderer.toggleDebugVisualization()
+      e.preventDefault()
+      return
+    }
+    if (this._isTyping()) return
+    if (e.code === 'Space') {
+      this.renderer.isPaused = !this.renderer.isPaused
+      console.log(`Render loop ${this.renderer.isPaused ? 'PAUSED' : 'RESUMED'}`)
       e.preventDefault()
     }
   }

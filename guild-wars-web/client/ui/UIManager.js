@@ -1,5 +1,6 @@
 import TerrainTypePanel from './TerrainTypePanel.js'
-import DistrictClassPanel from './DistrictClassPanel.js'
+import DistrictTypePanel from './DistrictTypePanel.js'
+import FactionsPanel from './FactionsPanel.js'
 
 const STAGES = [
   { step: 'Terrain',         label: 'Terrain Setup',       event: 'TERRAIN_COMPLETE' },
@@ -16,7 +17,8 @@ export default class UIManager {
     this.panels = new Map()
     this.currentStep = null
     this.terrainTypePanel = new TerrainTypePanel(eventBus)
-    this.districtClassPanel = new DistrictClassPanel(eventBus)
+    this.districtTypePanel = new DistrictTypePanel(eventBus)
+    this.factionsPanel = new FactionsPanel(eventBus)
   }
 
   init() {
@@ -31,6 +33,7 @@ export default class UIManager {
     document.body.appendChild(uiContainer)
     this.createTopBar(uiContainer)
     this.createLeftPanels(uiContainer)
+    this.createRightPanel(uiContainer)
     this.createCenterPanels(uiContainer)
     this.createErrorPopup(uiContainer)
   }
@@ -55,6 +58,9 @@ export default class UIManager {
     })
     topBar.appendChild(newGameBtn)
 
+    // Prevent clicks on the top bar from propagating to the terrain canvas.
+    topBar.addEventListener('click',     (e) => e.stopPropagation())
+    topBar.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(topBar)
   }
 
@@ -62,14 +68,28 @@ export default class UIManager {
     const leftPanel = document.createElement('div')
     leftPanel.id = 'left-panel'
     leftPanel.style.cssText = 'position:fixed;left:0;top:80px;width:200px;height:calc(100% - 80px);background:rgba(0,0,0,0.7);border-right:2px solid #444;padding:10px;color:#fff;z-index:20;pointer-events:auto'
+    // Prevent clicks on the panel from propagating to the terrain canvas.
+    leftPanel.addEventListener('click',     (e) => e.stopPropagation())
+    leftPanel.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(leftPanel)
     this.panels.set('left', leftPanel)
+  }
+
+  createRightPanel(container) {
+    const rightPanel = document.createElement('div')
+    rightPanel.id = 'right-panel'
+    rightPanel.style.cssText = 'position:fixed;right:0;top:80px;width:200px;height:calc(100% - 80px);background:rgba(0,0,0,0.7);border-left:2px solid #444;color:#fff;z-index:20;pointer-events:auto;box-sizing:border-box;overflow:hidden'
+    rightPanel.addEventListener('click',     (e) => e.stopPropagation())
+    rightPanel.addEventListener('mousedown', (e) => e.stopPropagation())
+    container.appendChild(rightPanel)
+    this.panels.set('right', rightPanel)
+    this.factionsPanel.render(rightPanel)
   }
 
   createCenterPanels(container) {
     const centerPanel = document.createElement('div')
     centerPanel.id = 'center-panel'
-    centerPanel.style.cssText = 'position:fixed;left:200px;right:0;top:80px;z-index:10'
+    centerPanel.style.cssText = 'position:fixed;left:200px;right:200px;top:80px;z-index:10'
     container.appendChild(centerPanel)
     this.panels.set('center', centerPanel)
   }
@@ -85,17 +105,33 @@ export default class UIManager {
     message.id = 'error-message'
     message.style.cssText = 'text-align:center;padding:20px;color:#fff'
 
+    const btnRow = document.createElement('div')
+    btnRow.style.cssText = 'display:flex;flex-direction:column;gap:8px;align-items:center'
+
     const btn = document.createElement('button')
     btn.id = 'error-ok-btn'
     btn.textContent = 'OK'
     btn.style.cssText = 'width:100%;padding:10px;background:#4a7c59;color:#fff;border:1px solid #666;border-radius:3px;cursor:pointer'
     btn.addEventListener('click', (e) => {
       e.stopPropagation()
+      const cb = this._confirmCallback
+      this.hideError()
+      if (cb) cb()
+    })
+
+    const cancelBtn = document.createElement('button')
+    cancelBtn.id = 'error-cancel-btn'
+    cancelBtn.textContent = 'Cancel'
+    cancelBtn.style.cssText = 'padding:6px 24px;background:transparent;color:#aaa;border:1px solid #555;border-radius:3px;cursor:pointer;display:none;font-size:12px'
+    cancelBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
       this.hideError()
     })
 
+    btnRow.appendChild(btn)
+    btnRow.appendChild(cancelBtn)
     errorBox.appendChild(message)
-    errorBox.appendChild(btn)
+    errorBox.appendChild(btnRow)
     errorPopup.appendChild(errorBox)
     container.appendChild(errorPopup)
   }
@@ -110,7 +146,7 @@ export default class UIManager {
     if (step === 'Terrain') {
       this.terrainTypePanel.render(leftPanel)
     } else if (step === 'CitySubdivision') {
-      this.districtClassPanel.render(leftPanel)
+      this.districtTypePanel.render(leftPanel)
     }
   }
 
@@ -148,18 +184,45 @@ export default class UIManager {
 
   showError(message) {
     document.getElementById('error-message').textContent = message
+    document.getElementById('error-ok-btn').textContent = 'OK'
+    document.getElementById('error-cancel-btn').style.display = 'none'
+    this._confirmCallback = null
     document.getElementById('error-popup').style.display = 'block'
     setTimeout(() => this.hideError(), 5000)
   }
 
   showSuccess(message) {
     document.getElementById('error-message').textContent = message
+    document.getElementById('error-ok-btn').textContent = 'OK'
+    document.getElementById('error-cancel-btn').style.display = 'none'
+    this._confirmCallback = null
     document.getElementById('error-popup').style.display = 'block'
     setTimeout(() => this.hideError(), 3000)
   }
 
+  showConfirm(message, ignoreLabel, onIgnore) {
+    document.getElementById('error-message').textContent = message
+    document.getElementById('error-ok-btn').textContent = ignoreLabel
+    document.getElementById('error-cancel-btn').style.display = 'block'
+    this._confirmCallback = onIgnore
+    document.getElementById('error-popup').style.display = 'block'
+  }
+
   hideError() {
     document.getElementById('error-popup').style.display = 'none'
+    this._confirmCallback = null
+  }
+
+  updateFactions(factions) {
+    this.factionsPanel.update(factions)
+  }
+
+  updateResources(resources) {
+    this.factionsPanel.updateResources(resources)
+  }
+
+  updateThreats(threats) {
+    this.factionsPanel.updateThreats(threats)
   }
 
   setupEventListeners() {}

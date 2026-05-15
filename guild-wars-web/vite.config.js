@@ -6,6 +6,10 @@ export default {
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true
+      },
+      '/resources': {
+        target: 'http://localhost:3001',
+        changeOrigin: true
       }
     }
   }

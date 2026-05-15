@@ -84,13 +84,17 @@ export default class TerrainTypePanel {
       applyBtn.textContent = `Apply: ${pendingType}`
       applyBtn.style.cssText = `width:100%;padding:8px;margin-top:6px;background:${hex};color:#fff;border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px`
       applyBtn.addEventListener('click', () => {
+        applyBtn.disabled = true
+        applyBtn.textContent = 'Applying...'
+        applyBtn.style.opacity = '0.6'
+        applyBtn.style.cursor = 'default'
         this.eventBus.emit('TERRAIN_APPLY', { description: document.getElementById('terrain-description')?.value?.trim() || '' })
       })
       container.appendChild(applyBtn)
     }
   }
 
-  _buildEdgeContent(container, { edgeCount, pendingType, adjacentTypes = [] }) {
+  _buildEdgeContent(container, { edgeCount, pendingType, adjacentTypes = [], riverParallel = false }) {
     const label = document.createElement('div')
     label.textContent = `${edgeCount} Edge${edgeCount > 1 ? 's' : ''} Selected`
     label.style.cssText = 'margin-bottom:8px;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px'
@@ -104,19 +108,16 @@ export default class TerrainTypePanel {
     const grid = document.createElement('div')
     grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px'
 
-    const riverDisabled = adjacentTypes.some(t => t === 'Lake' || t === 'Sea')
     for (const type of EDGE_TYPES) {
       if (type === 'Cliff' && edgeCount > 2) continue
       const isActive = type === pendingType
-      const disabled = type === 'River' && riverDisabled
+      const disabled = type === 'River' && riverParallel
       const btn = document.createElement('button')
       btn.textContent = type
-      btn.title = disabled ? 'Rivers cannot border a Lake or Sea' : type
       btn.disabled = disabled
+      btn.title = disabled ? 'Cannot run alongside an existing river' : type
       btn.style.cssText = `padding:6px 4px;background:${isActive ? '#667' : '#2a2a2a'};border:2px solid ${disabled ? '#444' : '#667'};color:${disabled ? '#555' : '#fff'};cursor:${disabled ? 'not-allowed' : 'pointer'};border-radius:3px;font-size:11px`
-      if (!disabled) {
-        btn.addEventListener('click', () => this.eventBus.emit('EDGE_TYPE_PREVIEW', type))
-      }
+      if (!disabled) btn.addEventListener('click', () => this.eventBus.emit('EDGE_TYPE_PREVIEW', type))
       grid.appendChild(btn)
     }
     container.appendChild(grid)
@@ -137,6 +138,10 @@ export default class TerrainTypePanel {
       applyBtn.textContent = `Apply: ${pendingType}`
       applyBtn.style.cssText = 'width:100%;padding:8px;margin-top:6px;background:#4455aa;color:#fff;border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px'
       applyBtn.addEventListener('click', () => {
+        applyBtn.disabled = true
+        applyBtn.textContent = 'Applying...'
+        applyBtn.style.opacity = '0.6'
+        applyBtn.style.cursor = 'default'
         this.eventBus.emit('EDGE_APPLY', { description: document.getElementById('edge-description')?.value?.trim() || '' })
       })
       container.appendChild(applyBtn)

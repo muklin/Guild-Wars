@@ -14,6 +14,7 @@ const PORT = 3001
 // Middleware
 app.use(express.json())
 app.use(express.static(path.join(__dirname, '../dist')))
+app.use('/resources', express.static(path.join(__dirname, '../resources')))
 
 // Initialize game systems
 const gameStateManager = new GameStateManager()
@@ -37,6 +38,12 @@ try {
   gameStateManager.deserialize(data.gameState)
   setupPhase.deserialize(data.setupPhase || {})
   console.log(`Auto-loaded save from ${data.savedAt} (phase: ${data.gameState.currentPhase}, step: ${data.setupPhase?.currentStep})`)
+  // Migrate old saves that pre-date street graph generation
+  if (gameStateManager.cityDistrictData?.districts?.length && !gameStateManager.cityDistrictData.streetGraph) {
+    setupPhase._generateStreetGraph()
+    await autoSave()
+    console.log('Migrated save: generated missing street graph')
+  }
 } catch {
   console.log('No auto-save found, starting fresh')
 }
@@ -47,7 +54,11 @@ try {
 app.get('/api/state', (req, res) => {
   res.json({
     ...gameStateManager.getStateSnapshot(),
-    setupStep: setupPhase.currentStep
+    setupStep: setupPhase.currentStep,
+    resourceRegistry: setupPhase.resourceRegistry,
+    threats: setupPhase.threats,
+    tradingDestinations: setupPhase.tradingDestinations,
+    factions: setupPhase.factions
   })
 })
 
@@ -77,6 +88,7 @@ app.post('/api/setup/terrain/assign', async (req, res) => {
     await autoSave()
     res.json({
       ok: result.ok,
+      clearedEdgeIds: result.clearedEdgeIds,
       regions: gameStateManager.worldTerrainData.regions,
       log: result.log
     })
@@ -116,15 +128,64 @@ app.post('/api/setup/terrain/done', async (req, res) => {
     res.json({
       ok: true,
       step: 'CitySubdivision',
-      districts: gameStateManager.cityDistrictData.districts || [],
+      cityDistrictData: gameStateManager.cityDistrictData,
       log: result.log
     })
   } catch (error) {
     console.error('Terrain done error:', error)
-    res.status(400).json({
-      ok: false,
-      error: error.message
-    })
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/threat - Add a threat at an edge region
+app.post('/api/setup/threat', async (req, res) => {
+  try {
+    const { regionId, description, name } = req.body
+    const result = setupPhase.addThreat(regionId, description, name)
+    await autoSave()
+    res.json({ ok: true, threats: result.threats, factions: setupPhase.factions, log: result.log })
+  } catch (error) {
+    console.error('Add threat error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/trade - Add a trading destination at an edge region
+app.post('/api/setup/trade', async (req, res) => {
+  try {
+    const { regionId, description } = req.body
+    const result = setupPhase.addTradingDestination(regionId, description)
+    await autoSave()
+    res.json({ ok: true, tradingDestinations: result.tradingDestinations, trade: result.trade, factions: result.factions, log: result.log })
+  } catch (error) {
+    console.error('Add trade error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/city/assign - Assign type to a city district
+app.post('/api/setup/city/assign', async (req, res) => {
+  try {
+    const { districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass } = req.body
+    const result = setupPhase.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass)
+    await autoSave()
+    res.json({ ok: result.ok, resourceRegistry: result.resourceRegistry, factions: result.factions, log: result.log })
+  } catch (error) {
+    console.error('District assign error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/city/edge - Assign type to a city edge
+app.post('/api/setup/city/edge', async (req, res) => {
+  try {
+    const { edgeId, edgeType, description } = req.body
+    const result = setupPhase.assignCityEdgeType(edgeId, edgeType, description)
+    await autoSave()
+    res.json({ ok: result.ok, log: result.log })
+  } catch (error) {
+    console.error('City edge assign error:', error)
+    res.status(400).json({ ok: false, error: error.message })
   }
 })
 
@@ -148,6 +209,19 @@ app.post('/api/setup/subdivision/assign', async (req, res) => {
   }
 })
 
+// POST /api/setup/terrain-district - Assign a district type to a terrain region
+app.post('/api/setup/terrain-district', async (req, res) => {
+  try {
+    const { regionId, districtType, description, producedResource, consumedResources } = req.body
+    const result = setupPhase.assignTerrainDistrict(regionId, districtType, description, producedResource, consumedResources)
+    await autoSave()
+    res.json({ ok: true, resourceRegistry: result.resourceRegistry, factions: result.factions, log: result.log })
+  } catch (error) {
+    console.error('Terrain district assign error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
 // POST /api/setup/subdivision/done - Finish city subdivision
 app.post('/api/setup/subdivision/done', async (req, res) => {
   try {
@@ -156,7 +230,9 @@ app.post('/api/setup/subdivision/done', async (req, res) => {
     res.json({
       ok: true,
       step: 'StreetSetup',
-      log: result.log
+      log: result.log,
+      factions: setupPhase.factions,
+      cityDistrictData: gameStateManager.cityDistrictData
     })
   } catch (error) {
     console.error('Subdivision done error:', error)

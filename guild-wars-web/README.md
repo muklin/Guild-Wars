@@ -59,7 +59,7 @@ This starts:
 ## How to Play
 
 1. **Terrain Setup**: Click terrain regions to select them, choose a type (Plains, Desert, etc.), click "Apply"
-2. **City Subdivision**: Click city districts, assign classes (Commerce, Military, etc.)
+2. **City Subdivision**: Click city districts, assign classes (Market, Military, etc.)
 3. **Guild Creation**: Enter your guild and leader names
 
 ## Architecture Notes

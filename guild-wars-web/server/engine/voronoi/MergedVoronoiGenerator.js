@@ -50,11 +50,30 @@ export default class MergedVoronoiGenerator {
     const seedPoints = []
     const delaunayPoints = []
 
+    // Generate random seed positions
     for (let i = 0; i < regionCount; i++) {
-      const x = Math.random() * worldSize
-      const y = Math.random() * worldSize
-      seedPoints.push({ x, y })
-      delaunayPoints.push(new Point(x, y))
+      seedPoints.push({ x: Math.random() * worldSize, y: Math.random() * worldSize })
+    }
+
+    // Manhattan grid generation: lerp each seed toward its nearest grid point
+    
+    /*if (manhattan > 0) {
+      const cols = Math.ceil(Math.sqrt(regionCount))
+      const step = worldSize / cols
+      const half = step * 0.5
+      
+      for (const sp of seedPoints) {
+        if(Math.random() < manhattan){
+          const gx = Math.max(half, Math.min(worldSize - half, Math.round(sp.x / step) * step))
+          const gy = Math.max(half, Math.min(worldSize - half, Math.round(sp.y / step) * step))
+          sp.x += (gx - sp.x)
+          sp.y += (gy - sp.y)
+        }
+      }
+    }*/
+
+    for (const sp of seedPoints) {
+      delaunayPoints.push(new Point(sp.x, sp.y))
     }
 
     // Sentinels placed 3× worldSize outside the map boundary so that every
@@ -118,19 +137,29 @@ export default class MergedVoronoiGenerator {
     return { worldSize, regions, edges: {} }
   }
 
-  generate(regionCount = 15, worldSize = 50) {
+  generate(regionCount = 15, worldSize = 50, mergeDistance = 0) {
+    //const { mergeDistance = 0, manhattan = 0 } = options
     const fineCount = Math.max(regionCount * 10, 150)
     console.log(`Generating: ${fineCount} fine cells → ${regionCount} merged regions`)
 
     // Step 1: Single triangulation for all fine cells. Staggered sentinels keep
     // every real seed interior → bounded, valid circumcenter polygons.
     const { regions: allFineCells } = this.generateRawVoronoi(fineCount, worldSize)
-    const validFineCells = allFineCells.filter(c =>
+    let validFineCells = allFineCells.filter(c =>
       c.polygon && c.polygon.length >= 3 &&
       c.seedPoint.x >= 0 && c.seedPoint.x <= worldSize &&
       c.seedPoint.y >= 0 && c.seedPoint.y <= worldSize
     )
     console.log(`${validFineCells.length}/${fineCount} fine cells valid`)
+
+    // Step 1.5: Merge circumcenter vertices that are closer than mergeDistance.
+    // This eliminates T-junction artefacts where multiple near-coincident
+    // circumcenters produce slivers and overlapping edge markers.
+    if (mergeDistance > 0) {
+      this.mergeNearbyVertices(validFineCells, mergeDistance)
+      validFineCells = validFineCells.filter(c => c.polygon.length >= 3)
+      console.log(`After vertex merge: ${validFineCells.length} fine cells valid`)
+    }
 
     // Step 2: Pick region seeds using greedy farthest-point from interior cells
     // so seeds are evenly spread across the map, not biased toward large boundary cells.
@@ -418,6 +447,56 @@ export default class MergedVoronoiGenerator {
 
   cross(o, a, b) {
     return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+  }
+
+  mergeNearbyVertices(fineCells, mergeDistance) {
+    // Collect all unique circumcenter vertex objects
+    const allVerts = []
+    const seen = new Set()
+    for (const cell of fineCells) {
+      for (const v of cell.polygon) {
+        if (!seen.has(v)) { seen.add(v); allVerts.push(v) }
+      }
+    }
+
+    // Spatial grid for O(n) neighbour lookup
+    const gs = mergeDistance
+    const grid = new Map()
+    for (const v of allVerts) {
+      const key = `${Math.floor(v.x / gs)},${Math.floor(v.y / gs)}`
+      if (!grid.has(key)) grid.set(key, [])
+      grid.get(key).push(v)
+    }
+
+    // Union-Find: track which vertex each vertex is replaced by
+    const rep = new Map()
+    const find = (v) => { while (rep.has(v)) v = rep.get(v); return v }
+
+    for (const v of allVerts) {
+      const gx = Math.floor(v.x / gs)
+      const gy = Math.floor(v.y / gs)
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const n of (grid.get(`${gx + dx},${gy + dy}`) || [])) {
+            if (n === v) continue
+            if (Math.hypot(v.x - n.x, v.y - n.y) < mergeDistance) {
+              const rv = find(v), rn = find(n)
+              if (rv !== rn) rep.set(rn, rv)
+            }
+          }
+        }
+      }
+    }
+
+    // Apply replacements and deduplicate within each polygon
+    for (const cell of fineCells) {
+      const dedup = new Set()
+      cell.polygon = cell.polygon.map(v => find(v)).filter(v => {
+        if (dedup.has(v)) return false
+        dedup.add(v)
+        return true
+      })
+    }
   }
 
   generateEdges(regions) {
