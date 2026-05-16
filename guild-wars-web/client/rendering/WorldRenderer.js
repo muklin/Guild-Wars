@@ -208,17 +208,12 @@ export default class WorldRenderer {
     if (buildings?.length) {
       const positions = []
       for (const b of buildings) {
-        const hw = b.width / 2, hd = b.depth / 2
-        const cos = Math.cos(b.rotation), sin = Math.sin(b.rotation)
-        const corners = [
-          [b.x + cos * hw - sin * hd, b.y + sin * hw + cos * hd],
-          [b.x - cos * hw - sin * hd, b.y - sin * hw + cos * hd],
-          [b.x - cos * hw + sin * hd, b.y - sin * hw - cos * hd],
-          [b.x + cos * hw + sin * hd, b.y + sin * hw - cos * hd],
-        ]
-        for (let i = 0; i < 4; i++) {
-          const c0 = corners[i], c1 = corners[(i + 1) % 4]
-          positions.push(c0[0], Y, c0[1], c1[0], Y, c1[1])
+        const verts = b.vertices
+        if (!verts?.length) continue
+        const nv = verts.length
+        for (let i = 0; i < nv; i++) {
+          const v0 = verts[i], v1 = verts[(i + 1) % nv]
+          positions.push(v0.x, Y, v0.y, v1.x, Y, v1.y)
         }
       }
       const geo = new THREE.BufferGeometry()
