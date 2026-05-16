@@ -181,6 +181,22 @@ export default class App {
 
     this.eventBus.on('FACTION_HOVER', (faction) => this.renderer.highlightFaction(faction))
     this.eventBus.on('FACTION_HOVER_END', () => this.renderer.clearHover())
+
+    this.eventBus.on('REBUILD_STREETS', async () => {
+      try {
+        const response = await GameAPI.rebuildStreets()
+        if (response.ok) {
+          this.selectedCityEdgeIds.clear()
+          this.pendingCityEdgeType = null
+          if (response.cityDistrictData) this.renderer.setCityDistrictData(response.cityDistrictData)
+          this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
+          this.renderer.renderBuildings(response.cityDistrictData?.buildings, response.cityDistrictData?.alleys)
+          if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
+        } else {
+          this.uiManager.showError(response.error)
+        }
+      } catch (error) { this.uiManager.showError(error.message) }
+    })
   }
 
   // ── Terrain region ──────────────────────────────────────────────────────────
@@ -309,7 +325,7 @@ export default class App {
           this.renderer.setCityDistrictData(response.cityDistrictData)
         }
         this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-        this.renderer.renderBuildings(response.cityDistrictData?.buildings)
+        this.renderer.renderBuildings(response.cityDistrictData?.buildings, response.cityDistrictData?.alleys)
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
@@ -800,7 +816,7 @@ export default class App {
           this.renderer.setMode('city')
           if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
             this.renderer.renderStreetGraph(cityData.streetGraph)
-            this.renderer.renderBuildings(cityData.buildings)
+            this.renderer.renderBuildings(cityData.buildings, cityData.alleys)
           }
         } else {
           this.renderer.clearBuildingLayer()

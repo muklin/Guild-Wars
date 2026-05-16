@@ -154,6 +154,7 @@ export default class UIManager {
     const bar = document.getElementById('lifecycle-bar')
     if (!bar) return
     bar.innerHTML = ''
+    this._rebuildStreetsBtn = null
 
     const currentIndex = STEP_ORDER.indexOf(activeStep)
 
@@ -176,6 +177,15 @@ export default class UIManager {
         doneBtn.style.cssText = 'padding:3px 14px;background:#4a7c59;color:#fff;border:1px solid #6a9c79;border-radius:3px;cursor:pointer;font-size:11px'
         doneBtn.addEventListener('click', () => this.eventBus.emit(stage.event))
         cell.appendChild(doneBtn)
+      }
+
+      if (isActive && stage.step === 'StreetSetup') {
+        const rebuildBtn = document.createElement('button')
+        rebuildBtn.textContent = '↺ Rebuild Streets'
+        rebuildBtn.style.cssText = 'margin-top:4px;padding:2px 8px;background:#5a3a1a;color:#ffb84d;border:1px solid #8a5a2a;border-radius:3px;cursor:pointer;font-size:10px;display:none'
+        rebuildBtn.addEventListener('click', () => this.eventBus.emit('REBUILD_STREETS'))
+        cell.appendChild(rebuildBtn)
+        this._rebuildStreetsBtn = rebuildBtn
       }
 
       bar.appendChild(cell)
@@ -225,5 +235,9 @@ export default class UIManager {
     this.factionsPanel.updateThreats(threats)
   }
 
-  setupEventListeners() {}
+  setupEventListeners() {
+    this.eventBus.on('DEBUG_TOGGLED', (isDebug) => {
+      if (this._rebuildStreetsBtn) this._rebuildStreetsBtn.style.display = isDebug ? 'block' : 'none'
+    })
+  }
 }

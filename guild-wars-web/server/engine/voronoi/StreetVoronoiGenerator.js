@@ -25,15 +25,15 @@ function betterStreetType(a, b) {
 // interval: perimeter seed spacing (world units)
 // density:  interior seeds per unit area of the district polygon
 const DISTRICT_STREET_PARAMS = {
-  Market:      { interval: 0.9, density: .75 },
-  Residential: { interval: 1.5, density: 0.5 },
-  Leadership:  { interval: 0.5, density: 0.2 },
-  default:     { interval: 1.0, density: 0.5 }
+  Market:      { interval: 0.9, density: .1 },
+  Residential: { interval: 1.5, density: 0.1 },
+  Leadership:  { interval: 0.5, density: 0.1 },
+  default:     { interval: 1.0, density: 0.1 }
 }
 
 export default class StreetVoronoiGenerator {
 
-  generate(districts, cityEdges, edgePoints) {
+  generate(districts, cityEdges, edgePoints, epochSeed = 0) {
     const districtResults = []
     let nextNodeId = 0
     const edgePointById = new Map((edgePoints || []).map(p => [p.id, p]))
@@ -47,7 +47,7 @@ export default class StreetVoronoiGenerator {
       const interiorCount = Math.max(4, Math.round(area * params.density))
 
       const perimSeeds = this._samplePerimeter(district.polygon, params.interval)
-      const intSeeds   = this._sampleInterior(district.polygon, interiorCount, district.id)
+      const intSeeds   = this._sampleInterior(district.polygon, interiorCount, district.id, epochSeed)
       const seeds = [...perimSeeds, ...intSeeds]
 
       if (seeds.length < 3) {
@@ -295,6 +295,9 @@ export default class StreetVoronoiGenerator {
       }
     }
 
+    const byType = finalEdges.reduce((acc, e) => { acc[e.type] = (acc[e.type] || 0) + 1; return acc }, {})
+    const typeStr = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(', ')
+    console.log(`Street graph: ${finalNodes.length} nodes, ${finalEdges.length} edges (${typeStr})`)
     return { nodes: finalNodes, edges: finalEdges }
   }
 
@@ -336,8 +339,8 @@ export default class StreetVoronoiGenerator {
   }
 
   // Deterministic interior seeds (rejection-sampled inside polygon).
-  _sampleInterior(polygon, count, seed) {
-    let s = (seed * 2654435761) >>> 0
+  _sampleInterior(polygon, count, seed, epochSeed = 0) {
+    let s = ((seed ^ epochSeed) * 2654435761) >>> 0
     const rng = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0x100000000 }
 
     const xs = polygon.map(v => v.x), ys = polygon.map(v => v.y)

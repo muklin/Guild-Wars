@@ -153,6 +153,7 @@ export default class InputHandler {
   onkeypress(e){
     if (e.code === 'KeyD' && e.shiftKey) {
       this.renderer.toggleDebugVisualization()
+      this.eventBus.emit('DEBUG_TOGGLED', this.renderer.showDebug)
       e.preventDefault()
       return
     }

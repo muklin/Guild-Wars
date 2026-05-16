@@ -222,6 +222,23 @@ app.post('/api/setup/terrain-district', async (req, res) => {
   }
 })
 
+// POST /api/setup/streets/rebuild - Debug: wipe and regenerate street graph + buildings
+app.post('/api/setup/streets/rebuild', async (req, res) => {
+  try {
+    const result = setupPhase.rebuildStreets()
+    await autoSave()
+    res.json({
+      ok: true,
+      log: result.log,
+      factions: setupPhase.factions,
+      cityDistrictData: gameStateManager.cityDistrictData
+    })
+  } catch (error) {
+    console.error('Rebuild streets error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
 // POST /api/setup/subdivision/done - Finish city subdivision
 app.post('/api/setup/subdivision/done', async (req, res) => {
   try {

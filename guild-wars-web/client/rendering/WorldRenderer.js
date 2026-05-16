@@ -201,31 +201,42 @@ export default class WorldRenderer {
     this.buildingMeshes = []
   }
 
-  renderBuildings(buildings) {
+  renderBuildings(buildings, alleys) {
     this.clearBuildingLayer()
-    if (!buildings?.length) return
     const Y = 0.09
-    const positions = []
-    for (const b of buildings) {
-      const hw = b.width / 2, hd = b.depth / 2
-      const cos = Math.cos(b.rotation), sin = Math.sin(b.rotation)
-      const corners = [
-        [b.x + cos * hw - sin * hd, b.y + sin * hw + cos * hd],
-        [b.x - cos * hw - sin * hd, b.y - sin * hw + cos * hd],
-        [b.x - cos * hw + sin * hd, b.y - sin * hw - cos * hd],
-        [b.x + cos * hw + sin * hd, b.y + sin * hw - cos * hd],
-      ]
-      for (let i = 0; i < 4; i++) {
-        const c0 = corners[i], c1 = corners[(i + 1) % 4]
-        positions.push(c0[0], Y, c0[1], c1[0], Y, c1[1])
+
+    if (buildings?.length) {
+      const positions = []
+      for (const b of buildings) {
+        const hw = b.width / 2, hd = b.depth / 2
+        const cos = Math.cos(b.rotation), sin = Math.sin(b.rotation)
+        const corners = [
+          [b.x + cos * hw - sin * hd, b.y + sin * hw + cos * hd],
+          [b.x - cos * hw - sin * hd, b.y - sin * hw + cos * hd],
+          [b.x - cos * hw + sin * hd, b.y - sin * hw - cos * hd],
+          [b.x + cos * hw + sin * hd, b.y + sin * hw - cos * hd],
+        ]
+        for (let i = 0; i < 4; i++) {
+          const c0 = corners[i], c1 = corners[(i + 1) % 4]
+          positions.push(c0[0], Y, c0[1], c1[0], Y, c1[1])
+        }
       }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3))
+      const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xf0d080 }))
+      this.scene.add(mesh)
+      this.buildingMeshes.push(mesh)
     }
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3))
-    const mat = new THREE.LineBasicMaterial({ color: 0xf0d080 })
-    const mesh = new THREE.LineSegments(geo, mat)
-    this.scene.add(mesh)
-    this.buildingMeshes.push(mesh)
+
+    if (alleys?.length) {
+      const aPositions = []
+      for (const a of alleys) aPositions.push(a.x1, Y, a.y1, a.x2, Y, a.y2)
+      const ageo = new THREE.BufferGeometry()
+      ageo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(aPositions), 3))
+      const amesh = new THREE.LineSegments(ageo, new THREE.LineBasicMaterial({ color: 0xb8a070 }))
+      this.scene.add(amesh)
+      this.streetMeshes.push(amesh)
+    }
   }
 
   renderThreats(threats, regions) {
@@ -1077,7 +1088,7 @@ export default class WorldRenderer {
 
   getCityEdgeAtWorldPos(worldX, worldY) {
     if (!this.cityDistrictData?.edges) return null
-    const threshold = 0.5
+    const threshold = 0.25
     let closestEdge = null, closestDist = threshold
     for (const edgeId in this.cityDistrictData.edges) {
       const edge = this.cityDistrictData.edges[edgeId]

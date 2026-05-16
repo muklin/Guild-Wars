@@ -657,6 +657,24 @@ export default class SetupPhase {
     return null
   }
 
+  rebuildStreets() {
+    const cityData = this.gameStateManager.cityDistrictData
+    if (!cityData) throw new Error('No city district data')
+    // Reset all user-assigned city edge types so street setup starts fresh
+    for (const edge of Object.values(cityData.edges || {})) {
+      edge.assignedType = null
+    }
+    cityData.streetGraph = null
+    cityData.buildings = []
+    cityData.alleys = []
+    this.cityEdgePlacements = []
+    this._generateStreetGraph(Date.now())
+    this._generateBuildings()
+    this._rebuildFactions()
+    this.log.push('Streets rebuilt.')
+    return { ok: true, log: this.log }
+  }
+
   finishSubdivision() {
     this._generateStreetGraph()
     this._generateBuildings()
@@ -666,7 +684,7 @@ export default class SetupPhase {
     return { ok: true, log: this.log }
   }
 
-  _generateStreetGraph() {
+  _generateStreetGraph(epochSeed = 0) {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.districts?.length) return
 
@@ -696,7 +714,7 @@ export default class SetupPhase {
     }
 
     const gen = new StreetVoronoiGenerator()
-    cityData.streetGraph = gen.generate(cityData.districts, cityData.edges, cityData.edgePoints || [])
+    cityData.streetGraph = gen.generate(cityData.districts, cityData.edges, cityData.edgePoints || [], epochSeed)
     this.log.push(`Generated street graph: ${cityData.streetGraph.nodes.length} nodes, ${cityData.streetGraph.edges.length} edges`)
   }
 
@@ -704,8 +722,10 @@ export default class SetupPhase {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.districts?.length || !cityData?.streetGraph) return
     const gen = new BuildingGenerator()
-    cityData.buildings = gen.generate(cityData.districts, cityData.streetGraph)
-    this.log.push(`Generated ${cityData.buildings.length} buildings`)
+    const result = gen.generate(cityData.districts, cityData.streetGraph)
+    cityData.buildings = result.buildings
+    cityData.alleys = result.alleys
+    this.log.push(`Generated ${cityData.buildings.length} buildings, ${cityData.alleys.length} alley segments`)
   }
 
   finishStreetSetup() {
