@@ -46,7 +46,7 @@ export default class MergedVoronoiGenerator {
     return { worldSize, regions, edges: {} }
   }
 
-  generateRawVoronoi(regionCount, worldSize) {
+  generateRawVoronoi(regionCount, worldSize, manhattan = 0) {
     const seedPoints = []
     const delaunayPoints = []
 
@@ -57,7 +57,7 @@ export default class MergedVoronoiGenerator {
 
     // Manhattan grid generation: lerp each seed toward its nearest grid point
     
-    /*if (manhattan > 0) {
+    if (manhattan > 0) {
       const cols = Math.ceil(Math.sqrt(regionCount))
       const step = worldSize / cols
       const half = step * 0.5
@@ -70,7 +70,7 @@ export default class MergedVoronoiGenerator {
           sp.y += (gy - sp.y)
         }
       }
-    }*/
+    }
 
     for (const sp of seedPoints) {
       delaunayPoints.push(new Point(sp.x, sp.y))
@@ -137,8 +137,8 @@ export default class MergedVoronoiGenerator {
     return { worldSize, regions, edges: {} }
   }
 
-  generate(regionCount = 15, worldSize = 50, mergeDistance = 0) {
-    //const { mergeDistance = 0, manhattan = 0 } = options
+  generate(regionCount = 15, worldSize = 50, mergeDistance = 0, manhattan = 0) {
+    
     const fineCount = Math.max(regionCount * 10, 150)
     console.log(`Generating: ${fineCount} fine cells → ${regionCount} merged regions`)
 

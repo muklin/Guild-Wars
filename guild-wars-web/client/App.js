@@ -190,7 +190,7 @@ export default class App {
           this.pendingCityEdgeType = null
           if (response.cityDistrictData) this.renderer.setCityDistrictData(response.cityDistrictData)
           this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-          this.renderer.renderBuildings(response.cityDistrictData?.buildings, response.cityDistrictData?.alleys)
+          this.renderer.renderBuildings(response.cityDistrictData?.blocks)
           if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
         } else {
           this.uiManager.showError(response.error)
@@ -325,7 +325,7 @@ export default class App {
           this.renderer.setCityDistrictData(response.cityDistrictData)
         }
         this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-        this.renderer.renderBuildings(response.cityDistrictData?.buildings, response.cityDistrictData?.alleys)
+        this.renderer.renderBuildings(response.cityDistrictData?.blocks)
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
@@ -816,7 +816,7 @@ export default class App {
           this.renderer.setMode('city')
           if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
             this.renderer.renderStreetGraph(cityData.streetGraph)
-            this.renderer.renderBuildings(cityData.buildings, cityData.alleys)
+            this.renderer.renderBuildings(cityData.blocks)
           }
         } else {
           this.renderer.clearBuildingLayer()

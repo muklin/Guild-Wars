@@ -22,13 +22,14 @@ function betterStreetType(a, b) {
   return (STREET_PRIORITY[a] ?? 0) >= (STREET_PRIORITY[b] ?? 0) ? a : b
 }
 
-// interval: perimeter seed spacing (world units)
-// density:  interior seeds per unit area of the district polygon
+// interval:  perimeter seed spacing (world units)
+// density:   interior seeds per unit area of the district polygon
+// manhattan: probability [0,1] that each interior seed snaps to the nearest grid point
 const DISTRICT_STREET_PARAMS = {
-  Market:      { interval: 0.9, density: .1 },
-  Residential: { interval: 1.5, density: 0.1 },
-  Leadership:  { interval: 0.5, density: 0.1 },
-  default:     { interval: 1.0, density: 0.1 }
+  Market:      { interval: 0.9, density: .1,  manhattan: 0.99 },
+  Residential: { interval: 1.5, density: 0.1, manhattan: 0.99 },
+  Leadership:  { interval: 0.5, density: 0.1, manhattan: 0.99 },
+  default:     { interval: 1.0, density: 0.1, manhattan: 0.99 }
 }
 
 export default class StreetVoronoiGenerator {
@@ -47,16 +48,25 @@ export default class StreetVoronoiGenerator {
       const interiorCount = Math.max(4, Math.round(area * params.density))
 
       const perimSeeds = this._samplePerimeter(district.polygon, params.interval)
-      const intSeeds   = this._sampleInterior(district.polygon, interiorCount, district.id, epochSeed)
+      const intSeeds   = this._sampleInterior(district.polygon, interiorCount, district.id, epochSeed, params.manhattan ?? 0, params.interval)
       const seeds = [...perimSeeds, ...intSeeds]
 
       if (seeds.length < 3) {
-        districtResults.push({ districtId: district.id, nodes: [], edges: [] })
+        districtResults.push({ districtId: district.id, nodes: [], edges: [], cells: [] })
         continue
       }
 
       const points = seeds.map(s => new Point(s.x, s.y))
       const triangulator = DelaunayTriangulator.createFromPoints(points)
+
+      // Build vertex → triangle adjacency for Voronoi cell computation
+      const vertexTris = new Map()
+      for (const tri of triangulator.triangulation) {
+        for (const v of tri.vertices) {
+          if (!vertexTris.has(v._id)) vertexTris.set(v._id, [])
+          vertexTris.get(v._id).push(tri)
+        }
+      }
 
       const edgeTriMap = new Map()
       for (const tri of triangulator.triangulation) {
@@ -101,10 +111,35 @@ export default class StreetVoronoiGenerator {
         })
       }
 
+      // Compute Voronoi cell for every seed, clipping to district polygon.
+      // District polygons are Voronoi cells (convex), so Sutherland-Hodgman clipping is exact.
+      const cells = []
+      for (let i = 0; i < seeds.length; i++) {
+        const seed = seeds[i]
+        const point = points[i]
+        const tris = vertexTris.get(point._id) || []
+
+        // Collect raw circumcenters — no clamping, let clipping handle the boundary
+        const corners = []
+        for (const tri of tris) {
+          if (!tri.circumcenter) continue
+          corners.push({ x: tri.circumcenter.x, y: tri.circumcenter.y })
+        }
+        if (corners.length < 3) continue
+
+        corners.sort((a, b) =>
+          Math.atan2(a.y - seed.y, a.x - seed.x) - Math.atan2(b.y - seed.y, b.x - seed.x)
+        )
+
+        const clipped = this._clipToPolygon(corners, district.polygon)
+        if (clipped && clipped.length >= 3) cells.push({ districtId: district.id, polygon: clipped })
+      }
+
       districtResults.push({
         districtId: district.id,
         nodes: [...nodeByKey.values()],
-        edges: distEdges
+        edges: distEdges,
+        cells
       })
     }
 
@@ -295,10 +330,12 @@ export default class StreetVoronoiGenerator {
       }
     }
 
+    const allCells = districtResults.flatMap(r => r.cells || [])
+
     const byType = finalEdges.reduce((acc, e) => { acc[e.type] = (acc[e.type] || 0) + 1; return acc }, {})
     const typeStr = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(', ')
-    console.log(`Street graph: ${finalNodes.length} nodes, ${finalEdges.length} edges (${typeStr})`)
-    return { nodes: finalNodes, edges: finalEdges }
+    console.log(`Street graph: ${finalNodes.length} nodes, ${finalEdges.length} edges (${typeStr}), ${allCells.length} Voronoi cells`)
+    return { nodes: finalNodes, edges: finalEdges, cells: allCells }
   }
 
   // Shoelace formula for polygon area (unsigned)
@@ -339,7 +376,8 @@ export default class StreetVoronoiGenerator {
   }
 
   // Deterministic interior seeds (rejection-sampled inside polygon).
-  _sampleInterior(polygon, count, seed, epochSeed = 0) {
+  // manhattan: probability a seed snaps to the nearest grid point (grid step = gridStep).
+  _sampleInterior(polygon, count, seed, epochSeed = 0, manhattan = 0, gridStep = 1.0) {
     let s = ((seed ^ epochSeed) * 2654435761) >>> 0
     const rng = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0x100000000 }
 
@@ -350,8 +388,12 @@ export default class StreetVoronoiGenerator {
     const pts = []
     let attempts = 0
     while (pts.length < count && attempts < count * 30) {
-      const x = minX + rng() * (maxX - minX)
-      const y = minY + rng() * (maxY - minY)
+      let x = minX + rng() * (maxX - minX)
+      let y = minY + rng() * (maxY - minY)
+      if (manhattan > 0 && rng() < manhattan) {
+        x = Math.round(x / gridStep) * gridStep
+        y = Math.round(y / gridStep) * gridStep
+      }
       if (this._pip(x, y, polygon)) pts.push({ x, y })
       attempts++
     }
@@ -379,6 +421,38 @@ export default class StreetVoronoiGenerator {
       if (d < bestDist) { bestDist = d; bestX = cx; bestY = cy }
     }
     return { x: bestX, y: bestY }
+  }
+
+  // Sutherland-Hodgman clip of `subject` polygon against convex `clip` polygon.
+  // Uses centroid to determine "inside" so winding order of clip polygon doesn't matter.
+  _clipToPolygon(subject, clip) {
+    const n = clip.length
+    const cx = clip.reduce((s, v) => s + v.x, 0) / n
+    const cy = clip.reduce((s, v) => s + v.y, 0) / n
+
+    let output = [...subject]
+    for (let i = 0; i < n && output.length > 0; i++) {
+      const A = clip[i], B = clip[(i + 1) % n]
+      const ABx = B.x - A.x, ABy = B.y - A.y
+      const centSide = ABx * (cy - A.y) - ABy * (cx - A.x)
+      const inside = p => (ABx * (p.y - A.y) - ABy * (p.x - A.x)) * centSide >= 0
+      const intersect = (P, Q) => {
+        const dx = Q.x - P.x, dy = Q.y - P.y
+        const denom = ABx * dy - ABy * dx
+        if (Math.abs(denom) < 1e-10) return P
+        const t = (ABy * (P.x - A.x) - ABx * (P.y - A.y)) / denom
+        return { x: P.x + t * dx, y: P.y + t * dy }
+      }
+      const input = output
+      output = []
+      for (let j = 0; j < input.length; j++) {
+        const cur = input[j], prev = input[(j + input.length - 1) % input.length]
+        const curIn = inside(cur), prevIn = inside(prev)
+        if (curIn) { if (!prevIn) output.push(intersect(prev, cur)); output.push(cur) }
+        else if (prevIn) output.push(intersect(prev, cur))
+      }
+    }
+    return output.length >= 3 ? output : null
   }
 
   _pip(px, py, polygon) {

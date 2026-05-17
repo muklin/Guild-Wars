@@ -1,6 +1,7 @@
 import MergedVoronoiGenerator from './voronoi/MergedVoronoiGenerator.js'
 import StreetVoronoiGenerator from './voronoi/StreetVoronoiGenerator.js'
 import BuildingGenerator from './voronoi/BuildingGenerator.js'
+import { extractBlocks } from './voronoi/BlockExtractor.js'
 
 export default class SetupPhase {
   constructor(gameStateManager) {
@@ -725,7 +726,8 @@ export default class SetupPhase {
     const result = gen.generate(cityData.districts, cityData.streetGraph)
     cityData.buildings = result.buildings
     cityData.alleys = result.alleys
-    this.log.push(`Generated ${cityData.buildings.length} buildings, ${cityData.alleys.length} alley segments`)
+    cityData.blocks = extractBlocks(cityData.streetGraph)
+    this.log.push(`Generated ${cityData.buildings.length} buildings, ${cityData.alleys.length} alley segments, ${cityData.blocks.length} blocks`)
   }
 
   finishStreetSetup() {

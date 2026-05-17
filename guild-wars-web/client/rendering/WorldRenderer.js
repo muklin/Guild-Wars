@@ -3,6 +3,69 @@ import CameraController from './CameraController.js'
 import TerrainColors from './TerrainColors.js'
 import TerrainFeatureManager from './TerrainFeatureManager.js'
 
+// Inset a CW-wound (y-down) polygon by offsetting each edge inward along its
+// inward normal and intersecting adjacent offset lines at corners.
+// Dead-end spikes (antiparallel edges) get a square end cap.
+// Acute corners that exceed miterLimit × offset are bevelled.
+function insetPolygon(poly, offset, miterLimit = 1.5) {
+  const n = poly.length
+  const lines = []
+  for (let i = 0; i < n; i++) {
+    const a = poly[i], b = poly[(i + 1) % n]
+    const dx = b.x - a.x, dy = b.y - a.y
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-10) continue
+    const nx = -dy / len, ny = dx / len
+    const ux = dx / len, uy = dy / len
+    lines.push({
+      px: a.x + nx * offset, py: a.y + ny * offset,
+      ex: b.x + nx * offset, ey: b.y + ny * offset,
+      dx, dy, ux, uy,
+      si: i,              // start vertex index into poly
+      ei: (i + 1) % n    // end vertex index into poly
+    })
+  }
+  if (lines.length < 3) return null
+  const result = []
+  const m = lines.length
+  for (let i = 0; i < m; i++) {
+    const L1 = lines[i], L2 = lines[(i + 1) % m]
+    const denom = L1.dx * L2.dy - L1.dy * L2.dx
+
+    if (Math.abs(denom) < 1e-9 || L1.ux * L2.ux + L1.uy * L2.uy < -0.5) {
+      if (L1.ux * L2.ux + L1.uy * L2.uy < -0.5) {
+        // Check whether this is a true dead-end spike: face polygon visits the
+        // same vertex before L1 and after L2 (pattern A→B→A).
+        const a1 = poly[L1.si], a2 = poly[L2.ei]
+        if (Math.hypot(a1.x - a2.x, a1.y - a2.y) < 1e-9) {
+          // True spike — extend a square cap past the dead-end tip.
+          result.push({ x: L1.ex,                  y: L1.ey                  })
+          result.push({ x: L1.ex + L1.ux * offset, y: L1.ey + L1.uy * offset })
+          result.push({ x: L2.px + L1.ux * offset, y: L2.py + L1.uy * offset })
+          result.push({ x: L2.px,                  y: L2.py                  })
+        } else {
+          // Acute block corner (not a spike) — midpoint stays near the vertex,
+          // so the ring never crosses to the other side of the block.
+          result.push({ x: (L1.ex + L2.px) / 2, y: (L1.ey + L2.py) / 2 })
+        }
+      } else {
+        result.push({ x: (L1.ex + L2.px) / 2, y: (L1.ey + L2.py) / 2 })
+      }
+      continue
+    }
+
+    const t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / denom
+    const pt = { x: L1.px + t * L1.dx, y: L1.py + t * L1.dy }
+    if (Math.hypot(pt.x - L1.ex, pt.y - L1.ey) > miterLimit * offset) {
+      // Miter too large — midpoint avoids crossing for acute corners.
+      result.push({ x: (L1.ex + L2.px) / 2, y: (L1.ey + L2.py) / 2 })
+    } else {
+      result.push(pt)
+    }
+  }
+  return result.length >= 3 ? result : null
+}
+
 export default class WorldRenderer {
   constructor() {
     this.scene = null
@@ -152,8 +215,10 @@ export default class WorldRenderer {
 
   renderStreetGraph(streetGraph) {
     this.clearStreetLayer()
-    if (!streetGraph?.nodes?.length || !streetGraph?.edges?.length) return
+    if (!streetGraph) return
 
+    // Render street edges
+    if (!streetGraph.nodes?.length || !streetGraph.edges?.length) return
     const nodeById = new Map(streetGraph.nodes.map(n => [n.id, n]))
     const byType = new Map()
     for (const edge of streetGraph.edges) {
@@ -201,36 +266,62 @@ export default class WorldRenderer {
     this.buildingMeshes = []
   }
 
-  renderBuildings(buildings, alleys) {
+  renderBuildings(blocks) {
     this.clearBuildingLayer()
-    const Y = 0.09
+    if (!blocks?.length) return
 
-    if (buildings?.length) {
-      const positions = []
-      for (const b of buildings) {
-        const verts = b.vertices
-        if (!verts?.length) continue
-        const nv = verts.length
-        for (let i = 0; i < nv; i++) {
-          const v0 = verts[i], v1 = verts[(i + 1) % nv]
-          positions.push(v0.x, Y, v0.y, v1.x, Y, v1.y)
-        }
-      }
+    const Y_RING   = 0.05
+    const Y_SQUARE = 0.04   // above streets so city squares occlude them
+    const SETBACK  = 0.5
+    const CITY_SQUARE_MAX_AREA  = 0.2   // blocks smaller than this → city square
+    const SECOND_RING_MIN_AREA  = 2.0   // blocks larger than this → second ring
+    const STONE_COLOR = new THREE.Color(0x999999)
+
+    const addLine = (pts, color, Y) => {
+      const geo = new THREE.BufferGeometry().setFromPoints(pts.map(v => new THREE.Vector3(v.x, Y, v.y)))
+      const mat = new THREE.LineBasicMaterial({ color })
+      const line = new THREE.LineLoop(geo, mat)
+      this.scene.add(line)
+      this.buildingMeshes.push(line)
+    }
+
+    const addFill = (poly, color, Y) => {
+      const cx = poly.reduce((s, v) => s + v.x, 0) / poly.length
+      const cy = poly.reduce((s, v) => s + v.y, 0) / poly.length
+      const verts = [cx, Y, cy]
+      for (const v of poly) verts.push(v.x, Y, v.y)
+      const idx = []
+      for (let i = 0; i < poly.length; i++) idx.push(0, i + 1, (i + 1) % poly.length + 1)
       const geo = new THREE.BufferGeometry()
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3))
-      const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xf0d080 }))
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1))
+      geo.computeVertexNormals()
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.8, side: THREE.DoubleSide })
+      const mesh = new THREE.Mesh(geo, mat)
       this.scene.add(mesh)
       this.buildingMeshes.push(mesh)
     }
 
-    if (alleys?.length) {
-      const aPositions = []
-      for (const a of alleys) aPositions.push(a.x1, Y, a.y1, a.x2, Y, a.y2)
-      const ageo = new THREE.BufferGeometry()
-      ageo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(aPositions), 3))
-      const amesh = new THREE.LineSegments(ageo, new THREE.LineBasicMaterial({ color: 0xb8a070 }))
-      this.scene.add(amesh)
-      this.streetMeshes.push(amesh)
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const block = blocks[bi]
+      const poly = block.vertices
+      if (!poly || poly.length < 3) continue
+
+      if (block.area < CITY_SQUARE_MAX_AREA) {
+        // City square: solid stone fill rendered above streets
+        addFill(poly, STONE_COLOR, Y_SQUARE)
+        continue
+      }
+
+      const color = new THREE.Color().setHSL((bi * 0.381966) % 1, 0.7, 0.6)
+      const ring1 = insetPolygon(poly, SETBACK)
+      if (!ring1 || ring1.length < 3) continue
+      addLine(ring1, color, Y_RING)
+
+      if (block.area > SECOND_RING_MIN_AREA) {
+        const ring2 = insetPolygon(poly, SETBACK * 2)
+        if (ring2 && ring2.length >= 3) addLine(ring2, color, Y_RING)
+      }
     }
   }
 
