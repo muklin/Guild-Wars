@@ -1,51 +1,8 @@
-import VoronoiWorldGenerator from './VoronoiWorldGenerator.js'
 import Point from './Point.js'
 import DelaunayTriangulator from './DelaunayTriangulator.js'
+import { clipToPolygon } from './VoronoiUtils.js'
 
-export default class MergedVoronoiGenerator {
-  constructor() {
-    this.fineGenerator = new VoronoiWorldGenerator()
-  }
-
-  generateVoronoiFromSeeds(seeds, worldSize) {
-    // Generate Voronoi directly from provided seed points
-    const delaunayPoints = seeds.map(seed => new Point(seed.x, seed.y))
-
-    const triangulator = new DelaunayTriangulator(delaunayPoints)
-    triangulator.bowyerWatson()
-
-    const regions = []
-    for (let i = 0; i < seeds.length; i++) {
-      const seedPoint = seeds[i]
-      const delaunayPoint = delaunayPoints[i]
-
-      const trianglesWithSeed = triangulator.triangulation.filter(t =>
-        t.vertices.includes(delaunayPoint)
-      )
-
-      if (trianglesWithSeed.length === 0) continue
-
-      const circumcenters = trianglesWithSeed.map(t => t.circumcenter)
-      const polygon = this.fineGenerator.sortByAngle(seedPoint, circumcenters)
-      polygon.reverse()
-
-      // Keep unclipped Voronoi - mathematically guaranteed non-overlapping
-      if (polygon.length >= 3) {
-        regions.push({
-          id: i,
-          seedPoint,
-          polygon,
-          assignedType: null,
-          gridX: Math.floor(seedPoint.x / 10),
-          gridZ: Math.floor(seedPoint.y / 10),
-          description: ''
-        })
-      }
-    }
-
-    return { worldSize, regions, edges: {} }
-  }
-
+export default class TerrainVoronoiGenerator {
   generateRawVoronoi(regionCount, worldSize, manhattan = 0) {
     const seedPoints = []
     const delaunayPoints = []
@@ -190,9 +147,11 @@ export default class MergedVoronoiGenerator {
     // Must happen AFTER edge detection — clipping creates new vertex objects that
     // break the reference equality used by findSharedEdge. Clipped polygons improve
     // click-detection accuracy and eliminate huge sentinel-extended polys from the renderer.
+    const W = worldSize
+    const worldRect = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: W }, { x: 0, y: W }]
     for (const cell of validFineCells) {
-      const clipped = this.clipToWorldBoundsProper(cell.polygon, 0, worldSize, 0, worldSize)
-      if (clipped.length >= 3) cell.polygon = clipped
+      const clipped = clipToPolygon(cell.polygon, worldRect)
+      if (clipped) cell.polygon = clipped
     }
 
     // Step 6: Build merged region convex hulls (used for click hit-testing fallback)
@@ -215,27 +174,6 @@ export default class MergedVoronoiGenerator {
     }))
 
     return { worldSize, regions, fineCells: validFineCells, edges, edgePoints }
-  }
-
-  clipToWorldBoundsProper(polygon, minX, maxX, minY, maxY) {
-    const clip = (pts, inside, intersect) => {
-      if (pts.length === 0) return []
-      const out = []
-      for (let i = 0; i < pts.length; i++) {
-        const cur = pts[i], nxt = pts[(i + 1) % pts.length]
-        const ci = inside(cur), ni = inside(nxt)
-        if (ci) out.push(cur)
-        if (ci !== ni) out.push(intersect(cur, nxt))
-      }
-      return out
-    }
-    const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })
-    let poly = [...polygon]
-    poly = clip(poly, p => p.x >= minX, (a, b) => lerp(a, b, (minX - a.x) / (b.x - a.x)))
-    poly = clip(poly, p => p.x <= maxX, (a, b) => lerp(a, b, (maxX - a.x) / (b.x - a.x)))
-    poly = clip(poly, p => p.y >= minY, (a, b) => lerp(a, b, (minY - a.y) / (b.y - a.y)))
-    poly = clip(poly, p => p.y <= maxY, (a, b) => lerp(a, b, (maxY - a.y) / (b.y - a.y)))
-    return poly
   }
 
   selectSeeds(fineCells, count, worldSize) {
@@ -294,121 +232,6 @@ export default class MergedVoronoiGenerator {
       }
     })
     return nearest
-  }
-
-  mergeCells(fineCells, selectedSeeds, assignments, regionCount, worldSize) {
-    const mergedRegions = []
-
-    assignments.forEach((cellIndices, seedIdx) => {
-      if (cellIndices.length === 0) return
-
-      const seedPoint = selectedSeeds[seedIdx]
-
-      // Collect all vertices from assigned fine cells
-      const allVertices = []
-      cellIndices.forEach(idx => {
-        allVertices.push(...fineCells[idx].polygon)
-      })
-
-      // Compute convex hull to get outer boundary
-      let mergedPolygon = this.convexHull(allVertices)
-
-      // Clip merged boundary to world bounds
-      if (mergedPolygon && mergedPolygon.length >= 3) {
-        mergedPolygon = this.clipToWorldBounds(mergedPolygon, worldSize)
-      }
-
-      if (mergedPolygon && mergedPolygon.length >= 3) {
-        mergedRegions.push({
-          id: mergedRegions.length,
-          seedPoint,
-          polygon: mergedPolygon,
-          assignedType: null,
-          gridX: Math.floor(seedPoint.x / 10),
-          gridZ: Math.floor(seedPoint.y / 10),
-          description: ''
-        })
-      }
-    })
-
-    console.log(`Merged into ${mergedRegions.length} regions`)
-    return mergedRegions
-  }
-
-  clipToWorldBounds(polygon, worldSize) {
-    // Sutherland-Hodgman clip to axis-aligned world bounds
-    let output = [...polygon]
-    const bounds = [0, worldSize, 0, worldSize] // [minX, maxX, minY, maxY]
-
-    // Clip against left edge (x >= 0)
-    output = this.clipAgainstLine(output, p => p.x >= -0.01)
-    if (output.length < 3) return output
-
-    // Clip against right edge (x <= worldSize)
-    output = this.clipAgainstLine(output, p => p.x <= worldSize + 0.01)
-    if (output.length < 3) return output
-
-    // Clip against bottom edge (y >= 0)
-    output = this.clipAgainstLine(output, p => p.y >= -0.01)
-    if (output.length < 3) return output
-
-    // Clip against top edge (y <= worldSize)
-    output = this.clipAgainstLine(output, p => p.y <= worldSize + 0.01)
-
-    return output
-  }
-
-  clipAgainstLine(polygon, testFunc) {
-    const output = []
-    for (let i = 0; i < polygon.length; i++) {
-      const current = polygon[i]
-      const next = polygon[(i + 1) % polygon.length]
-      const currentInside = testFunc(current)
-      const nextInside = testFunc(next)
-
-      if (nextInside) {
-        if (!currentInside) {
-          const intersection = this.lineIntersection(current, next)
-          if (intersection) output.push(intersection)
-        }
-        output.push(next)
-      } else if (currentInside) {
-        const intersection = this.lineIntersection(current, next)
-        if (intersection) output.push(intersection)
-      }
-    }
-    return output
-  }
-
-  lineIntersection(p1, p2) {
-    // Simple linear interpolation for line clipping
-    return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
-  }
-
-  mergePolygons(polygons) {
-    if (polygons.length === 0) return []
-    if (polygons.length === 1) return polygons[0]
-
-    // Collect all unique vertices from all polygons
-    const vertexSet = new Set()
-    const vertices = []
-    const vertexMap = new Map()
-
-    polygons.forEach(poly => {
-      poly.forEach(v => {
-        const key = `${v.x.toFixed(6)},${v.y.toFixed(6)}`
-        if (!vertexSet.has(key)) {
-          vertexSet.add(key)
-          vertices.push(v)
-          vertexMap.set(key, v)
-        }
-      })
-    })
-
-    if (vertices.length < 3) return []
-
-    // Find convex hull of all vertices (Graham scan)
-    return this.convexHull(vertices)
   }
 
   convexHull(points) {
@@ -497,35 +320,6 @@ export default class MergedVoronoiGenerator {
         return true
       })
     }
-  }
-
-  generateEdges(regions) {
-    const edges = new Map()
-    const edgeSet = new Set()
-
-    for (let i = 0; i < regions.length; i++) {
-      for (let j = i + 1; j < regions.length; j++) {
-        const shared = this.findSharedEdge(regions[i].polygon, regions[j].polygon)
-        if (shared && shared.length >= 2) {
-          const edgeId = `${i}-${j}`
-          const edgeKey = `${Math.min(i, j)}-${Math.max(i, j)}`
-
-          if (!edgeSet.has(edgeKey)) {
-            edgeSet.add(edgeKey)
-            edges.set(edgeId, {
-              regionA: i,
-              regionB: j,
-              vertices: shared,
-              startPoint: shared[0].id,
-              endPoint: shared[shared.length - 1].id,
-              assignedType: null
-            })
-          }
-        }
-      }
-    }
-
-    return Object.fromEntries(edges)
   }
 
   generateBoundaryEdges(fineCells, regionCount) {
@@ -645,40 +439,4 @@ export default class MergedVoronoiGenerator {
     return result
   }
 
-  findSharedEdge(polygon1, polygon2) {
-    // Use reference equality: adjacent regions share the same circumcenter objects
-    return polygon1.filter(v => polygon2.includes(v))
-  }
-
-  clipToBox(polygon, bounds) {
-    // Simple axis-aligned box clipping
-    let output = [...polygon]
-
-    // Clip left (x >= min)
-    output = output.filter(p => p.x >= bounds.min - 0.01)
-    if (output.length < 3) return output
-
-    // Clip right (x <= max)
-    output = output.filter(p => p.x <= bounds.max + 0.01)
-    if (output.length < 3) return output
-
-    // Clip bottom (y >= min)
-    output = output.filter(p => p.y >= bounds.min - 0.01)
-    if (output.length < 3) return output
-
-    // Clip top (y <= max)
-    output = output.filter(p => p.y <= bounds.max + 0.01)
-
-    return output
-  }
-
-  polygonArea(polygon) {
-    let area = 0
-    for (let i = 0; i < polygon.length; i++) {
-      const p1 = polygon[i]
-      const p2 = polygon[(i + 1) % polygon.length]
-      area += p1.x * p2.y - p2.x * p1.y
-    }
-    return Math.abs(area) / 2
-  }
 }

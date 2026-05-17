@@ -1,5 +1,4 @@
-import DelaunayTriangulator from './DelaunayTriangulator.js'
-import Point from './Point.js'
+import { computeVoronoiCells } from './VoronoiUtils.js'
 
 const DISTRICT_BUILDING_PARAMS = {
   Market:              { lotSpacing: 0.50, setback: 0.06, lotWidth: 0.25, lotDepth: 0.35, alleyWidth: 0.15 },
@@ -23,35 +22,6 @@ function getParams(district) {
   return DISTRICT_BUILDING_PARAMS[key] ?? DISTRICT_BUILDING_PARAMS.default
 }
 
-// Sutherland-Hodgman clipping against a convex polygon.
-// Uses centroid to determine inside direction — winding order doesn't matter.
-function clipToPolygon(subject, clip) {
-  const n = clip.length
-  const cx = clip.reduce((s, v) => s + v.x, 0) / n
-  const cy = clip.reduce((s, v) => s + v.y, 0) / n
-  let out = [...subject]
-  for (let i = 0; i < n && out.length > 0; i++) {
-    const A = clip[i], B = clip[(i + 1) % n]
-    const ABx = B.x - A.x, ABy = B.y - A.y
-    const cSide = ABx * (cy - A.y) - ABy * (cx - A.x)
-    const inside = p => (ABx * (p.y - A.y) - ABy * (p.x - A.x)) * cSide >= 0
-    const intersect = (P, Q) => {
-      const dx = Q.x - P.x, dy = Q.y - P.y
-      const denom = ABx * dy - ABy * dx
-      if (Math.abs(denom) < 1e-10) return P
-      const t = (ABy * (P.x - A.x) - ABx * (P.y - A.y)) / denom
-      return { x: P.x + t * dx, y: P.y + t * dy }
-    }
-    const inp = out; out = []
-    for (let j = 0; j < inp.length; j++) {
-      const cur = inp[j], prev = inp[(j + inp.length - 1) % inp.length]
-      const ci = inside(cur), pi = inside(prev)
-      if (ci) { if (!pi) out.push(intersect(prev, cur)); out.push(cur) }
-      else if (pi) out.push(intersect(prev, cur))
-    }
-  }
-  return out.length >= 3 ? out : null
-}
 
 export default class BuildingGenerator {
   generate(districts, streetGraph) {
@@ -110,42 +80,9 @@ export default class BuildingGenerator {
       }
       if (seeds.length < 3) continue
 
-      // ── 3. Delaunay triangulation ───────────────────────────────────────────
-      const points = seeds.map(s => new Point(s.x, s.y))
-      const triangulator = DelaunayTriangulator.createFromPoints(points)
-
-      // Build vertex → triangles adjacency
-      const vertexTris = new Map()
-      for (const tri of triangulator.triangulation) {
-        for (const v of tri.vertices) {
-          if (!vertexTris.has(v._id)) vertexTris.set(v._id, [])
-          vertexTris.get(v._id).push(tri)
-        }
-      }
-
-      // ── 4. Voronoi cell per seed ────────────────────────────────────────────
-      for (let i = 0; i < points.length; i++) {
-        const seed = seeds[i]
-        const point = points[i]
-        const tris = vertexTris.get(point._id) || []
-        if (tris.length < 3) continue
-
-        // Raw circumcenters — no clamping; clipping handles the boundary
-        const corners = []
-        for (const tri of tris) {
-          if (!tri.circumcenter) continue
-          corners.push({ x: tri.circumcenter.x, y: tri.circumcenter.y })
-        }
-        if (corners.length < 3) continue
-
-        corners.sort((a, b) =>
-          Math.atan2(a.y - seed.y, a.x - seed.x) - Math.atan2(b.y - seed.y, b.x - seed.x)
-        )
-
-        const clipped = clipToPolygon(corners, district.polygon)
-        if (!clipped) continue
-
-        buildings.push({ id: nextId[0]++, districtId: district.id, vertices: clipped })
+      // ── 3-4. Voronoi cells from seeds, clipped to district polygon ──────────
+      for (const cell of computeVoronoiCells(seeds, district.polygon)) {
+        buildings.push({ id: nextId[0]++, districtId: district.id, vertices: cell.polygon })
         totalLots++
       }
     }

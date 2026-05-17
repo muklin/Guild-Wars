@@ -1,5 +1,6 @@
 import DelaunayTriangulator from './DelaunayTriangulator.js'
 import Point from './Point.js'
+import { clipToPolygon } from './VoronoiUtils.js'
 
 const SNAP_THRESHOLD = 0.25   // world units — near-duplicate node merge
 const BOUNDARY_INTERVAL = 1.0 // segment length along city boundary edges
@@ -131,7 +132,7 @@ export default class StreetVoronoiGenerator {
           Math.atan2(a.y - seed.y, a.x - seed.x) - Math.atan2(b.y - seed.y, b.x - seed.x)
         )
 
-        const clipped = this._clipToPolygon(corners, district.polygon)
+        const clipped = clipToPolygon(corners, district.polygon)
         if (clipped && clipped.length >= 3) cells.push({ districtId: district.id, polygon: clipped })
       }
 
@@ -421,38 +422,6 @@ export default class StreetVoronoiGenerator {
       if (d < bestDist) { bestDist = d; bestX = cx; bestY = cy }
     }
     return { x: bestX, y: bestY }
-  }
-
-  // Sutherland-Hodgman clip of `subject` polygon against convex `clip` polygon.
-  // Uses centroid to determine "inside" so winding order of clip polygon doesn't matter.
-  _clipToPolygon(subject, clip) {
-    const n = clip.length
-    const cx = clip.reduce((s, v) => s + v.x, 0) / n
-    const cy = clip.reduce((s, v) => s + v.y, 0) / n
-
-    let output = [...subject]
-    for (let i = 0; i < n && output.length > 0; i++) {
-      const A = clip[i], B = clip[(i + 1) % n]
-      const ABx = B.x - A.x, ABy = B.y - A.y
-      const centSide = ABx * (cy - A.y) - ABy * (cx - A.x)
-      const inside = p => (ABx * (p.y - A.y) - ABy * (p.x - A.x)) * centSide >= 0
-      const intersect = (P, Q) => {
-        const dx = Q.x - P.x, dy = Q.y - P.y
-        const denom = ABx * dy - ABy * dx
-        if (Math.abs(denom) < 1e-10) return P
-        const t = (ABy * (P.x - A.x) - ABx * (P.y - A.y)) / denom
-        return { x: P.x + t * dx, y: P.y + t * dy }
-      }
-      const input = output
-      output = []
-      for (let j = 0; j < input.length; j++) {
-        const cur = input[j], prev = input[(j + input.length - 1) % input.length]
-        const curIn = inside(cur), prevIn = inside(prev)
-        if (curIn) { if (!prevIn) output.push(intersect(prev, cur)); output.push(cur) }
-        else if (prevIn) output.push(intersect(prev, cur))
-      }
-    }
-    return output.length >= 3 ? output : null
   }
 
   _pip(px, py, polygon) {

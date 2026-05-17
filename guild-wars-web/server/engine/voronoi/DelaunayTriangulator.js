@@ -84,35 +84,6 @@ export default class DelaunayTriangulator {
     )
   }
 
-  generateEdgesFromDelaunay() {
-    const edgeMap = new Map()
-
-    // Collect all edges and count how many triangles use them
-    for (const triangle of this.triangulation) {
-      for (let i = 0; i < 3; i++) {
-        const p1 = triangle.vertices[i]
-        const p2 = triangle.vertices[(i + 1) % 3]
-        const edge = new Edge(p1, p2)
-        const key = edge.getCanonicalKey()
-
-        if (!edgeMap.has(key)) {
-          edgeMap.set(key, [])
-        }
-        edgeMap.get(key).push(edge)
-      }
-    }
-
-    // Return edges used by exactly one triangle (boundary edges)
-    const boundaryEdges = []
-    for (const edges of edgeMap.values()) {
-      if (edges.length === 1) {
-        boundaryEdges.push(edges[0])
-      }
-    }
-
-    return boundaryEdges
-  }
-
   static createFromPoints(points) {
     const triangulator = new DelaunayTriangulator(points)
     triangulator.bowyerWatson()

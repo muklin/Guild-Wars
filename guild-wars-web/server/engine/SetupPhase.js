@@ -1,7 +1,6 @@
-import MergedVoronoiGenerator from './voronoi/MergedVoronoiGenerator.js'
+import TerrainVoronoiGenerator from './voronoi/TerrainVoronoiGenerator.js'
 import StreetVoronoiGenerator from './voronoi/StreetVoronoiGenerator.js'
 import BuildingGenerator from './voronoi/BuildingGenerator.js'
-import { extractBlocks } from './voronoi/BlockExtractor.js'
 
 export default class SetupPhase {
   constructor(gameStateManager) {
@@ -35,7 +34,7 @@ export default class SetupPhase {
     this.factions = []
     this.log.push('Initializing Setup Phase...')
 
-    this.worldGenerator = new MergedVoronoiGenerator()
+    this.worldGenerator = new TerrainVoronoiGenerator()
     const worldData = this.worldGenerator.generate(15, 50, 0)
     this.gameStateManager.worldTerrainData = worldData
     this.log.push(`Generated ${worldData.regions.length} terrain regions`)
