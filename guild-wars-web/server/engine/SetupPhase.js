@@ -1,6 +1,6 @@
 import TerrainVoronoiGenerator from './voronoi/TerrainVoronoiGenerator.js'
 import StreetVoronoiGenerator from './voronoi/StreetVoronoiGenerator.js'
-import BuildingGenerator from './voronoi/BuildingGenerator.js'
+import CityBlockGenerator from './voronoi/CityBlockGenerator.js'
 
 export default class SetupPhase {
   constructor(gameStateManager) {
@@ -721,12 +721,11 @@ export default class SetupPhase {
   _generateBuildings() {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.districts?.length || !cityData?.streetGraph) return
-    const gen = new BuildingGenerator()
+    const gen = new CityBlockGenerator()
     const result = gen.generate(cityData.districts, cityData.streetGraph)
+    cityData.blocks = result.blocks
     cityData.buildings = result.buildings
-    cityData.alleys = result.alleys
-    cityData.blocks = extractBlocks(cityData.streetGraph)
-    this.log.push(`Generated ${cityData.buildings.length} buildings, ${cityData.alleys.length} alley segments, ${cityData.blocks.length} blocks`)
+    this.log.push(`Generated ${result.blocks.length} blocks, ${result.buildings.length} lots`)
   }
 
   finishStreetSetup() {
