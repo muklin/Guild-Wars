@@ -1,6 +1,6 @@
 import DelaunayTriangulator from './DelaunayTriangulator.js'
 import Point from './Point.js'
-import { clipToPolygon } from './VoronoiUtils.js'
+import { clipToPolygon, triangleCenter, generateGridSeeds } from './VoronoiUtils.js'
 
 const SNAP_THRESHOLD = 0.25   // world units — near-duplicate node merge
 const BOUNDARY_INTERVAL = 1.0 // segment length along city boundary edges
@@ -23,14 +23,34 @@ function betterStreetType(a, b) {
   return (STREET_PRIORITY[a] ?? 0) >= (STREET_PRIORITY[b] ?? 0) ? a : b
 }
 
-// interval:  perimeter seed spacing (world units)
-// density:   interior seeds per unit area of the district polygon
-// manhattan: probability [0,1] that each interior seed snaps to the nearest grid point
+// interval: perimeter seed spacing (world units)
+// density:  interior seeds per unit area  (≈ 1/spacing²; Market≈1.2, Residential≈0.4)
+// xyRatio:  grid column/row spacing ratio  (1 = square, 2 = wide, 0.5 = tall)
+// jitter:   max seed displacement as fraction of grid spacing  (0 = rigid, 0.5 = loose)
+// metric:   Voronoi vertex style — 'euclidean' | 'chebyshev' | 'manhattan' | 'centroid'
 const DISTRICT_STREET_PARAMS = {
-  Market:      { interval: 0.9, density: .1,  manhattan: 0.99 },
-  Residential: { interval: 1.5, density: 0.1, manhattan: 0.99 },
-  Leadership:  { interval: 0.5, density: 0.1, manhattan: 0.99 },
-  default:     { interval: 1.0, density: 0.1, manhattan: 0.99 }
+  Leadership:           { interval: 0.5, density: 1.0, xyRatio: 2.0, jitter: 0.2, metric: 'manhattan' },
+  Market:               { interval: 1.0, density: 1.0, xyRatio: 4.0, jitter: 0.1, metric: 'chebyshev' },
+  'Residential-Slums':  { interval: 1.5, density: 2.0, xyRatio: 1.0, jitter: 0.9, metric: 'manhattan' },
+  'Residential-Middle': { interval: 1.5, density: 0.4, xyRatio: 2.0, jitter: 0.2, metric: 'manhattan' },
+  'Residential-Noble':  { interval: 1.5, density: 0.4, xyRatio: 1.0, jitter: 0.5, metric: 'manhattan' },
+  Religious:            { interval: 0.5, density: 1.5, xyRatio: 1.0, jitter: 0.1, metric: 'centroid' },
+  Magical:              { interval: 0.6, density: 2.0, xyRatio: 1.0, jitter: 0.5, metric: 'centroid' },
+  Military:             { interval: 0.1, density: 1.0, xyRatio: 2.0, jitter: 0.1, metric: 'chebyshev' },
+  Industry:             { interval: 1.2, density: 0.2, xyRatio: 2.5, jitter: 0.1, metric: 'chebyshev' },
+  Entertainment:        { interval: 0.5, density: 2.0, xyRatio: 1.0, jitter: 0.9, metric: 'manhattan' },
+}
+
+function getStreetParams(district) {
+  const type = district.assignedType
+  const cls = district.residentialClass
+  let key = type
+  if (type === 'Residential') {
+    if (cls === 'Noble') key = 'Residential-Noble'
+    else if (cls === 'Middle') key = 'Residential-Middle'
+    else if (cls === 'Slums') key = 'Residential-Slums'
+  }
+  return DISTRICT_STREET_PARAMS[key] ?? DISTRICT_STREET_PARAMS.default
 }
 
 export default class StreetVoronoiGenerator {
@@ -44,12 +64,11 @@ export default class StreetVoronoiGenerator {
     // ── Per-district micro-Voronoi ───────────────────────────────────────────
     for (const district of districts) {
       const streetType = streetTypeForDistrict(district)
-      const params = DISTRICT_STREET_PARAMS[district.assignedType] || DISTRICT_STREET_PARAMS.default
-      const area = this._polygonArea(district.polygon)
-      const interiorCount = Math.max(4, Math.round(area * params.density))
+      const params = getStreetParams(district)
+      const metric = params.metric ?? 'euclidean'
 
       const perimSeeds = this._samplePerimeter(district.polygon, params.interval)
-      const intSeeds   = this._sampleInterior(district.polygon, interiorCount, district.id, epochSeed, params.manhattan ?? 0, params.interval)
+      const intSeeds   = generateGridSeeds(district.polygon, params.density, params.xyRatio ?? 1.0, params.jitter ?? 0.3, district.id ^ epochSeed)
       const seeds = [...perimSeeds, ...intSeeds]
 
       if (seeds.length < 3) {
@@ -95,7 +114,7 @@ export default class StreetVoronoiGenerator {
 
       for (const tris of edgeTriMap.values()) {
         if (tris.length !== 2) continue
-        const cA = tris[0].circumcenter, cB = tris[1].circumcenter
+        const cA = triangleCenter(tris[0], metric), cB = triangleCenter(tris[1], metric)
         if (!cA || !cB) continue
 
         const mx = (cA.x + cB.x) / 2, my = (cA.y + cB.y) / 2
@@ -120,11 +139,10 @@ export default class StreetVoronoiGenerator {
         const point = points[i]
         const tris = vertexTris.get(point._id) || []
 
-        // Collect raw circumcenters — no clamping, let clipping handle the boundary
         const corners = []
         for (const tri of tris) {
-          if (!tri.circumcenter) continue
-          corners.push({ x: tri.circumcenter.x, y: tri.circumcenter.y })
+          const c = triangleCenter(tri, metric)
+          if (c) corners.push(c)
         }
         if (corners.length < 3) continue
 
@@ -339,16 +357,6 @@ export default class StreetVoronoiGenerator {
     return { nodes: finalNodes, edges: finalEdges, cells: allCells }
   }
 
-  // Shoelace formula for polygon area (unsigned)
-  _polygonArea(polygon) {
-    let area = 0
-    const n = polygon.length
-    for (let i = 0, j = n - 1; i < n; j = i++) {
-      area += (polygon[j].x + polygon[i].x) * (polygon[j].y - polygon[i].y)
-    }
-    return Math.abs(area) / 2
-  }
-
   // Perimeter seeds with canonical direction on each edge so shared district
   // boundaries produce identical intermediate seed positions in both districts.
   _samplePerimeter(polygon, interval) {
@@ -374,31 +382,6 @@ export default class StreetVoronoiGenerator {
       }
     }
     return seeds
-  }
-
-  // Deterministic interior seeds (rejection-sampled inside polygon).
-  // manhattan: probability a seed snaps to the nearest grid point (grid step = gridStep).
-  _sampleInterior(polygon, count, seed, epochSeed = 0, manhattan = 0, gridStep = 1.0) {
-    let s = ((seed ^ epochSeed) * 2654435761) >>> 0
-    const rng = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0x100000000 }
-
-    const xs = polygon.map(v => v.x), ys = polygon.map(v => v.y)
-    const minX = Math.min(...xs), maxX = Math.max(...xs)
-    const minY = Math.min(...ys), maxY = Math.max(...ys)
-
-    const pts = []
-    let attempts = 0
-    while (pts.length < count && attempts < count * 30) {
-      let x = minX + rng() * (maxX - minX)
-      let y = minY + rng() * (maxY - minY)
-      if (manhattan > 0 && rng() < manhattan) {
-        x = Math.round(x / gridStep) * gridStep
-        y = Math.round(y / gridStep) * gridStep
-      }
-      if (this._pip(x, y, polygon)) pts.push({ x, y })
-      attempts++
-    }
-    return pts
   }
 
   _canonicalOrder(v1, v2) {

@@ -190,7 +190,7 @@ export default class App {
           this.pendingCityEdgeType = null
           if (response.cityDistrictData) this.renderer.setCityDistrictData(response.cityDistrictData)
           this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-          this.renderer.renderBuildings(response.cityDistrictData?.blocks)
+          this.renderer.renderBuildings(response.cityDistrictData?.blocks, response.cityDistrictData?.buildings)
           if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
         } else {
           this.uiManager.showError(response.error)
@@ -284,12 +284,6 @@ export default class App {
     }
   }
 
-  _checkDistrictAutoAdvance() {
-    if (this._countAssignedDistricts() >= this.playerCount * 3) {
-      this.eventBus.emit('SUBDIVISION_COMPLETE')
-    }
-  }
-
   async _doFinishTerrain() {
     try {
       const response = await GameAPI.finishTerrain()
@@ -325,7 +319,7 @@ export default class App {
           this.renderer.setCityDistrictData(response.cityDistrictData)
         }
         this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-        this.renderer.renderBuildings(response.cityDistrictData?.blocks)
+        this.renderer.renderBuildings(response.cityDistrictData?.blocks, response.cityDistrictData?.buildings)
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
@@ -602,7 +596,6 @@ export default class App {
         this.pendingResidentialClass = null
         this.pendingLeadershipClass = null
         this._refreshDistrictPanel()
-        this._checkDistrictAutoAdvance()
       } else {
         this.uiManager.showError(response.error)
         this._refreshDistrictPanel()
@@ -816,7 +809,7 @@ export default class App {
           this.renderer.setMode('city')
           if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
             this.renderer.renderStreetGraph(cityData.streetGraph)
-            this.renderer.renderBuildings(cityData.blocks)
+            this.renderer.renderBuildings(cityData.blocks, cityData.buildings)
           }
         } else {
           this.renderer.clearBuildingLayer()

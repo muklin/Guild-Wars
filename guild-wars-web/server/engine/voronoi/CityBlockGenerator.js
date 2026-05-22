@@ -1,14 +1,18 @@
 import { computeVoronoiCells } from './VoronoiUtils.js'
 
 const DISTRICT_BUILDING_PARAMS = {
-  Market:              { lotSpacing: 0.50, setback: 0.06, lotWidth: 0.25, lotDepth: 0.35, alleyWidth: 0.15 },
-  Military:            { lotSpacing: 0.80, setback: 0.08, lotWidth: 0.40, lotDepth: 0.55, alleyWidth: 0.20 },
-  Residential:         { lotSpacing: 0.50, setback: 0.04, lotWidth: 0.20, lotDepth: 0.30, alleyWidth: 0.12 },
-  'Residential-Noble': { lotSpacing: 0.80, setback: 0.08, lotWidth: 0.30, lotDepth: 0.45, alleyWidth: 0.18 },
-  'Residential-Slums': { lotSpacing: 0.35, setback: 0.02, lotWidth: 0.15, lotDepth: 0.22, alleyWidth: 0.10 },
-  Leadership:          { lotSpacing: 1.00, setback: 0.10, lotWidth: 0.35, lotDepth: 0.55, alleyWidth: 0.25 },
-  Entertainment:       { lotSpacing: 0.60, setback: 0.07, lotWidth: 0.28, lotDepth: 0.38, alleyWidth: 0.16 },
-  default:             { lotSpacing: 0.55, setback: 0.05, lotWidth: 0.22, lotDepth: 0.32, alleyWidth: 0.14 },
+  Market:               { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.50, setback: 0.06, lotWidth: 0.25, lotDepth: 0.35, alleyWidth: 0.15, metric: 'manhattan' },
+  Military:             { minBlockSize: 0.5, maxAspectRatio: 5.0, minLotSize: 1.5, lotSpacing: 0.80, setback: 0.08, lotWidth: 0.40, lotDepth: 0.55, alleyWidth: 0.20, metric: 'manhattan' },
+  Residential:          { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 0.8, lotSpacing: 0.50, setback: 0.04, lotWidth: 0.20, lotDepth: 0.30, alleyWidth: 0.12, metric: 'manhattan' },
+  'Residential-Middle': { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 0.8, lotSpacing: 0.50, setback: 0.04, lotWidth: 0.20, lotDepth: 0.30, alleyWidth: 0.12, metric: 'manhattan' },
+  'Residential-Noble':  { minBlockSize: 0.5, maxAspectRatio: 3.5, minLotSize: 1.5, lotSpacing: 0.80, setback: 0.08, lotWidth: 0.30, lotDepth: 0.45, alleyWidth: 0.18, metric: 'manhattan' },
+  'Residential-Slums':  { minBlockSize: 0.2, maxAspectRatio: 5.0, minLotSize: 0.5, lotSpacing: 0.35, setback: 0.02, lotWidth: 0.15, lotDepth: 0.22, alleyWidth: 0.10, metric: 'manhattan' },
+  Leadership:           { minBlockSize: 0.8, maxAspectRatio: 3.0, minLotSize: 2.5, lotSpacing: 1.00, setback: 0.10, lotWidth: 0.35, lotDepth: 0.55, alleyWidth: 0.25, metric: 'manhattan' },
+  Entertainment:        { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.60, setback: 0.07, lotWidth: 0.28, lotDepth: 0.38, alleyWidth: 0.16, metric: 'manhattan' },
+  Religious:            { minBlockSize: 0.5, maxAspectRatio: 3.0, minLotSize: 2.0, lotSpacing: 0.70, setback: 0.10, lotWidth: 0.30, lotDepth: 0.50, alleyWidth: 0.20, metric: 'manhattan' },
+  Magical:              { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.55, setback: 0.08, lotWidth: 0.25, lotDepth: 0.40, alleyWidth: 0.15, metric: 'manhattan' },
+  Industry:             { minBlockSize: 0.5, maxAspectRatio: 6.0, minLotSize: 2.0, lotSpacing: 0.90, setback: 0.05, lotWidth: 0.45, lotDepth: 0.60, alleyWidth: 0.20, metric: 'manhattan' },
+  default:              { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.55, setback: 0.05, lotWidth: 0.22, lotDepth: 0.32, alleyWidth: 0.14, metric: 'manhattan' },
 }
 
 export { DISTRICT_BUILDING_PARAMS }
@@ -20,6 +24,7 @@ function getParams(district) {
   let key = type
   if (type === 'Residential' && cls === 'Noble') key = 'Residential-Noble'
   else if (type === 'Residential' && cls === 'Slums') key = 'Residential-Slums'
+  else if (type === 'Residential' && cls === 'Middle') key = 'Residential-Middle'
   return DISTRICT_BUILDING_PARAMS[key] ?? DISTRICT_BUILDING_PARAMS.default
 }
 
@@ -73,11 +78,12 @@ export default class CityBlockGenerator {
       return list[(idx - 1 + list.length) % list.length].neighborId
     }
 
-    // ── Phase 2: Trace faces → blocks, tag with districtId ────────────────────
+    // ── Phase 2: Trace faces → blocks, classify, generate lots ───────────────
     const visited = new Set()
     const blocks = []
     const buildings = []
     let blockId = 0, buildingId = 0
+    let squareCount = 0, singleCount = 0, subdivCount = 0
 
     for (const node of nodes) {
       for (const nb of (adj.get(node.id) || [])) {
@@ -123,12 +129,45 @@ export default class CityBlockGenerator {
         }
 
         const vertices = faceNodes.map(n => ({ x: n.x, y: n.y }))
-        const block = { id: blockId++, districtId, vertices, area }
-        blocks.push(block)
 
-        // ── Phase 3: Voronoi lots seeded along block boundary ─────────────────
+        // ── Block classification ───────────────────────────────────────────────
         const district = districtId != null ? districtMap.get(districtId) : null
         const params = getParams(district)
+
+        // AABB aspect ratio: max extent / min extent
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+        for (const v of vertices) {
+          if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x
+          if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y
+        }
+        const w = maxX - minX, h = maxY - minY
+        const aspectRatio = Math.max(w, h) / Math.max(Math.min(w, h), 1e-6)
+
+        let blockType
+        if (area < params.minBlockSize || aspectRatio > params.maxAspectRatio) {
+          blockType = 'square'
+        } else if (area < params.minLotSize) {
+          blockType = 'single'
+        } else {
+          blockType = 'subdivided'
+        }
+
+        const block = { id: blockId++, districtId, vertices, area, blockType }
+        blocks.push(block)
+
+        if (blockType === 'square') {
+          squareCount++
+          continue
+        }
+
+        if (blockType === 'single') {
+          singleCount++
+          buildings.push({ id: buildingId++, blockId: block.id, districtId, vertices })
+          continue
+        }
+
+        // ── Phase 3: Voronoi lots seeded along block boundary ─────────────────
+        subdivCount++
         const spacing = params.lotSpacing
 
         const rawSeeds = []
@@ -151,13 +190,13 @@ export default class CityBlockGenerator {
         }
         if (seeds.length < 3) continue
 
-        for (const cell of computeVoronoiCells(seeds, vertices)) {
+        for (const cell of computeVoronoiCells(seeds, vertices, params.metric ?? 'euclidean')) {
           buildings.push({ id: buildingId++, blockId: block.id, districtId, vertices: cell.polygon })
         }
       }
     }
 
-    console.log(`CityBlockGenerator: ${blocks.length} blocks, ${buildings.length} lots`)
+    console.log(`CityBlockGenerator: ${blocks.length} blocks (${squareCount} squares, ${singleCount} single, ${subdivCount} subdivided), ${buildings.length} lots`)
     return { blocks, buildings }
   }
 }

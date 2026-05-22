@@ -266,16 +266,24 @@ export default class WorldRenderer {
     this.buildingMeshes = []
   }
 
-  renderBuildings(blocks) {
+  renderBuildings(blocks, buildings) {
     this.clearBuildingLayer()
     if (!blocks?.length) return
 
     const Y_RING   = 0.05
-    const Y_SQUARE = 0.04   // above streets so city squares occlude them
+    const Y_SQUARE = 0.04
     const SETBACK  = 0.5
-    const CITY_SQUARE_MAX_AREA  = 0.2   // blocks smaller than this → city square
-    const SECOND_RING_MIN_AREA  = 2.0   // blocks larger than this → second ring
-    const STONE_COLOR = new THREE.Color(0x999999)
+    const STONE_COLOR  = new THREE.Color(0x999999)
+    const SINGLE_COLOR = new THREE.Color(0xc8a87a)
+
+    // lot polygons grouped by blockId for subdivided blocks
+    const lotsByBlock = new Map()
+    if (buildings?.length) {
+      for (const b of buildings) {
+        if (!lotsByBlock.has(b.blockId)) lotsByBlock.set(b.blockId, [])
+        lotsByBlock.get(b.blockId).push(b.vertices)
+      }
+    }
 
     const addLine = (pts, color, Y) => {
       const geo = new THREE.BufferGeometry().setFromPoints(pts.map(v => new THREE.Vector3(v.x, Y, v.y)))
@@ -307,20 +315,35 @@ export default class WorldRenderer {
       const poly = block.vertices
       if (!poly || poly.length < 3) continue
 
-      if (block.area < CITY_SQUARE_MAX_AREA) {
-        // City square: solid stone fill rendered above streets
+      const blockType = block.blockType ?? (block.area < 0.2 ? 'square' : 'subdivided')
+
+      if (blockType === 'square') {
         addFill(poly, STONE_COLOR, Y_SQUARE)
         continue
       }
 
-      const color = new THREE.Color().setHSL((bi * 0.381966) % 1, 0.7, 0.6)
-      const ring1 = insetPolygon(poly, SETBACK)
-      if (!ring1 || ring1.length < 3) continue
-      addLine(ring1, color, Y_RING)
+      if (blockType === 'single') {
+        addFill(poly, SINGLE_COLOR, Y_SQUARE)
+        addLine(poly, SINGLE_COLOR.clone().multiplyScalar(0.7), Y_RING)
+        continue
+      }
 
-      if (block.area > SECOND_RING_MIN_AREA) {
-        const ring2 = insetPolygon(poly, SETBACK * 2)
-        if (ring2 && ring2.length >= 3) addLine(ring2, color, Y_RING)
+      // subdivided — draw lot outlines if available, otherwise inset rings
+      const lots = lotsByBlock.get(block.id)
+      if (lots?.length) {
+        const color = new THREE.Color().setHSL((bi * 0.381966) % 1, 0.7, 0.6)
+        for (const lot of lots) {
+          if (lot?.length >= 3) addLine(lot, color, Y_RING)
+        }
+      } else {
+        const color = new THREE.Color().setHSL((bi * 0.381966) % 1, 0.7, 0.6)
+        const ring1 = insetPolygon(poly, SETBACK)
+        if (!ring1 || ring1.length < 3) continue
+        addLine(ring1, color, Y_RING)
+        if (block.area > 2.0) {
+          const ring2 = insetPolygon(poly, SETBACK * 2)
+          if (ring2 && ring2.length >= 3) addLine(ring2, color, Y_RING)
+        }
       }
     }
   }
