@@ -15,6 +15,10 @@ public class TradingDestination : Faction
         Description = description;
     }
 
+    public int        SourceRegionId { get; set; } = -1;
+    public List<int>  RoadPath       { get; set; } = new();
+    public int        BridgeCount    { get; set; }
+
     // ==================== CONVENIENCE ACCESSORS ====================
 
     /// <summary>Names of resources/services this destination exports to guilds.</summary>

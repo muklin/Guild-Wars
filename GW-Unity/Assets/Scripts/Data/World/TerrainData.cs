@@ -15,6 +15,12 @@ public class VoronoiRegion
     public int GridZ { get; set; }                      // Nearest grid cell Z
     public string Description { get; set; }             // Player-provided description when assigning terrain
 
+    public bool IsEdge { get; set; }                    // Touches world boundary
+    public string TerrainDistrict { get; set; }         // "Forestry" | "Mining" | "Agriculture" | "Fishing" | null
+    public string TerrainDistrictDescription { get; set; }
+    public string TerrainDistrictProducedResource { get; set; }
+    public List<string> TerrainDistrictConsumedResources { get; set; } = new();
+
     public VoronoiRegion()
     {
         Polygon = new();

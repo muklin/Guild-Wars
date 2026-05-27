@@ -1,594 +1,652 @@
 using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
-using DelaunayVoronoi;
 
 /// <summary>
-/// Generates and renders Voronoi regions covering the 50x50 world.
-/// Separates data (stored in GameStateManager.WorldTerrainData) from visualization (GameObjects, materials).
+/// Generates and renders Voronoi regions covering the world.
+/// Uses a two-pass approach (fine cells → greedy seed selection → merged regions)
+/// with staggered sentinels, matching TerrainVoronoiGenerator.js from the web implementation.
+/// Data lives in GameStateManager.WorldTerrainData; meshes are owned here.
 /// </summary>
-public class VoronoiWorldGenerator : MonoBehaviour {
+public class VoronoiWorldGenerator : MonoBehaviour
+{
     [SerializeField] public int regionCount = 15;
     public float worldSize = 50f;
 
-    // Reference to centralized terrain data (via GameStateManager)
     public TerrainData TerrainData => GameStateManager.Instance?.WorldTerrainData;
 
-    // Visualization details (kept separate from data)
     private Dictionary<int, GameObject> regionMeshObjects = new();
-    private Dictionary<int, Material> regionMaterials = new();
-
-    private List<EdgeFeature> edgeFeatures = new();
-    private List<VoronoiEdge> edges = new();
+    private Dictionary<int, Material>   regionMaterials   = new();
+    private List<EdgeFeature>            edgeFeatures      = new();
+    private List<VoronoiEdge>            edges             = new();
 
     public IReadOnlyList<EdgeFeature> EdgeFeatures => edgeFeatures;
     public IReadOnlyList<VoronoiEdge> Edges => edges;
 
-    private const float BorderMargin = 0f; // Allow seeds to reach edges for full coverage
-    private const float PolygonY = 0.05f;
+    private const float PolygonY     = 0.05f;
+    private const float EdgeY        = 0.10f;
     private const float EdgeThickness = 0.5f;
-    private const float EdgeY = 0.1f; // Position edges above regions for visibility
 
-    public void Generate() {
-        Debug.Log($"Generating {regionCount} Voronoi regions...");
+    // ══════════════════════════════════════════════════════════════════
+    // Internal generation data (not persisted after Generate())
+    // ══════════════════════════════════════════════════════════════════
 
-        if (TerrainData == null) {
-            Debug.LogError("[VoronoiWorldGenerator] GameStateManager.WorldTerrainData is null!");
-            return;
-        }
+    private class FineCell
+    {
+        public Vector2              Seed;
+        public List<VoronoiUtils.VPoint> Polygon;   // circumcenter VPoint objects (shared references)
+        public List<Vector2>        ClippedPolygon; // set after world-rect clip
+        public int                  ParentRegionId = -1;
+    }
 
+    // ══════════════════════════════════════════════════════════════════
+    // Public entry point
+    // ══════════════════════════════════════════════════════════════════
+
+    public void Generate()
+    {
+        if (TerrainData == null) { Debug.LogError("[VoronoiWorldGenerator] WorldTerrainData is null"); return; }
         TerrainData.WorldSize = worldSize;
 
-        // Create seed points (avoid borders)
-        var points = new List<Point>();
-        var seedPoints = new List<Vector3>();
-        var random = new System.Random();
+        int fineCount = Mathf.Max(regionCount * 10, 150);
+        Debug.Log($"[VoronoiWorldGenerator] Generating {fineCount} fine cells → {regionCount} regions");
 
-        for (int i = 0; i < regionCount; i++) {
-            float x = (float)(random.NextDouble() * (worldSize - 2 * BorderMargin) + BorderMargin);
-            float z = (float)(random.NextDouble() * (worldSize - 2 * BorderMargin) + BorderMargin);
-            seedPoints.Add(new Vector3(x, 0, z));
-            points.Add(new Point(x, z));
+        // Step 1: Fine-cell Voronoi with staggered sentinels
+        var allFine = GenerateRawVoronoi(fineCount);
+        var valid   = allFine.Where(c =>
+            c.Polygon != null && c.Polygon.Count >= 3 &&
+            c.Seed.x >= 0 && c.Seed.x <= worldSize &&
+            c.Seed.y >= 0 && c.Seed.y <= worldSize).ToList();
+        Debug.Log($"[VoronoiWorldGenerator] {valid.Count}/{fineCount} fine cells valid");
+
+        // Step 2: Select region seeds (greedy farthest-point from interior fine cells)
+        var seeds = SelectSeeds(valid, regionCount);
+        Debug.Log($"[VoronoiWorldGenerator] Selected {seeds.Count} seeds");
+
+        // Step 3: Assign fine cells to nearest region seed
+        for (int i = 0; i < valid.Count; i++)
+            valid[i].ParentRegionId = FindNearestSeed(valid[i].Seed, seeds);
+
+        // Step 4: Assign global IDs to circumcenter vertices (before any clipping)
+        int nextVId = 0;
+        var seenVerts = new HashSet<VoronoiUtils.VPoint>();
+        foreach (var cell in valid)
+            foreach (var v in cell.Polygon)
+                if (seenVerts.Add(v)) v.Id = nextVId++;
+
+        // Step 5: Boundary edge detection via reference equality on unclipped polygons
+        var (edgeData, edgePoints) = GenerateBoundaryEdges(valid);
+        Debug.Log($"[VoronoiWorldGenerator] Generated {edgeData.Count} boundary edges");
+
+        // Step 5.5: Clip fine-cell polygons to world bounds (after edge detection)
+        var worldRect = new List<Vector2> {
+            new(0,0), new(worldSize,0), new(worldSize,worldSize), new(0,worldSize) };
+        foreach (var cell in valid)
+        {
+            var clipped = VoronoiUtils.ClipToPolygon(VoronoiUtils.VPointsToV2(cell.Polygon), worldRect);
+            cell.ClippedPolygon = clipped ?? VoronoiUtils.VPointsToV2(cell.Polygon);
         }
 
-        // Add super-triangle points far outside bounds
-        points.Add(new Point(-100, -100));
-        points.Add(new Point(worldSize + 100, -100));
-        points.Add(new Point(-100, worldSize + 100));
-        points.Add(new Point(worldSize + 100, worldSize + 100));
-
-        // Run Delaunay
-        var triangulator = new DelaunayTriangulator(points);
-        triangulator.BowyerWatson();
-
-        // Build Voronoi cells
-        for (int i = 0; i < seedPoints.Count; i++) {
-            var seedPoint = seedPoints[i];
-            var delaunayPoint = points[i];
-
-            // Find all triangles containing this seed
-            var trianglesWithSeed = triangulator.Triangulation
-                .Where(t => t.Vertices.Contains(delaunayPoint))
-                .ToList();
-
-            if (trianglesWithSeed.Count == 0)
-                continue;
-
-            // Collect circumcenters
-            var circumcenters = trianglesWithSeed
-                .Select(t => new Vector3((float)t.Circumcenter.X, 0, (float)t.Circumcenter.Y))
-                .ToList();
-
-            // Sort by angle around seed point
-            var sortedVertices = SortByAngle(seedPoint, circumcenters);
-
-            // Clip polygon to world bounds using Sutherland-Hodgman algorithm
-            var clippedVertices = SutherlandHodgmanClip(sortedVertices);
-
-            if (clippedVertices.Count >= 3) {
-                // Create pure data region (no GameObjects)
-                var region = new VoronoiRegion(i, seedPoint,
-                    Mathf.RoundToInt(seedPoint.x / 10f),
-                    Mathf.RoundToInt(seedPoint.z / 10f))
-                {
-                    Polygon = clippedVertices,
-                    AssignedType = null
-                };
-
-                TerrainData.AddRegion(region);
-
-                // Create visualization (separate from data)
-                var meshGO = CreateRegionMesh(region);
-                regionMeshObjects[region.Id] = meshGO;
-                var material = meshGO.GetComponent<MeshRenderer>().material;
-                regionMaterials[region.Id] = material;
-            }
+        // Step 6: Build merged region polygons (convex hull of all fine-cell verts per region)
+        var vertsByRegion = new Dictionary<int, List<Vector2>>();
+        for (int i = 0; i < seeds.Count; i++) vertsByRegion[i] = new List<Vector2>();
+        foreach (var cell in valid)
+        {
+            if (!vertsByRegion.ContainsKey(cell.ParentRegionId)) continue;
+            var bucket = vertsByRegion[cell.ParentRegionId];
+            foreach (var v in cell.ClippedPolygon)
+                if (float.IsFinite(v.x) && float.IsFinite(v.y)) bucket.Add(v);
         }
 
-        //Debug.Log($"Generated {TerrainData.RegionCount} Voronoi regions");
+        for (int i = 0; i < seeds.Count; i++)
+        {
+            var hull = VoronoiUtils.ConvexHull(vertsByRegion[i]);
+            if (hull.Count < 3) continue;
 
-        // Identify and mark the central city region
+            var seed = seeds[i];
+            var region = new VoronoiRegion(i, new Vector3(seed.x, 0f, seed.y),
+                Mathf.FloorToInt(seed.x / 10f), Mathf.FloorToInt(seed.y / 10f))
+            {
+                Polygon      = VoronoiUtils.ToVector3(hull),
+                AssignedType = null
+            };
+            TerrainData.AddRegion(region);
+
+            var meshGO = CreateRegionMesh(region);
+            regionMeshObjects[i] = meshGO;
+            regionMaterials[i]   = meshGO.GetComponent<MeshRenderer>().material;
+        }
+
         IdentifyCityRegion();
-
-        // Generate edges between adjacent regions
-        GenerateEdges();
+        CreateEdgeObjects(edgeData, edgePoints);
     }
 
-    private void IdentifyCityRegion() {
-        var allRegions = TerrainData.GetAllRegions();
+    // ══════════════════════════════════════════════════════════════════
+    // Two-pass generation helpers
+    // ══════════════════════════════════════════════════════════════════
 
-        // Find regions that don't touch the map boundary
-        var centralRegions = allRegions
-            .Where(r => !TouchesBoundary(r))
-            .ToList();
+    private List<FineCell> GenerateRawVoronoi(int count)
+    {
+        var seedPts    = new List<Vector2>(count);
+        var allPts     = new List<Vector2>(count + 80);  // seeds + sentinels
 
-        if (centralRegions.Count == 0) {
-            Debug.LogWarning("No central regions found; selecting largest region as city");
-            // Fallback: use largest region regardless
-            var largestRegion = allRegions.OrderByDescending(r => r.Polygon.Count).First();
-            SetCityRegion(largestRegion);
-            return;
+        for (int i = 0; i < count; i++)
+            seedPts.Add(new Vector2(Random.value * worldSize, Random.value * worldSize));
+
+        foreach (var sp in seedPts) allPts.Add(sp);
+
+        // Staggered sentinels 3× worldSize outside each edge.
+        // Opposite sides use half-step offset (a vs b) to prevent collinear degenerate triangles.
+        float sm   = worldSize * 3f;
+        int   nSt  = 8;
+        float step = worldSize / nSt;
+        for (int i = 0; i <= nSt; i++)
+        {
+            float a = i * step - step * 0.25f;
+            float b = i * step + step * 0.25f;
+            allPts.Add(new Vector2(a,              -sm));
+            allPts.Add(new Vector2(b,              worldSize + sm));
+            allPts.Add(new Vector2(-sm,            a));
+            allPts.Add(new Vector2(worldSize + sm, b));
+        }
+        allPts.Add(new Vector2(-sm,            -sm));
+        allPts.Add(new Vector2(worldSize + sm, -sm));
+        allPts.Add(new Vector2(-sm,            worldSize + sm));
+        allPts.Add(new Vector2(worldSize + sm, worldSize + sm));
+
+        var res  = VoronoiUtils.Triangulate(allPts);
+        var tris = res.Triangles;
+        var pts  = res.Points;
+
+        // Build vertex → triangles map
+        var vertexTris = new Dictionary<int, List<VoronoiUtils.VTriangle>>();
+        foreach (var tri in tris)
+            for (int i = 0; i < 3; i++)
+            {
+                int id = tri.Vertices[i].Id;
+                if (!vertexTris.TryGetValue(id, out var list))
+                    vertexTris[id] = list = new List<VoronoiUtils.VTriangle>();
+                list.Add(tri);
+            }
+
+        var cells = new List<FineCell>(count);
+        for (int i = 0; i < count; i++)   // only real seeds, not sentinels
+        {
+            var pt   = pts[i];
+            var seed = seedPts[i];
+            if (!vertexTris.TryGetValue(pt.Id, out var ptTris) || ptTris.Count == 0) continue;
+
+            // Collect circumcenter VPoint objects — these are the shared references used in edge detection
+            var circumcenters = new List<VoronoiUtils.VPoint>(ptTris.Count);
+            foreach (var tri in ptTris)
+                if (!tri.Degenerate) circumcenters.Add(tri.Circumcenter);
+
+            if (circumcenters.Count < 3) continue;
+
+            // Convex hull on circumcenters to guarantee convex polygon and correct ordering.
+            // (angle-sort fails ~15 % of boundary cells where sentinels cluster at similar angles.)
+            var hull2d = VoronoiUtils.ConvexHull(circumcenters.Select(v => new Vector2(v.X, v.Y)).ToList());
+            // Remap hull vertices back to VPoint objects by position
+            var hullVPoints = new List<VoronoiUtils.VPoint>(hull2d.Count);
+            foreach (var hv in hull2d)
+            {
+                var match = circumcenters.Find(v => Mathf.Abs(v.X - hv.x) < 1e-5f && Mathf.Abs(v.Y - hv.y) < 1e-5f);
+                if (match != null) hullVPoints.Add(match);
+            }
+            if (hullVPoints.Count < 3) continue;
+
+            cells.Add(new FineCell { Seed = seed, Polygon = hullVPoints });
         }
 
-        // Select the largest central region
-        var cityRegion = centralRegions.OrderByDescending(r => r.Polygon.Count).First();
-        SetCityRegion(cityRegion);
+        return cells;
     }
 
-    private bool TouchesBoundary(VoronoiRegion region) {
-        const float margin = 0.5f;
-        return region.Polygon.Any(v =>
-            v.x < margin || v.x > (worldSize - margin) ||
-            v.z < margin || v.z > (worldSize - margin)
-        );
-    }
+    private List<Vector2> SelectSeeds(List<FineCell> cells, int count)
+    {
+        float margin = worldSize * 0.15f;
+        var pool   = cells.Where(c =>
+            c.Seed.x >= margin && c.Seed.x <= worldSize - margin &&
+            c.Seed.y >= margin && c.Seed.y <= worldSize - margin).ToList();
+        var source = pool.Count >= count ? pool : cells;
 
-    private void SetCityRegion(VoronoiRegion region) {
-        TerrainData.SetRegionTerrain(region.Id, TerrainType.City);
-        if (regionMaterials.TryGetValue(region.Id, out var material))
-            material.color = TerrainColors.For(TerrainType.City);
-        Debug.Log($"City region identified: Region {region.Id} at seed {region.SeedPoint} ({region.Polygon.Count} vertices)");
-    }
+        var selected = new List<Vector2>(count);
+        var usedIdx  = new HashSet<int>();
 
-    private List<Vector3> SortByAngle(Vector3 center, List<Vector3> points) {
-        var sorted = points
-            .OrderBy(p => Mathf.Atan2(p.z - center.z, p.x - center.x))
-            .ToList();
-        return sorted;
-    }
+        // Start from cell closest to world centre
+        float cx = worldSize * 0.5f, cy = worldSize * 0.5f;
+        int   bestIdx = 0; float bestDist = float.MaxValue;
+        for (int i = 0; i < source.Count; i++)
+        {
+            float d = (source[i].Seed.x - cx) * (source[i].Seed.x - cx) +
+                      (source[i].Seed.y - cy) * (source[i].Seed.y - cy);
+            if (d < bestDist) { bestDist = d; bestIdx = i; }
+        }
+        selected.Add(source[bestIdx].Seed);
+        usedIdx.Add(bestIdx);
 
-    private List<Vector3> SutherlandHodgmanClip(List<Vector3> polygon) {
-        if (polygon.Count < 3)
-            return polygon;
-
-        // Sutherland-Hodgman polygon clipping against rectangular boundary
-        var output = new List<Vector3>(polygon);
-
-        // Clip against each boundary edge (left, right, bottom, top)
-        output = ClipAgainstEdge(output, true, 0);           // Left edge (x = 0)
-        if (output.Count < 3) return output;
-        output = ClipAgainstEdge(output, true, worldSize);   // Right edge (x = worldSize)
-        if (output.Count < 3) return output;
-        output = ClipAgainstEdge(output, false, 0);          // Bottom edge (z = 0)
-        if (output.Count < 3) return output;
-        output = ClipAgainstEdge(output, false, worldSize);  // Top edge (z = worldSize)
-
-        return output;
-    }
-
-    private List<Vector3> ClipAgainstEdge(List<Vector3> polygon, bool isVerticalEdge, float edgePos) {
-        if (polygon.Count == 0)
-            return polygon;
-
-        var output = new List<Vector3>();
-
-        for (int i = 0; i < polygon.Count; i++) {
-            var current = polygon[i];
-            var next = polygon[(i + 1) % polygon.Count];
-
-            bool currentInside = IsInsideEdge(current, isVerticalEdge, edgePos);
-            bool nextInside = IsInsideEdge(next, isVerticalEdge, edgePos);
-
-            if (nextInside) {
-                if (!currentInside) {
-                    // Entering the inside region - add intersection
-                    var intersection = LineIntersection(current, next, isVerticalEdge, edgePos);
-                    if (intersection.HasValue)
-                        output.Add(intersection.Value);
+        while (selected.Count < count)
+        {
+            int   farthest = -1; float farthestDist = float.MinValue;
+            for (int i = 0; i < source.Count; i++)
+            {
+                if (usedIdx.Contains(i)) continue;
+                float minD = float.MaxValue;
+                foreach (var s in selected)
+                {
+                    float d = (source[i].Seed.x - s.x)*(source[i].Seed.x - s.x) +
+                              (source[i].Seed.y - s.y)*(source[i].Seed.y - s.y);
+                    if (d < minD) minD = d;
                 }
-                output.Add(next);
-            } else if (currentInside) {
-                // Leaving the inside region - add intersection
-                var intersection = LineIntersection(current, next, isVerticalEdge, edgePos);
-                if (intersection.HasValue)
-                    output.Add(intersection.Value);
+                if (minD > farthestDist) { farthestDist = minD; farthest = i; }
+            }
+            if (farthest == -1) break;
+            selected.Add(source[farthest].Seed);
+            usedIdx.Add(farthest);
+        }
+
+        return selected;
+    }
+
+    private int FindNearestSeed(Vector2 point, List<Vector2> seeds)
+    {
+        int nearest = 0; float minD = float.MaxValue;
+        for (int i = 0; i < seeds.Count; i++)
+        {
+            float d = (point.x - seeds[i].x)*(point.x - seeds[i].x) +
+                      (point.y - seeds[i].y)*(point.y - seeds[i].y);
+            if (d < minD) { minD = d; nearest = i; }
+        }
+        return nearest;
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Boundary edge detection
+    // ──────────────────────────────────────────────────────────────────
+
+    private class EdgeDatum
+    {
+        public int RegionA, RegionB;
+        public List<Vector2> Polyline;   // ordered boundary polyline
+    }
+
+    private (List<EdgeDatum> edges, List<Vector2> edgePoints) GenerateBoundaryEdges(List<FineCell> cells)
+    {
+        // Map from VPoint object → list of cells containing it
+        var vertexCells = new Dictionary<VoronoiUtils.VPoint, List<FineCell>>();
+        foreach (var cell in cells)
+            foreach (var v in cell.Polygon)
+            {
+                if (!vertexCells.TryGetValue(v, out var list))
+                    vertexCells[v] = list = new List<FineCell>();
+                list.Add(cell);
+            }
+
+        var segsByEdge  = new Dictionary<string, List<(VoronoiUtils.VPoint va, VoronoiUtils.VPoint vb)>>();
+        var metaByEdge  = new Dictionary<string, (int rA, int rB)>();
+        var seenPairs   = new HashSet<long>();
+
+        foreach (var cell in cells)
+        {
+            int rA   = cell.ParentRegionId;
+            var poly = cell.Polygon;
+
+            for (int i = 0; i < poly.Count; i++)
+            {
+                var va = poly[i];
+                var vb = poly[(i + 1) % poly.Count];
+                if (va.Id < 0 || vb.Id < 0) continue;
+
+                int lo = System.Math.Min(va.Id, vb.Id), hi = System.Math.Max(va.Id, vb.Id);
+                long pairKey = ((long)lo << 32) | (uint)hi;
+                if (!seenPairs.Add(pairKey)) continue;
+
+                // Find cells containing BOTH va and vb
+                var cellsOfB = new HashSet<FineCell>(vertexCells.GetValueOrDefault(vb) ?? new List<FineCell>());
+                var shared   = (vertexCells.GetValueOrDefault(va) ?? new List<FineCell>()).Where(c => cellsOfB.Contains(c)).ToList();
+                var neighborIds = shared.Select(c => c.ParentRegionId).Where(r => r != rA).Distinct().ToList();
+                if (neighborIds.Count == 0) continue;
+
+                int rB  = neighborIds[0];
+                int rLo = System.Math.Min(rA, rB), rHi = System.Math.Max(rA, rB);
+                string eKey = $"{rLo}-{rHi}";
+
+                if (!segsByEdge.ContainsKey(eKey)) { segsByEdge[eKey] = new(); metaByEdge[eKey] = (rLo, rHi); }
+                segsByEdge[eKey].Add((va, vb));
             }
         }
 
-        return output;
-    }
+        var edgeList = new List<EdgeDatum>();
+        var usedVerts = new HashSet<VoronoiUtils.VPoint>();
 
-    private bool IsInsideEdge(Vector3 point, bool isVerticalEdge, float edgePos) {
-        if (isVerticalEdge) {
-            // For vertical edges: left (x=0) inside if x >= 0, right (x=worldSize) inside if x <= worldSize
-            return edgePos == 0 ? point.x >= -0.01f : point.x <= worldSize + 0.01f;
-        } else {
-            // For horizontal edges: bottom (z=0) inside if z >= 0, top (z=worldSize) inside if z <= worldSize
-            return edgePos == 0 ? point.z >= -0.01f : point.z <= worldSize + 0.01f;
-        }
-    }
+        foreach (var kv in segsByEdge)
+        {
+            var polyline = SortSegmentsIntoPolyline(kv.Value);
+            if (polyline.Count < 2) continue;
+            foreach (var v in polyline) usedVerts.Add(v);
 
-    private Vector3? LineIntersection(Vector3 p1, Vector3 p2, bool isVerticalEdge, float edgePos) {
-        if (isVerticalEdge) {
-            // Intersection with vertical edge at x = edgePos
-            float denom = p2.x - p1.x;
-            if (Mathf.Abs(denom) < 0.0001f)
-                return null;
-            float t = (edgePos - p1.x) / denom;
-            if (t < -0.0001f || t > 1.0001f)
-                return null;
-            return new Vector3(edgePos, p1.y, p1.z + t * (p2.z - p1.z));
-        } else {
-            // Intersection with horizontal edge at z = edgePos
-            float denom = p2.z - p1.z;
-            if (Mathf.Abs(denom) < 0.0001f)
-                return null;
-            float t = (edgePos - p1.z) / denom;
-            if (t < -0.0001f || t > 1.0001f)
-                return null;
-            return new Vector3(p1.x + t * (p2.x - p1.x), p1.y, edgePos);
-        }
-    }
-
-    private GameObject CreateRegionMesh(VoronoiRegion region) {
-        var go = new GameObject($"VoronoiRegion_{region.Id}");
-        go.transform.SetParent(transform);
-        go.layer = LayerMask.NameToLayer("Buildings"); // Reuse the Buildings layer
-
-        var meshFilter = go.AddComponent<MeshFilter>();
-        meshFilter.mesh = BuildPolygonMesh(region.Polygon);
-
-        var meshRenderer = go.AddComponent<MeshRenderer>();
-        // Use Transparent/VertexLit shader for proper alpha support
-        var shader = Shader.Find("Transparent/VertexLit");
-        if (shader == null)
-            shader = Shader.Find("Transparent/Diffuse");
-        if (shader == null)
-            shader = Shader.Find("Standard");
-        var material = new Material(shader);
-        material.color = TerrainColors.Unassigned;
-        meshRenderer.material = material;
-
-        var meshCollider = go.AddComponent<MeshCollider>();
-        meshCollider.convex = false;
-
-        return go;
-    }
-
-    private Mesh BuildPolygonMesh(List<Vector3> polygon) {
-        // Force Y = 0.05 on all verts, then fan triangulation from vertex 0
-        var verts = polygon
-            .Select(v => new Vector3(v.x, PolygonY, v.z))
-            .ToArray();
-
-        int n = verts.Length;
-        int[] tris = new int[(n - 2) * 3];
-        int t = 0;
-
-        // Fan triangulation with clockwise winding for Y-up
-        for (int i = 1; i <= n - 2; i++) {
-            tris[t++] = 0;
-            tris[t++] = i + 1;
-            tris[t++] = i;
+            var (rA, rB) = metaByEdge[kv.Key];
+            edgeList.Add(new EdgeDatum { RegionA = rA, RegionB = rB,
+                Polyline = polyline.Select(v => new Vector2(v.X, v.Y)).ToList() });
         }
 
-        var mesh = new Mesh();
-        mesh.vertices = verts;
-        mesh.triangles = tris;
-        mesh.RecalculateNormals();
-
-        return mesh;
+        var edgePts = usedVerts.Select(v => new Vector2(v.X, v.Y)).ToList();
+        return (edgeList, edgePts);
     }
 
-    public void SetRegionTerrain(int regionId, TerrainType type) {
-        var region = TerrainData.GetRegion(regionId);
-        if (region == null)
-            return;
+    private List<VoronoiUtils.VPoint> SortSegmentsIntoPolyline(
+        List<(VoronoiUtils.VPoint va, VoronoiUtils.VPoint vb)> segs)
+    {
+        if (segs.Count == 0) return new List<VoronoiUtils.VPoint>();
+        if (segs.Count == 1) return new List<VoronoiUtils.VPoint> { segs[0].va, segs[0].vb };
 
-        // Enforce boundary constraint: only edge regions can be Sea or Mountain
-        if ((type == TerrainType.Sea || type == TerrainType.Mountains) && !TouchesBoundary(region)) {
-            Debug.LogWarning($"Cannot assign {type} to interior region {regionId}. Only boundary regions can be Sea or Mountains.");
-            return;
+        var adj = new Dictionary<VoronoiUtils.VPoint, List<(int idx, VoronoiUtils.VPoint other)>>();
+        for (int i = 0; i < segs.Count; i++)
+        {
+            var (va, vb) = segs[i];
+            if (!adj.ContainsKey(va)) adj[va] = new();
+            if (!adj.ContainsKey(vb)) adj[vb] = new();
+            adj[va].Add((i, vb));
+            adj[vb].Add((i, va));
         }
 
-        TerrainData.SetRegionTerrain(regionId, type);
-        if (regionMaterials.TryGetValue(regionId, out var material))
-            material.color = TerrainColors.For(type);
-    }
+        VoronoiUtils.VPoint start = segs[0].va;
+        foreach (var kv in adj) if (kv.Value.Count == 1) { start = kv.Key; break; }
 
-    public VoronoiRegion GetRegionAtWorldPos(Vector3 pos) {
-        return TerrainData.GetRegionAtWorldPos(pos);
-    }
+        var result  = new List<VoronoiUtils.VPoint> { start };
+        var used    = new HashSet<int>();
+        var current = start;
 
-    public void HighlightRegion(int regionId) {
-        var region = TerrainData.GetRegion(regionId);
-        if (region == null)
-            return;
-
-        if (!regionMaterials.TryGetValue(regionId, out var material))
-            return;
-
-        var currentColor = region.AssignedType.HasValue
-            ? TerrainColors.For(region.AssignedType.Value)
-            : TerrainColors.Unassigned;
-        material.color = new Color(
-            Mathf.Min(currentColor.r * 1.1f, 1f),
-            Mathf.Min(currentColor.g * 1.1f, 1f),
-            Mathf.Min(currentColor.b * 1.1f, 1f),
-            currentColor.a
-        );
-    }
-
-    public void ClearHighlight(int regionId) {
-        var region = TerrainData.GetRegion(regionId);
-        if (region == null)
-            return;
-
-        if (!regionMaterials.TryGetValue(regionId, out var material))
-            return;
-
-        material.color = region.AssignedType.HasValue
-            ? TerrainColors.For(region.AssignedType.Value)
-            : TerrainColors.Unassigned;
-    }
-
-    /// <summary>Adds an edge feature (cliff/river) between regions.</summary>
-    public bool AddEdgeFeature(List<(int regionA, int regionB)> edges, EdgeFeature.EdgeFeatureType type, string description) {
-        var feature = new EdgeFeature(edgeFeatures.Count, type, edges, description);
-
-        if (!feature.IsValid()) {
-            Debug.LogWarning($"Invalid {type} feature: {description}");
-            return false;
-        }
-
-        edgeFeatures.Add(feature);
-
-        // Mark the corresponding VoronoiEdge objects as assigned
-        var assignedType = type == EdgeFeature.EdgeFeatureType.Cliff ? TerrainType.Cliffs : TerrainType.River;
-        Debug.Log($"[VoronoiWorldGenerator] Assigning {assignedType} to {edges.Count} edges");
-
-        foreach (var (regionA, regionB) in edges) {
-            var voronoiEdge = FindEdge(regionA, regionB);
-            Debug.Log($"[VoronoiWorldGenerator] Looking for edge {regionA}-{regionB}: found={voronoiEdge != null}");
-            if (voronoiEdge != null) {
-                voronoiEdge.SetAssignedFeature(assignedType);
-                Debug.Log($"[VoronoiWorldGenerator] Set {regionA}-{regionB} to {assignedType}, isAssigned={voronoiEdge.IsAssigned}");
+        while (used.Count < segs.Count)
+        {
+            bool found = false;
+            foreach (var (idx, other) in adj.GetValueOrDefault(current) ?? new List<(int, VoronoiUtils.VPoint)>())
+            {
+                if (used.Contains(idx)) continue;
+                used.Add(idx); result.Add(other); current = other; found = true; break;
             }
-        }
-
-        Debug.Log($"Added {type} feature: {description}");
-        return true;
-    }
-
-    private VoronoiEdge FindEdge(int regionA, int regionB) {
-        foreach (var edge in edges) {
-            if ((edge.regionA == regionA && edge.regionB == regionB) ||
-                (edge.regionA == regionB && edge.regionB == regionA)) {
-                return edge;
-            }
-        }
-        return null;
-    }
-
-    /// <summary>Gets all edge features of a specific type.</summary>
-    public List<EdgeFeature> GetEdgeFeaturesByType(EdgeFeature.EdgeFeatureType type) {
-        var result = new List<EdgeFeature>();
-        foreach (var feature in edgeFeatures) {
-            if (feature.Type == type)
-                result.Add(feature);
+            if (!found) break;
         }
         return result;
     }
 
-    /// <summary>Gets edge features that connect two specific regions.</summary>
-    public EdgeFeature GetEdgeFeatureBetween(int regionA, int regionB) {
-        foreach (var feature in edgeFeatures) {
-            foreach (var (a, b) in feature.Edges) {
-                if ((a == regionA && b == regionB) || (a == regionB && b == regionA))
-                    return feature;
+    // ══════════════════════════════════════════════════════════════════
+    // Edge GameObject creation
+    // ══════════════════════════════════════════════════════════════════
+
+    private void CreateEdgeObjects(List<EdgeDatum> edgeData, List<Vector2> edgePoints)
+    {
+        foreach (var ed in edgeData)
+        {
+            if (ed.Polyline.Count < 2) continue;
+
+            var go = new GameObject($"Edge_{ed.RegionA}_{ed.RegionB}");
+            go.transform.SetParent(transform);
+            int layer = LayerMask.NameToLayer("Edges");
+            go.layer = layer < 0 ? LayerMask.NameToLayer("Default") : layer;
+
+            var pts3 = ed.Polyline.Select(v => new Vector3(v.x, EdgeY, v.y)).ToList();
+
+            var mf = go.AddComponent<MeshFilter>();
+            mf.mesh = BuildBoundaryEdgeMesh(pts3);
+
+            var mr     = go.AddComponent<MeshRenderer>();
+            var shader = Shader.Find("Transparent/VertexLit") ?? Shader.Find("Transparent/Diffuse") ?? Shader.Find("Standard");
+            var mat    = new Material(shader) { color = new Color(0.8f, 0.6f, 0.2f, 0f) };
+            mr.material = mat;
+            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            var mc = go.AddComponent<MeshCollider>();
+            mc.convex = false;
+
+            var ec = go.AddComponent<VoronoiEdge>();
+            ec.Initialize(edges.Count, ed.RegionA, ed.RegionB, pts3[0], pts3[pts3.Count - 1]);
+            edges.Add(ec);
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // City region identification
+    // ══════════════════════════════════════════════════════════════════
+
+    private void IdentifyCityRegion()
+    {
+        var all      = TerrainData.GetAllRegions();
+        var interior = all.Where(r => !TouchesBoundary(r)).ToList();
+        var city     = interior.Count > 0
+            ? interior.OrderByDescending(r => r.Polygon.Count).First()
+            : all.OrderByDescending(r => r.Polygon.Count).First();
+        SetCityRegion(city);
+    }
+
+    private bool TouchesBoundary(VoronoiRegion region)
+    {
+        const float margin = 0.5f;
+        return region.Polygon.Any(v =>
+            v.x < margin || v.x > worldSize - margin ||
+            v.z < margin || v.z > worldSize - margin);
+    }
+
+    private void SetCityRegion(VoronoiRegion region)
+    {
+        TerrainData.SetRegionTerrain(region.Id, TerrainType.City);
+        if (regionMaterials.TryGetValue(region.Id, out var mat))
+            mat.color = TerrainColors.For(TerrainType.City);
+        Debug.Log($"[VoronoiWorldGenerator] City region: {region.Id} at {region.SeedPoint}");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Public API (terrain assignment, hover, edge features)
+    // ══════════════════════════════════════════════════════════════════
+
+    public void SetRegionTerrain(int regionId, TerrainType type)
+    {
+        var region = TerrainData.GetRegion(regionId);
+        if (region == null) return;
+
+        // Desert, Mountains, Sea are edge-only
+        if ((type == TerrainType.Sea || type == TerrainType.Mountains || type == TerrainType.Desert)
+            && !TouchesBoundary(region))
+        {
+            Debug.LogWarning($"Cannot assign {type} to interior region {regionId}.");
+            return;
+        }
+
+        // Sea and Lake cannot be adjacent to each other
+        if (type == TerrainType.Sea || type == TerrainType.Lake)
+        {
+            TerrainType forbidden = type == TerrainType.Sea ? TerrainType.Lake : TerrainType.Sea;
+            foreach (var e in edges)
+            {
+                if (e.regionA != regionId && e.regionB != regionId) continue;
+                int otherId = e.regionA == regionId ? e.regionB : e.regionA;
+                var other = TerrainData.GetRegion(otherId);
+                if (other?.AssignedType == forbidden)
+                {
+                    Debug.LogWarning($"Cannot assign {type} to region {regionId}: adjacent to {forbidden}.");
+                    return;
+                }
             }
         }
+
+        TerrainData.SetRegionTerrain(regionId, type);
+        if (regionMaterials.TryGetValue(regionId, out var mat)) mat.color = TerrainColors.For(type);
+
+        // Assigning Sea or Lake clears any adjacent River edges
+        if (type == TerrainType.Lake || type == TerrainType.Sea)
+        {
+            foreach (var e in edges)
+            {
+                if (e.regionA != regionId && e.regionB != regionId) continue;
+                if (!e.IsAssigned || e.AssignedFeatureType != TerrainType.River) continue;
+                e.ClearAssignment();
+                edgeFeatures.RemoveAll(f => f.Type == EdgeFeature.EdgeFeatureType.River &&
+                    f.Edges.Exists(p => (p.regionA == e.regionA && p.regionB == e.regionB) ||
+                                        (p.regionA == e.regionB && p.regionB == e.regionA)));
+            }
+        }
+    }
+
+    /// <summary>Whether the region touches the world boundary. Exposed for SetupPhase validation.</summary>
+    public bool IsEdgeRegion(VoronoiRegion region) => TouchesBoundary(region);
+
+    /// <summary>
+    /// Validates that every river terminates at the world edge, a Lake, Sea, or Mountain,
+    /// or joins another river. Returns an error string, or null if valid.
+    /// </summary>
+    public string ValidateRiverEndpoints()
+    {
+        const float eps = 1.0f;
+        var VALID_TYPES = new System.Collections.Generic.HashSet<TerrainType>
+            { TerrainType.Lake, TerrainType.Sea, TerrainType.Mountains };
+
+        var riverEdges = new List<VoronoiEdge>();
+        foreach (var e in edges)
+            if (e.IsAssigned && e.AssignedFeatureType == TerrainType.River) riverEdges.Add(e);
+
+        if (riverEdges.Count == 0) return null;
+
+        // Count how many river edges share each endpoint (start/end point of edge polyline)
+        var endpointCount = new System.Collections.Generic.Dictionary<string, int>();
+        string PointKey(Vector3 p) =>
+            $"{System.Math.Round(p.x, 2):F2},{System.Math.Round(p.z, 2):F2}";
+
+        foreach (var re in riverEdges)
+        {
+            var sk = PointKey(re.edgeStartPoint); var ek = PointKey(re.edgeEndPoint);
+            endpointCount[sk] = endpointCount.GetValueOrDefault(sk, 0) + 1;
+            endpointCount[ek] = endpointCount.GetValueOrDefault(ek, 0) + 1;
+        }
+
+        foreach (var re in riverEdges)
+        {
+            foreach (var pt in new[] { re.edgeStartPoint, re.edgeEndPoint })
+            {
+                if (endpointCount.GetValueOrDefault(PointKey(pt), 0) > 1) continue; // junction — valid
+
+                // On world boundary?
+                if (pt.x <= eps || pt.x >= worldSize - eps ||
+                    pt.z <= eps || pt.z >= worldSize - eps) continue;
+
+                // Adjacent region is Lake, Sea, or Mountains?
+                var rA = TerrainData.GetRegion(re.regionA);
+                var rB = TerrainData.GetRegion(re.regionB);
+                bool ok = (rA?.AssignedType.HasValue == true && VALID_TYPES.Contains(rA.AssignedType.Value)) ||
+                          (rB?.AssignedType.HasValue == true && VALID_TYPES.Contains(rB.AssignedType.Value));
+                if (!ok)
+                    return "Every river must start and end at the map edge, a Lake, Sea, or Mountain, or join another river.";
+            }
+        }
+
         return null;
     }
 
-    private void GenerateEdges() {
-        var allRegions = TerrainData.GetAllRegions();
-        Debug.Log($"[VoronoiWorldGenerator.GenerateEdges] Starting with {allRegions.Count} regions");
+    public VoronoiRegion GetRegionAtWorldPos(Vector3 pos) => TerrainData.GetRegionAtWorldPos(pos);
 
-        // Find adjacent region pairs and create edge objects
-        var adjacencySet = new HashSet<(int, int)>();
-        int adjacentPairsFound = 0;
-
-        for (int i = 0; i < allRegions.Count; i++) {
-            for (int j = i + 1; j < allRegions.Count; j++) {
-                if (AreRegionsAdjacent(allRegions[i], allRegions[j])) {
-                    adjacentPairsFound++;
-                    Debug.Log($"[VoronoiWorldGenerator.GenerateEdges] Found adjacent pair: {allRegions[i].Id} ↔ {allRegions[j].Id}");
-                    var key = (allRegions[i].Id < allRegions[j].Id)
-                        ? (allRegions[i].Id, allRegions[j].Id)
-                        : (allRegions[j].Id, allRegions[i].Id);
-                    if (!adjacencySet.Contains(key)) {
-                        adjacencySet.Add(key);
-                        CreateEdgeObject(allRegions[i].Id, allRegions[j].Id);
-                    }
-                }
-            }
-        }
-
-        Debug.Log($"[VoronoiWorldGenerator] Found {adjacentPairsFound} adjacent region pairs, created {edges.Count} edges");
-        if (edges.Count == 0) {
-            Debug.LogWarning("[VoronoiWorldGenerator] WARNING: No edges were created! Check AreRegionsAdjacent and FindSharedBoundaryVertices");
-        }
+    public void HighlightRegion(int regionId)
+    {
+        var region = TerrainData.GetRegion(regionId);
+        if (region == null || !regionMaterials.TryGetValue(regionId, out var mat)) return;
+        var c = region.AssignedType.HasValue ? TerrainColors.For(region.AssignedType.Value) : TerrainColors.Unassigned;
+        mat.color = new Color(Mathf.Min(c.r*1.1f,1f), Mathf.Min(c.g*1.1f,1f), Mathf.Min(c.b*1.1f,1f), c.a);
     }
 
-    private bool AreRegionsAdjacent(VoronoiRegion a, VoronoiRegion b) {
-        // Simple check: if regions' polygons have vertices within close proximity, they're adjacent
-        const float proximity = 1.5f;
-
-        foreach (var vertexA in a.Polygon) {
-            foreach (var vertexB in b.Polygon) {
-                if (Vector3.Distance(vertexA, vertexB) < proximity)
-                    return true;
-            }
-        }
-
-        return false;
+    public void ClearHighlight(int regionId)
+    {
+        var region = TerrainData.GetRegion(regionId);
+        if (region == null || !regionMaterials.TryGetValue(regionId, out var mat)) return;
+        mat.color = region.AssignedType.HasValue ? TerrainColors.For(region.AssignedType.Value) : TerrainColors.Unassigned;
     }
 
-    private void CreateEdgeObject(int regionA, int regionB) {
-        var regionAData = TerrainData.GetRegion(regionA);
-        var regionBData = TerrainData.GetRegion(regionB);
-        if (regionAData == null || regionBData == null) {
-            Debug.LogWarning($"[VoronoiWorldGenerator.CreateEdgeObject] Region data not found: {regionA}={regionAData}, {regionB}={regionBData}");
-            return;
+    public bool AddEdgeFeature(List<(int regionA, int regionB)> edgePairs, EdgeFeature.EdgeFeatureType type, string description)
+    {
+        var feature = new EdgeFeature(edgeFeatures.Count, type, edgePairs, description);
+        if (!feature.IsValid()) { Debug.LogWarning($"Invalid {type} feature: {description}"); return false; }
+
+        edgeFeatures.Add(feature);
+        var assignedType = type == EdgeFeature.EdgeFeatureType.Cliff ? TerrainType.Cliffs : TerrainType.River;
+        foreach (var (rA, rB) in edgePairs)
+        {
+            var e = FindEdge(rA, rB);
+            if (e != null) e.SetAssignedFeature(assignedType);
         }
-
-        // Find shared vertices between two regions
-        var sharedVertices = FindSharedBoundaryVertices(regionAData, regionBData);
-        Debug.Log($"[VoronoiWorldGenerator] Edge {regionA}-{regionB}: found {sharedVertices.Count} shared vertices");
-
-        if (sharedVertices.Count < 2) {
-            Debug.LogWarning($"[VoronoiWorldGenerator.CreateEdgeObject] Edge {regionA}-{regionB} has only {sharedVertices.Count} shared vertices (need 2+)");
-            return;
-        }
-
-        // Create edge GameObject
-        var edgeGO = new GameObject($"Edge_{regionA}_{regionB}");
-        edgeGO.transform.SetParent(transform);
-        // Put edges on a layer that will be raycast-priority (use "UI" layer or create "Edges" layer)
-        int edgeLayer = LayerMask.NameToLayer("Edges");
-        if (edgeLayer == -1)
-            edgeLayer = LayerMask.NameToLayer("Default"); // Fallback
-        edgeGO.layer = edgeLayer;
-        Debug.Log($"[VoronoiWorldGenerator] Edge GameObject layer: {LayerMask.LayerToName(edgeGO.layer)}");
-
-        // Create mesh along the boundary line
-        var meshFilter = edgeGO.AddComponent<MeshFilter>();
-        meshFilter.mesh = BuildBoundaryEdgeMesh(sharedVertices);
-
-        // Add renderer with transparent material (invisible by default)
-        var meshRenderer = edgeGO.AddComponent<MeshRenderer>();
-        var shader = Shader.Find("Transparent/VertexLit");
-        if (shader == null)
-            shader = Shader.Find("Transparent/Diffuse");
-        if (shader == null)
-            shader = Shader.Find("Standard");
-
-        var material = new Material(shader);
-        material.color = new Color(0.8f, 0.6f, 0.2f, 0.0f); // Transparent initially
-        meshRenderer.material = material;
-        meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-
-        // Add collider
-        var meshCollider = edgeGO.AddComponent<MeshCollider>();
-        meshCollider.convex = false;
-        meshCollider.enabled = true;
-
-        // Add VoronoiEdge component
-        var edgeComponent = edgeGO.AddComponent<VoronoiEdge>();
-        Vector3 start = sharedVertices[0];
-        Vector3 end = sharedVertices[sharedVertices.Count - 1];
-        edgeComponent.Initialize(edges.Count, regionA, regionB, start, end);
-
-        edges.Add(edgeComponent);
+        return true;
     }
 
-    private List<Vector3> FindSharedBoundaryVertices(VoronoiRegion a, VoronoiRegion b) {
-        var shared = new List<Vector3>();
-        const float threshold = 1.0f; // Match or exceed AreRegionsAdjacent proximity
-
-        Debug.Log($"[FindSharedBoundaryVertices] Checking regions {a.Id}↔{b.Id}: {a.Polygon.Count}+{b.Polygon.Count} vertices");
-
-        foreach (var vertexA in a.Polygon) {
-            foreach (var vertexB in b.Polygon) {
-                float dist = Vector3.Distance(vertexA, vertexB);
-                if (dist < threshold) {
-                    // Check if we already have this vertex
-                    bool alreadyAdded = false;
-                    foreach (var v in shared) {
-                        if (Vector3.Distance(v, vertexA) < 0.01f) {
-                            alreadyAdded = true;
-                            break;
-                        }
-                    }
-                    if (!alreadyAdded) {
-                        Debug.Log($"[FindSharedBoundaryVertices] Found shared vertex at {vertexA} (dist={dist:F3})");
-                        shared.Add(vertexA);
-                    }
-                }
-            }
-        }
-
-        Debug.Log($"[FindSharedBoundaryVertices] Result: {shared.Count} unique shared vertices for {a.Id}↔{b.Id}");
-
-        // Sort shared vertices along the line connecting them
-        if (shared.Count >= 2) {
-            Vector3 dir = (shared[shared.Count - 1] - shared[0]).normalized;
-            shared.Sort((a, b) => Vector3.Dot(a - shared[0], dir).CompareTo(Vector3.Dot(b - shared[0], dir)));
-        }
-
-        return shared;
+    public VoronoiEdge FindEdge(int rA, int rB)
+    {
+        foreach (var e in edges)
+            if ((e.regionA == rA && e.regionB == rB) || (e.regionA == rB && e.regionB == rA)) return e;
+        return null;
     }
 
-    private Mesh BuildBoundaryEdgeMesh(List<Vector3> boundaryPoints) {
-        // Create a mesh along the boundary line(s) between two regions
-        var mesh = new Mesh();
+    public List<EdgeFeature> GetEdgeFeaturesByType(EdgeFeature.EdgeFeatureType type)
+        => edgeFeatures.Where(f => f.Type == type).ToList();
 
-        if (boundaryPoints.Count < 2)
-            return mesh;
+    public EdgeFeature GetEdgeFeatureBetween(int rA, int rB)
+    {
+        foreach (var f in edgeFeatures)
+            foreach (var (a, b) in f.Edges)
+                if ((a == rA && b == rB) || (a == rB && b == rA)) return f;
+        return null;
+    }
 
-        // Create a strip of quads along the boundary
-        var vertices = new List<Vector3>();
-        var triangles = new List<int>();
+    public void HighlightEdge(VoronoiEdge edge)      => edge.Highlight();
+    public void ClearEdgeHighlight(VoronoiEdge edge) => edge.ClearHighlight();
 
-        // Build quads along each segment of the boundary
-        for (int i = 0; i < boundaryPoints.Count - 1; i++) {
-            var p1 = boundaryPoints[i];
-            var p2 = boundaryPoints[i + 1];
+    // ══════════════════════════════════════════════════════════════════
+    // Mesh builders
+    // ══════════════════════════════════════════════════════════════════
 
-            // Get perpendicular direction for edge thickness
-            Vector3 dir = (p2 - p1).normalized;
-            Vector3 perpendicular = new Vector3(-dir.z, 0, dir.x) * (EdgeThickness / 2f);
+    private GameObject CreateRegionMesh(VoronoiRegion region)
+    {
+        var go = new GameObject($"VoronoiRegion_{region.Id}");
+        go.transform.SetParent(transform);
+        go.layer = LayerMask.NameToLayer("Buildings");
 
-            int baseIdx = vertices.Count;
+        var mf = go.AddComponent<MeshFilter>();
+        mf.mesh = BuildPolygonMesh(region.Polygon);
 
-            // Add quad vertices
-            vertices.Add(new Vector3(p1.x - perpendicular.x, EdgeY, p1.z - perpendicular.z));
-            vertices.Add(new Vector3(p1.x + perpendicular.x, EdgeY, p1.z + perpendicular.z));
-            vertices.Add(new Vector3(p2.x + perpendicular.x, EdgeY, p2.z + perpendicular.z));
-            vertices.Add(new Vector3(p2.x - perpendicular.x, EdgeY, p2.z - perpendicular.z));
+        var mr     = go.AddComponent<MeshRenderer>();
+        var shader = Shader.Find("Transparent/VertexLit") ?? Shader.Find("Transparent/Diffuse") ?? Shader.Find("Standard");
+        var mat    = new Material(shader) { color = TerrainColors.Unassigned };
+        mr.material = mat;
 
-            // Add triangles for this quad
-            triangles.Add(baseIdx + 0);
-            triangles.Add(baseIdx + 1);
-            triangles.Add(baseIdx + 2);
-            triangles.Add(baseIdx + 0);
-            triangles.Add(baseIdx + 2);
-            triangles.Add(baseIdx + 3);
-        }
+        go.AddComponent<MeshCollider>().convex = false;
+        return go;
+    }
 
-        mesh.vertices = vertices.ToArray();
-        mesh.triangles = triangles.ToArray();
+    private Mesh BuildPolygonMesh(List<Vector3> polygon)
+    {
+        var verts = polygon.Select(v => new Vector3(v.x, PolygonY, v.z)).ToArray();
+        int n = verts.Length;
+        var tris = new int[(n - 2) * 3];
+        int t = 0;
+        for (int i = 1; i <= n - 2; i++) { tris[t++] = 0; tris[t++] = i + 1; tris[t++] = i; }
+        var mesh = new Mesh { vertices = verts, triangles = tris };
         mesh.RecalculateNormals();
-
         return mesh;
     }
 
-    public void HighlightEdge(VoronoiEdge edge) {
-        edge.Highlight();
-    }
+    private Mesh BuildBoundaryEdgeMesh(List<Vector3> pts)
+    {
+        var verts = new List<Vector3>();
+        var tris  = new List<int>();
 
-    public void ClearEdgeHighlight(VoronoiEdge edge) {
-        edge.ClearHighlight();
+        for (int i = 0; i < pts.Count - 1; i++)
+        {
+            var p1 = pts[i]; var p2 = pts[i + 1];
+            var dir  = (p2 - p1).normalized;
+            var perp = new Vector3(-dir.z, 0, dir.x) * (EdgeThickness * 0.5f);
+            int b = verts.Count;
+            verts.Add(new Vector3(p1.x - perp.x, EdgeY, p1.z - perp.z));
+            verts.Add(new Vector3(p1.x + perp.x, EdgeY, p1.z + perp.z));
+            verts.Add(new Vector3(p2.x + perp.x, EdgeY, p2.z + perp.z));
+            verts.Add(new Vector3(p2.x - perp.x, EdgeY, p2.z - perp.z));
+            tris.AddRange(new[] { b, b+1, b+2, b, b+2, b+3 });
+        }
+
+        var mesh = new Mesh { vertices = verts.ToArray(), triangles = tris.ToArray() };
+        mesh.RecalculateNormals();
+        return mesh;
     }
 }

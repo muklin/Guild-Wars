@@ -78,8 +78,19 @@ export default class CameraController {
     } else if (e.key.toLowerCase() === 'f') {
       this.frameAllContent()
       e.preventDefault()
+    } else if (e.key === ']') {
+      this.camera.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.camera.zoom * 1.15))
+      this.camera.updateProjectionMatrix()
+      this.enforceWorldBounds()
+      e.preventDefault()
+    } else if (e.key === '[') {
+      this.camera.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.camera.zoom / 1.15))
+      this.camera.updateProjectionMatrix()
+      this.enforceWorldBounds()
+      e.preventDefault()
     } else {
       this.keys[e.code.toLowerCase()] = true
+      if (e.code.startsWith('Arrow')) e.preventDefault()
     }
   }
 
@@ -233,10 +244,10 @@ export default class CameraController {
 
     const ca = Math.cos(this.azimuth)
     const sa = Math.sin(this.azimuth)
-    if (this.keys['keyw']) { this.targetPosition.addScaledVector(new THREE.Vector3(-ca, 0, -sa), moveSpeed); moved = true }
-    if (this.keys['keys']) { this.targetPosition.addScaledVector(new THREE.Vector3( ca, 0,  sa), moveSpeed); moved = true }
-    if (this.keys['keya']) { this.targetPosition.addScaledVector(new THREE.Vector3(-sa, 0,  ca), moveSpeed); moved = true }
-    if (this.keys['keyd']) { this.targetPosition.addScaledVector(new THREE.Vector3( sa, 0, -ca), moveSpeed); moved = true }
+    if (this.keys['keyw'] || this.keys['arrowup'])    { this.targetPosition.addScaledVector(new THREE.Vector3(-ca, 0, -sa), moveSpeed); moved = true }
+    if (this.keys['keys'] || this.keys['arrowdown'])  { this.targetPosition.addScaledVector(new THREE.Vector3( ca, 0,  sa), moveSpeed); moved = true }
+    if (this.keys['keya'] || this.keys['arrowleft'])  { this.targetPosition.addScaledVector(new THREE.Vector3(-sa, 0,  ca), moveSpeed); moved = true }
+    if (this.keys['keyd'] || this.keys['arrowright']) { this.targetPosition.addScaledVector(new THREE.Vector3( sa, 0, -ca), moveSpeed); moved = true }
 
     if (moved) {
       this.updateCameraPosition()

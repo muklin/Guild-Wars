@@ -1,70 +1,67 @@
 import * as THREE from 'three'
 import CameraController from './CameraController.js'
-import TerrainColors from './TerrainColors.js'
-import TerrainFeatureManager from './TerrainFeatureManager.js'
 
-// Inset a CW-wound (y-down) polygon by offsetting each edge inward along its
-// inward normal and intersecting adjacent offset lines at corners.
-// Dead-end spikes (antiparallel edges) get a square end cap.
-// Acute corners that exceed miterLimit × offset are bevelled.
-function insetPolygon(poly, offset, miterLimit = 1.5) {
+// Offset each edge of poly inward by `offset`, then intersect adjacent offset lines at
+// corners (miter joint). Bevels corners where the miter would exceed 3× the offset.
+// Returns a new polygon (array of {x,y}) or null if the result is degenerate.
+function insetBlockOutline(poly, offset) {
   const n = poly.length
-  const lines = []
+  if (n < 3) return null
+  const cx = poly.reduce((s, v) => s + v.x, 0) / n
+  const cy = poly.reduce((s, v) => s + v.y, 0) / n
+  const edges = []
   for (let i = 0; i < n; i++) {
     const a = poly[i], b = poly[(i + 1) % n]
     const dx = b.x - a.x, dy = b.y - a.y
     const len = Math.hypot(dx, dy)
     if (len < 1e-10) continue
-    const nx = -dy / len, ny = dx / len
-    const ux = dx / len, uy = dy / len
-    lines.push({
+    let nx = -dy / len, ny = dx / len
+    if (nx * (cx - a.x) + ny * (cy - a.y) < 0) { nx = -nx; ny = -ny }
+    edges.push({
       px: a.x + nx * offset, py: a.y + ny * offset,
       ex: b.x + nx * offset, ey: b.y + ny * offset,
-      dx, dy, ux, uy,
-      si: i,              // start vertex index into poly
-      ei: (i + 1) % n    // end vertex index into poly
+      dx, dy
     })
   }
-  if (lines.length < 3) return null
-  const result = []
-  const m = lines.length
+  if (edges.length < 3) return null
+  const verts = []
+  const m = edges.length
   for (let i = 0; i < m; i++) {
-    const L1 = lines[i], L2 = lines[(i + 1) % m]
+    const L1 = edges[i], L2 = edges[(i + 1) % m]
     const denom = L1.dx * L2.dy - L1.dy * L2.dx
-
-    if (Math.abs(denom) < 1e-9 || L1.ux * L2.ux + L1.uy * L2.uy < -0.5) {
-      if (L1.ux * L2.ux + L1.uy * L2.uy < -0.5) {
-        // Check whether this is a true dead-end spike: face polygon visits the
-        // same vertex before L1 and after L2 (pattern A→B→A).
-        const a1 = poly[L1.si], a2 = poly[L2.ei]
-        if (Math.hypot(a1.x - a2.x, a1.y - a2.y) < 1e-9) {
-          // True spike — extend a square cap past the dead-end tip.
-          result.push({ x: L1.ex,                  y: L1.ey                  })
-          result.push({ x: L1.ex + L1.ux * offset, y: L1.ey + L1.uy * offset })
-          result.push({ x: L2.px + L1.ux * offset, y: L2.py + L1.uy * offset })
-          result.push({ x: L2.px,                  y: L2.py                  })
-        } else {
-          // Acute block corner (not a spike) — midpoint stays near the vertex,
-          // so the ring never crosses to the other side of the block.
-          result.push({ x: (L1.ex + L2.px) / 2, y: (L1.ey + L2.py) / 2 })
-        }
-      } else {
-        result.push({ x: (L1.ex + L2.px) / 2, y: (L1.ey + L2.py) / 2 })
-      }
-      continue
-    }
-
-    const t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / denom
-    const pt = { x: L1.px + t * L1.dx, y: L1.py + t * L1.dy }
-    if (Math.hypot(pt.x - L1.ex, pt.y - L1.ey) > miterLimit * offset) {
-      // Miter too large — midpoint avoids crossing for acute corners.
-      result.push({ x: (L1.ex + L2.px) / 2, y: (L1.ey + L2.py) / 2 })
+    if (Math.abs(denom) < 1e-9) {
+      verts.push({ x: L1.ex, y: L1.ey })
     } else {
-      result.push(pt)
+      const t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / denom
+      const ix = L1.px + t * L1.dx, iy = L1.py + t * L1.dy
+      if (Math.hypot(ix - L1.ex, iy - L1.ey) > 3 * offset) {
+        verts.push({ x: L1.ex, y: L1.ey })  // bevel: two endpoints instead of spike
+        verts.push({ x: L2.px, y: L2.py })
+      } else {
+        verts.push({ x: ix, y: iy })
+      }
     }
   }
-  return result.length >= 3 ? result : null
+  return verts.length >= 3 ? verts : null
 }
+// Appends a filled circle fan into allVerts/allIdx at (x, Y, z) with given radius.
+// Winding order: reversed so the cross-product AB×AC points +Y (visible from above).
+function addCircleFan(allVerts, allIdx, x, Y, z, r, segs = 10) {
+  const base = allVerts.length / 3
+  allVerts.push(x, Y, z)
+  for (let s = 0; s < segs; s++) {
+    const a = (s / segs) * Math.PI * 2
+    allVerts.push(x + Math.cos(a) * r, Y, z + Math.sin(a) * r)
+  }
+  for (let s = 0; s < segs; s++) {
+    allIdx.push(base, base + 1 + (s + 1) % segs, base + 1 + s)
+  }
+}
+
+import TerrainColors from './TerrainColors.js'
+import TerrainFeatureManager from './TerrainFeatureManager.js'
+import BuildingRenderer from './BuildingRenderer.js'
+
 
 export default class WorldRenderer {
   constructor() {
@@ -86,6 +83,7 @@ export default class WorldRenderer {
     this.roadMeshes = []
     this.streetMeshes = []
     this.buildingMeshes = []
+    this.buildingRenderer = new BuildingRenderer()
     this.featureManager = null
     this.spawnedFeatureRegions = new Map()  // regionId → Set<featureName>
     this.clock = new THREE.Clock()
@@ -216,10 +214,14 @@ export default class WorldRenderer {
   renderStreetGraph(streetGraph) {
     this.clearStreetLayer()
     if (!streetGraph) return
-
-    // Render street edges
     if (!streetGraph.nodes?.length || !streetGraph.edges?.length) return
+
     const nodeById = new Map(streetGraph.nodes.map(n => [n.id, n]))
+    const thickness = 0.0875
+    const r = thickness / 2
+    const Y = 0.075
+
+    // Group edges by type
     const byType = new Map()
     for (const edge of streetGraph.edges) {
       const type = edge.type || 'Mud'
@@ -227,27 +229,53 @@ export default class WorldRenderer {
       byType.get(type).push(edge)
     }
 
-    const thickness = 0.0875
-    for (const [type, edges] of byType) {
+    // Assign highest-priority street type to each node (fills intersection gaps)
+    const typePriority = { Stone: 2, Brick: 1, Mud: 0 }
+    const nodeType = new Map()
+    for (const edge of streetGraph.edges) {
+      const type = edge.type || 'Mud'
+      const pri = typePriority[type] ?? 0
+      for (const nid of [edge.nodeA, edge.nodeB]) {
+        if (!nodeType.has(nid) || pri > (typePriority[nodeType.get(nid)] ?? 0)) {
+          nodeType.set(nid, type)
+        }
+      }
+    }
+    const nodesByType = new Map()
+    for (const [nid, type] of nodeType) {
+      if (!nodesByType.has(type)) nodesByType.set(type, [])
+      nodesByType.get(type).push(nid)
+    }
+
+    const CIRCLE_SEGS = 8
+    const allTypes = new Set([...byType.keys(), ...nodesByType.keys()])
+    for (const type of allTypes) {
       const allVerts = [], allIdx = []
-      for (const edge of edges) {
-        const nA = nodeById.get(edge.nodeA)
-        const nB = nodeById.get(edge.nodeB)
+
+      for (const edge of (byType.get(type) || [])) {
+        const nA = nodeById.get(edge.nodeA), nB = nodeById.get(edge.nodeB)
         if (!nA || !nB) continue
         const dx = nB.x - nA.x, dy = nB.y - nA.y
         const len = Math.sqrt(dx * dx + dy * dy)
         if (len === 0) continue
-        const perpX = (-dy / len) * (thickness / 2)
-        const perpY = (dx / len) * (thickness / 2)
+        const perpX = (-dy / len) * r, perpY = (dx / len) * r
         const base = allVerts.length / 3
         allVerts.push(
-          nA.x - perpX, 0.075, nA.y - perpY,
-          nA.x + perpX, 0.075, nA.y + perpY,
-          nB.x + perpX, 0.075, nB.y + perpY,
-          nB.x - perpX, 0.075, nB.y - perpY
+          nA.x - perpX, Y, nA.y - perpY,
+          nA.x + perpX, Y, nA.y + perpY,
+          nB.x + perpX, Y, nB.y + perpY,
+          nB.x - perpX, Y, nB.y - perpY
         )
         allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
       }
+
+      // Filled circle at each node to close gaps between quads
+      for (const nid of (nodesByType.get(type) || [])) {
+        const node = nodeById.get(nid)
+        if (!node) continue
+        addCircleFan(allVerts, allIdx, node.x, Y, node.y, r, CIRCLE_SEGS)
+      }
+
       if (allVerts.length === 0) continue
       const geometry = new THREE.BufferGeometry()
       geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allVerts), 3))
@@ -264,87 +292,80 @@ export default class WorldRenderer {
   clearBuildingLayer() {
     for (const m of this.buildingMeshes) this.scene.remove(m)
     this.buildingMeshes = []
+    this.buildingRenderer.clear(this.scene)
   }
 
-  renderBuildings(blocks, buildings) {
+  renderBuildings(blocks, buildings, buildingTemplates, textureTemplates) {
     this.clearBuildingLayer()
     if (!blocks?.length) return
 
-    const Y_RING   = 0.05
-    const Y_SQUARE = 0.04
-    const SETBACK  = 0.5
-    const STONE_COLOR  = new THREE.Color(0x999999)
-    const SINGLE_COLOR = new THREE.Color(0xc8a87a)
+    const Y_CURB = 0.078
+    const CURB_OFFSET = 0.0875 / 2
+    const LOT_COLOR = new THREE.Color(0x00ffcc)
+    const lineVerts = []
 
-    // lot polygons grouped by blockId for subdivided blocks
-    const lotsByBlock = new Map()
-    if (buildings?.length) {
-      for (const b of buildings) {
-        if (!lotsByBlock.has(b.blockId)) lotsByBlock.set(b.blockId, [])
-        lotsByBlock.get(b.blockId).push(b.vertices)
+    // Count how many blocks reference each edge — interior (street-facing) edges appear twice
+    const edgeRefCount = new Map()
+    for (const block of blocks) {
+      if (!block.vertices || block.vertices.length < 3 || block.blockType === 'square') continue
+      const poly = block.vertices, n = poly.length
+      for (let i = 0; i < n; i++) {
+        const a = poly[i], b = poly[(i + 1) % n]
+        const ka = `${a.x.toFixed(4)},${a.y.toFixed(4)}`, kb = `${b.x.toFixed(4)},${b.y.toFixed(4)}`
+        const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`
+        edgeRefCount.set(key, (edgeRefCount.get(key) || 0) + 1)
       }
     }
 
-    const addLine = (pts, color, Y) => {
-      const geo = new THREE.BufferGeometry().setFromPoints(pts.map(v => new THREE.Vector3(v.x, Y, v.y)))
-      const mat = new THREE.LineBasicMaterial({ color })
-      const line = new THREE.LineLoop(geo, mat)
-      this.scene.add(line)
-      this.buildingMeshes.push(line)
+    function edgeKey(a, b) {
+      const ka = `${a.x.toFixed(4)},${a.y.toFixed(4)}`, kb = `${b.x.toFixed(4)},${b.y.toFixed(4)}`
+      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`
     }
 
-    const addFill = (poly, color, Y) => {
-      const cx = poly.reduce((s, v) => s + v.x, 0) / poly.length
-      const cy = poly.reduce((s, v) => s + v.y, 0) / poly.length
-      const verts = [cx, Y, cy]
-      for (const v of poly) verts.push(v.x, Y, v.y)
-      const idx = []
-      for (let i = 0; i < poly.length; i++) idx.push(0, i + 1, (i + 1) % poly.length + 1)
-      const geo = new THREE.BufferGeometry()
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
-      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1))
-      geo.computeVertexNormals()
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.8, side: THREE.DoubleSide })
-      const mesh = new THREE.Mesh(geo, mat)
-      this.scene.add(mesh)
-      this.buildingMeshes.push(mesh)
-    }
-
-    for (let bi = 0; bi < blocks.length; bi++) {
-      const block = blocks[bi]
+    for (const block of blocks) {
       const poly = block.vertices
       if (!poly || poly.length < 3) continue
+      if (block.blockType === 'square') continue
+      const n = poly.length
 
-      const blockType = block.blockType ?? (block.area < 0.2 ? 'square' : 'subdivided')
+      const sharedMask = Array.from({ length: n }, (_, i) =>
+        (edgeRefCount.get(edgeKey(poly[i], poly[(i + 1) % n])) || 0) >= 2
+      )
+      const allShared = sharedMask.every(Boolean)
 
-      if (blockType === 'square') {
-        addFill(poly, STONE_COLOR, Y_SQUARE)
-        continue
-      }
-
-      if (blockType === 'single') {
-        addFill(poly, SINGLE_COLOR, Y_SQUARE)
-        addLine(poly, SINGLE_COLOR.clone().multiplyScalar(0.7), Y_RING)
-        continue
-      }
-
-      // subdivided — draw lot outlines if available, otherwise inset rings
-      const lots = lotsByBlock.get(block.id)
-      if (lots?.length) {
-        const color = new THREE.Color().setHSL((bi * 0.381966) % 1, 0.7, 0.6)
-        for (const lot of lots) {
-          if (lot?.length >= 3) addLine(lot, color, Y_RING)
+      if (allShared) {
+        // All edges face streets — draw clean miter-joined inset ring, fallback to raw polygon
+        const ring = insetBlockOutline(poly, CURB_OFFSET) || poly
+        const m = ring.length
+        for (let i = 0; i < m; i++) {
+          const a = ring[i], b = ring[(i + 1) % m]
+          lineVerts.push(a.x, Y_CURB, a.y, b.x, Y_CURB, b.y)
         }
       } else {
-        const color = new THREE.Color().setHSL((bi * 0.381966) % 1, 0.7, 0.6)
-        const ring1 = insetPolygon(poly, SETBACK)
-        if (!ring1 || ring1.length < 3) continue
-        addLine(ring1, color, Y_RING)
-        if (block.area > 2.0) {
-          const ring2 = insetPolygon(poly, SETBACK * 2)
-          if (ring2 && ring2.length >= 3) addLine(ring2, color, Y_RING)
+        // Boundary block — only draw per-edge segments on street-facing edges
+        const cx = poly.reduce((s, v) => s + v.x, 0) / n
+        const cy = poly.reduce((s, v) => s + v.y, 0) / n
+        for (let i = 0; i < n; i++) {
+          if (!sharedMask[i]) continue
+          const a = poly[i], b = poly[(i + 1) % n]
+          const dx = b.x - a.x, dy = b.y - a.y
+          const len = Math.hypot(dx, dy)
+          if (len < 1e-10) continue
+          let nx = -dy / len, ny = dx / len
+          if (nx * (cx - a.x) + ny * (cy - a.y) < 0) { nx = -nx; ny = -ny }
+          nx *= CURB_OFFSET; ny *= CURB_OFFSET
+          lineVerts.push(a.x + nx, Y_CURB, a.y + ny, b.x + nx, Y_CURB, b.y + ny)
         }
       }
+    }
+
+    if (lineVerts.length > 0) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lineVerts), 3))
+      const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: LOT_COLOR, depthTest: true }))
+      lines.renderOrder = 10
+      this.scene.add(lines)
+      this.buildingMeshes.push(lines)
     }
   }
 
@@ -691,6 +712,8 @@ export default class WorldRenderer {
     if (!points || points.length < 2) return null
 
     const thickness = 0.5
+    const r = thickness / 2
+    const Y = 0.06
     const allVerts = []
     const allIdx = []
 
@@ -704,18 +727,23 @@ export default class WorldRenderer {
       const len = Math.sqrt(dx * dx + dy * dy)
       if (len === 0) continue
 
-      const perpX = (-dy / len) * (thickness / 2)
-      const perpY = (dx / len) * (thickness / 2)
+      const perpX = (-dy / len) * r
+      const perpY = (dx / len) * r
 
       const base = allVerts.length / 3
       allVerts.push(
-        p1.x - perpX, 0.06, p1.y - perpY,
-        p1.x + perpX, 0.06, p1.y + perpY,
-        p2.x + perpX, 0.06, p2.y + perpY,
-        p2.x - perpX, 0.06, p2.y - perpY
+        p1.x - perpX, Y, p1.y - perpY,
+        p1.x + perpX, Y, p1.y + perpY,
+        p2.x + perpX, Y, p2.y + perpY,
+        p2.x - perpX, Y, p2.y - perpY
       )
-      // CW winding in 2D → +y normal → visible from above
       allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    }
+
+    // Circle fills at every vertex close the angular gaps between consecutive segments
+    for (const pt of points) {
+      if (!pt || !isFinite(pt.x)) continue
+      addCircleFan(allVerts, allIdx, pt.x, Y, pt.y, r)
     }
 
     if (allVerts.length === 0) return null
@@ -963,7 +991,7 @@ export default class WorldRenderer {
     const color = colorKey ? TerrainColors.get(colorKey) : TerrainColors.Neutral
     const material = new THREE.MeshStandardMaterial({
       color, roughness: 0.5, metalness: 0,
-      transparent: true, opacity: 0.85,
+      transparent: true, opacity: 0.85, depthWrite: false,
       emissive: color, emissiveIntensity: 0.1,
       side: THREE.DoubleSide
     })
@@ -996,6 +1024,8 @@ export default class WorldRenderer {
     if (!ids || ids.length < 2) return null
 
     const thickness = 0.0875
+    const r = thickness / 2
+    const Y = 0.075
     const allVerts = []
     const allIdx = []
 
@@ -1006,17 +1036,25 @@ export default class WorldRenderer {
       const dx = p2.x - p1.x, dy = p2.y - p1.y
       const len = Math.sqrt(dx * dx + dy * dy)
       if (len === 0) continue
-      const perpX = (-dy / len) * (thickness / 2)
-      const perpY = (dx / len) * (thickness / 2)
+      const perpX = (-dy / len) * r
+      const perpY = (dx / len) * r
       const base = allVerts.length / 3
       allVerts.push(
-        p1.x - perpX, 0.075, p1.y - perpY,
-        p1.x + perpX, 0.075, p1.y + perpY,
-        p2.x + perpX, 0.075, p2.y + perpY,
-        p2.x - perpX, 0.075, p2.y - perpY
+        p1.x - perpX, Y, p1.y - perpY,
+        p1.x + perpX, Y, p1.y + perpY,
+        p2.x + perpX, Y, p2.y + perpY,
+        p2.x - perpX, Y, p2.y - perpY
       )
       allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
     }
+
+    // Circle fills at every vertex close the angular gaps between consecutive segments
+    for (const id of ids) {
+      const pt = this.cityEdgePointsById.get(id)
+      if (!pt) continue
+      addCircleFan(allVerts, allIdx, pt.x, Y, pt.y, r)
+    }
+
     if (allVerts.length === 0) return null
 
     const geometry = new THREE.BufferGeometry()

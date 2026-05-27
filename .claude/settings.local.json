@@ -13,9 +13,16 @@
       "Bash(node /tmp/test-city-poly.js)",
       "Bash(pkill -f \"node.*dev\")",
       "Bash(npm run *)",
-      "Bash(curl -s http://localhost:3001/api/state)"
+      "Bash(curl -s http://localhost:3001/api/state)",
+      "Bash(Get-ChildItem -Path \"K:\\\\UnityProjects\\\\Guild-Wars\\\\guild-wars-web\" -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(ConvertTo-Csv -NoTypeInformation)",
+      "Bash(Out-String)",
+      "PowerShell(Get-ChildItem -Path \"K:\\\\UnityProjects\\\\Guild-Wars\\\\guild-wars-web\" -Recurse -Force -File | Select-Object FullName | ForEach-Object { $_.FullName })",
+      "Bash(Get-Item \"K:\\\\UnityProjects\\\\Guild-Wars\\\\guild-wars-web\\\\server\\\\engine\\\\SetupPhase.js\")",
+      "Bash(Select-Object -ExpandProperty Length)",
+      "PowerShell(\\(Get-Content \"K:\\\\UnityProjects\\\\Guild-Wars\\\\guild-wars-web\\\\server\\\\engine\\\\SetupPhase.js\" | Measure-Object -Line\\).Lines)",
+      "PowerShell(\\(Get-Content \"K:\\\\UnityProjects\\\\Guild-Wars\\\\GW-Unity\\\\Assets\\\\Scripts\\\\Phases\\\\SetupPhase.cs\" | Measure-Object -Line\\).Lines)"
     ]
   }
 }
-
-

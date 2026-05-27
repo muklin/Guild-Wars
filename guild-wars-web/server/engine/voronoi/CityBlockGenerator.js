@@ -1,4 +1,4 @@
-import { computeVoronoiCells } from './VoronoiUtils.js'
+import { computeVoronoiCells, generateGridSeeds } from './VoronoiUtils.js'
 
 const DISTRICT_BUILDING_PARAMS = {
   Market:               { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.50, setback: 0.06, lotWidth: 0.25, lotDepth: 0.35, alleyWidth: 0.15, metric: 'manhattan' },
@@ -117,6 +117,9 @@ export default class CityBlockGenerator {
         area /= 2
         if (area <= 0.001) continue
 
+        // Cull triangles where any vertex is a dead-end (degree 2 = no offshoot streets)
+        if (faceNodes.length === 3 && faceNodes.some(n => (adj.get(n.id)?.length ?? 0) <= 2)) continue
+
         // Tag block with the majority districtId from its bounding half-edges
         const districtVotes = new Map()
         for (const key of faceEdgeKeys) {
@@ -144,15 +147,15 @@ export default class CityBlockGenerator {
         const aspectRatio = Math.max(w, h) / Math.max(Math.min(w, h), 1e-6)
 
         let blockType
-        if (area < params.minBlockSize || aspectRatio > params.maxAspectRatio) {
+        if (area < params.minBlockSize) {
           blockType = 'square'
-        } else if (area < params.minLotSize) {
+        } else if (area < params.minLotSize || aspectRatio > params.maxAspectRatio) {
           blockType = 'single'
         } else {
           blockType = 'subdivided'
         }
 
-        const block = { id: blockId++, districtId, vertices, area, blockType }
+        const block = { id: blockId++, districtId, vertices, area, blockType, insetDepth: params.lotDepth, alleyWidth: params.alleyWidth, lotWidth: params.lotWidth }
         blocks.push(block)
 
         if (blockType === 'square') {
@@ -166,28 +169,11 @@ export default class CityBlockGenerator {
           continue
         }
 
-        // ── Phase 3: Voronoi lots seeded along block boundary ─────────────────
+        // ── Phase 3: Voronoi lots seeded on a jittered interior grid ─────────
         subdivCount++
-        const spacing = params.lotSpacing
-
-        const rawSeeds = []
-        for (let i = 0; i < vertices.length; i++) {
-          const pA = vertices[i], pB = vertices[(i + 1) % vertices.length]
-          rawSeeds.push({ x: pA.x, y: pA.y })
-          const dx = pB.x - pA.x, dy = pB.y - pA.y
-          const len = Math.hypot(dx, dy)
-          const steps = Math.floor(len / spacing)
-          for (let k = 1; k < steps; k++) {
-            const t = k / steps
-            rawSeeds.push({ x: pA.x + t * dx, y: pA.y + t * dy })
-          }
-        }
-
-        const minDist = spacing * 0.4
-        const seeds = []
-        for (const s of rawSeeds) {
-          if (!seeds.some(e => Math.hypot(s.x - e.x, s.y - e.y) < minDist)) seeds.push(s)
-        }
+        const density = 1 / (params.lotSpacing * params.lotSpacing)
+        const xyRatio = params.lotWidth / params.lotDepth
+        const seeds = generateGridSeeds(vertices, density, xyRatio, 0.35, blockId)
         if (seeds.length < 3) continue
 
         for (const cell of computeVoronoiCells(seeds, vertices, params.metric ?? 'euclidean')) {

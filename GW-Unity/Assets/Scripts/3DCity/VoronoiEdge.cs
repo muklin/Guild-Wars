@@ -79,4 +79,12 @@ public class VoronoiEdge : MonoBehaviour {
     }
 
     public bool IsAssigned => isAssigned;
+
+    public TerrainType AssignedFeatureType => assignedType;
+
+    public void ClearAssignment()
+    {
+        isAssigned = false;
+        UpdateColor();
+    }
 }

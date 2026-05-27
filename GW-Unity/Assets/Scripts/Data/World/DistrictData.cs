@@ -38,6 +38,10 @@ public class DistrictData
     private List<CityDistrict> districts = new();
     public IReadOnlyList<CityDistrict> Districts => districts.AsReadOnly();
 
+    public List<CityEdgeData>  CityEdges   { get; } = new();
+    public StreetGraph         StreetGraph { get; set; }
+    public CityBlockResult     BlockResult { get; set; }
+
     public int DistrictCount => districts.Count;
 
     /// <summary>Get a district by ID.</summary>

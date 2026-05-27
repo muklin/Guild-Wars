@@ -81,6 +81,12 @@ export default class InputHandler {
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
     const debug = this.renderer.showDebug
 
+    if (this.renderer.mode === 'streets') {
+      this.renderer.clearHover()
+      this.tooltipEl && (this.tooltipEl.style.display = 'none')
+      return
+    }
+
     if (this.renderer.mode === 'city') {
       const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
       if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); return }

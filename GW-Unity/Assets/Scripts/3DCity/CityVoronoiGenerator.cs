@@ -1,354 +1,227 @@
 using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
-using DelaunayVoronoi;
 
 /// <summary>
 /// Generates Voronoi district regions within the city polygon.
-/// Subdivides the city into ~6 districts, all clipped to the city polygon boundary.
+/// Uses VoronoiUtils.ComputeVoronoiCells for clean single-pass generation.
 /// Stores results in GameStateManager.Instance.CityDistrictData.
+/// Also outputs CityEdgeData so StreetVoronoiGenerator can build street networks.
 /// </summary>
-public class CityVoronoiGenerator : MonoBehaviour {
+public class CityVoronoiGenerator : MonoBehaviour
+{
     private Dictionary<int, GameObject> districtMeshObjects = new();
-    private Dictionary<int, Material> districtMaterials = new();
-    private const float DistrictY = 0.07f; // Above terrain (0.05f), visible on top
+    private Dictionary<int, Material>   districtMaterials   = new();
+
+    private const float DistrictY    = 0.07f;
     private const float EdgeThickness = 0.5f;
+    private const float EdgeY         = 0.09f;
+
+    // ══════════════════════════════════════════════════════════════════
+    // Main entry point
+    // ══════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// Generate city districts by subdividing the city polygon with Voronoi.
-    /// Seeds are randomly placed within the polygon and clipped to the boundary.
+    /// Generate city districts and return the inter-district edge data.
     /// </summary>
-    public void Generate(List<Vector3> cityPolygon, int districtCount = 6) {
-        if (cityPolygon == null || cityPolygon.Count < 3) {
+    public List<CityEdgeData> Generate(List<Vector3> cityPolygon, int districtCount = 6)
+    {
+        if (cityPolygon == null || cityPolygon.Count < 3)
+        {
             Debug.LogError("[CityVoronoiGenerator] Invalid city polygon");
-            return;
+            return new List<CityEdgeData>();
         }
 
-        Debug.Log($"[CityVoronoiGenerator] Generating {districtCount} districts from city polygon with {cityPolygon.Count} vertices");
+        // Convert to 2-D (XZ plane)
+        var poly2d = cityPolygon.Select(v => new Vector2(v.x, v.z)).ToList();
 
-        // 1. Generate seeds within the city polygon using rejection sampling
-        var seeds = GenerateSeedsWithinPolygon(cityPolygon, districtCount);
-        if (seeds.Count < 3) {
-            Debug.LogWarning($"[CityVoronoiGenerator] Only generated {seeds.Count} seeds, expected {districtCount}. Using fallback.");
-            seeds = GenerateFallbackSeeds(cityPolygon, districtCount);
+        // Generate seeds inside the polygon using rejection sampling
+        var seeds = GenerateSeedsInPolygon(poly2d, districtCount);
+        if (seeds.Count < 3)
+        {
+            seeds = FallbackSeeds(poly2d, districtCount);
+            Debug.LogWarning($"[CityVoronoiGenerator] Fell back to {seeds.Count} synthetic seeds");
         }
 
-        Debug.Log($"[CityVoronoiGenerator] Generated {seeds.Count} seeds");
+        var cells = VoronoiUtils.ComputeVoronoiCells(seeds, poly2d);
+        Debug.Log($"[CityVoronoiGenerator] Generated {cells.Count} district cells");
 
-        // 2. Convert seeds to Delaunay points
-        var points = new List<Point>();
-        var seedPoints = new List<Vector3>(seeds);
-        for (int i = 0; i < seedPoints.Count; i++) {
-            points.Add(new Point(seedPoints[i].x, seedPoints[i].z));
-        }
-
-        // Add super-triangle corners far outside the city bounds
-        var bounds = ComputeAABB(cityPolygon);
-        float margin = 100f;
-        points.Add(new Point(bounds.min.x - margin, bounds.min.z - margin));
-        points.Add(new Point(bounds.max.x + margin, bounds.min.z - margin));
-        points.Add(new Point(bounds.min.x - margin, bounds.max.z + margin));
-        points.Add(new Point(bounds.max.x + margin, bounds.max.z + margin));
-
-        // 3. Run Delaunay triangulation
-        var triangulator = new DelaunayTriangulator(points);
-        triangulator.BowyerWatson();
-        Debug.Log($"[CityVoronoiGenerator] Delaunay triangulation complete: {triangulator.Triangulation.Count} triangles");
-
-        // 4. For each seed, collect triangles and build Voronoi cell
         int districtId = 0;
-        for (int i = 0; i < seedPoints.Count; i++) {
-            var seedPoint = seedPoints[i];
-            var delaunayPoint = points[i];
+        foreach (var cell in cells)
+        {
+            var boundary3d = cell.Polygon.Select(v => new Vector3(v.x, 0f, v.y)).ToList();
+            var center     = new Vector3(cell.SeedPoint.x, 0f, cell.SeedPoint.y);
 
-            // Find triangles containing this seed point
-            var trianglesWithSeed = triangulator.Triangulation
-                .Where(t => t.Vertices.Contains(delaunayPoint))
-                .ToList();
+            var district = new CityDistrict(districtId, center) { Boundary = boundary3d };
+            GameStateManager.Instance.CityDistrictData.AddDistrict(district);
+            CreateDistrictMesh(district);
+            districtId++;
+        }
 
-            if (trianglesWithSeed.Count == 0)
-                continue;
+        return BuildCityEdges(cells);
+    }
 
-            // Collect circumcenters
-            var circumcenters = trianglesWithSeed
-                .Select(t => new Vector3((float)t.Circumcenter.X, 0, (float)t.Circumcenter.Y))
-                .ToList();
+    // ══════════════════════════════════════════════════════════════════
+    // Public visual methods
+    // ══════════════════════════════════════════════════════════════════
 
-            // Sort by angle around seed
-            var sortedVertices = SortByAngle(seedPoint, circumcenters);
+    public void HighlightDistrict(int id)
+    {
+        if (!districtMaterials.TryGetValue(id, out var mat)) return;
+        var c = mat.color;
+        mat.color = new Color(Mathf.Min(c.r*1.1f,1f), Mathf.Min(c.g*1.1f,1f), Mathf.Min(c.b*1.1f,1f), c.a);
+    }
 
-            // Clip to city polygon
-            var clippedVertices = SutherlandHodgmanClipConvex(sortedVertices, cityPolygon);
+    public void ClearHighlight(int id)
+    {
+        var d = GameStateManager.Instance.CityDistrictData.GetDistrict(id);
+        if (d == null || !districtMaterials.TryGetValue(id, out var mat)) return;
+        mat.color = DistrictColors.For(d.Class);
+    }
 
-            if (clippedVertices.Count >= 3) {
-                // Create district
-                var district = new CityDistrict(districtId, seedPoint) {
-                    Boundary = clippedVertices
-                };
-                GameStateManager.Instance.CityDistrictData.AddDistrict(district);
+    public void SetDistrictClass(int id, DistrictClass cls)
+    {
+        var d = GameStateManager.Instance.CityDistrictData.GetDistrict(id);
+        if (d == null) return;
+        d.Class = cls;
+        if (districtMaterials.TryGetValue(id, out var mat)) mat.color = DistrictColors.For(cls);
+    }
 
-                // Create mesh GameObject
-                CreateDistrictMesh(district);
-                districtId++;
+    public CityDistrict GetDistrictAtWorldPos(Vector3 worldPos)
+    {
+        var all = GameStateManager.Instance.CityDistrictData.GetAllDistricts();
+        return all.OrderBy(d => Vector3.Distance(d.CenterPosition, worldPos)).FirstOrDefault();
+    }
 
-                Debug.Log($"[CityVoronoiGenerator] District {district.Id} created with {clippedVertices.Count} boundary vertices");
+    // ══════════════════════════════════════════════════════════════════
+    // Inter-district edge data (for StreetVoronoiGenerator)
+    // ══════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Build CityEdgeData for every pair of adjacent districts.
+    /// Shared boundary is detected by finding shared / near-coincident polygon segments.
+    /// </summary>
+    private List<CityEdgeData> BuildCityEdges(List<VoronoiUtils.VoronoiCell> cells)
+    {
+        var result = new List<CityEdgeData>();
+
+        // For each pair of adjacent cells, find their shared boundary segment
+        for (int i = 0; i < cells.Count; i++)
+        {
+            for (int j = i + 1; j < cells.Count; j++)
+            {
+                var shared = FindSharedSegments(cells[i].Polygon, cells[j].Polygon);
+                if (shared.Count < 2) continue;
+
+                result.Add(new CityEdgeData
+                {
+                    DistrictA    = i,
+                    DistrictB    = j,
+                    AssignedType = "Mud",   // default; UI assigns actual type
+                    Points       = shared
+                });
             }
         }
 
-        Debug.Log($"[CityVoronoiGenerator] Generated {districtId} city districts");
+        return result;
     }
 
-    /// <summary>Highlight a district by brightening its material.</summary>
-    public void HighlightDistrict(int districtId) {
-        if (districtMaterials.TryGetValue(districtId, out var material)) {
-            var currentColor = material.color;
-            material.color = new Color(
-                Mathf.Min(currentColor.r * 1.1f, 1f),
-                Mathf.Min(currentColor.g * 1.1f, 1f),
-                Mathf.Min(currentColor.b * 1.1f, 1f),
-                currentColor.a
-            );
+    private List<Vector2> FindSharedSegments(List<Vector2> polyA, List<Vector2> polyB)
+    {
+        const float tol = 0.05f;
+        var shared = new List<Vector2>();
+
+        foreach (var va in polyA)
+        {
+            bool near = polyB.Any(vb => (va - vb).sqrMagnitude < tol * tol);
+            if (near && !shared.Any(s => (s - va).sqrMagnitude < tol * tol))
+                shared.Add(va);
         }
+
+        // Sort along the line connecting first and last shared point
+        if (shared.Count >= 2)
+        {
+            var dir = (shared[shared.Count-1] - shared[0]);
+            shared.Sort((a, b) => Vector2.Dot(a - shared[0], dir).CompareTo(Vector2.Dot(b - shared[0], dir)));
+        }
+        return shared;
     }
 
-    /// <summary>Clear highlight on a district by restoring its base color.</summary>
-    public void ClearHighlight(int districtId) {
-        var district = GameStateManager.Instance.CityDistrictData.GetDistrict(districtId);
-        if (district == null)
-            return;
+    // ══════════════════════════════════════════════════════════════════
+    // Seed generation
+    // ══════════════════════════════════════════════════════════════════
 
-        if (districtMaterials.TryGetValue(districtId, out var material)) {
-            material.color = DistrictColors.For(district.Class);
+    private List<Vector2> GenerateSeedsInPolygon(List<Vector2> polygon, int count)
+    {
+        float minX = polygon.Min(v => v.x), maxX = polygon.Max(v => v.x);
+        float minY = polygon.Min(v => v.y), maxY = polygon.Max(v => v.y);
+        var seeds = new List<Vector2>(count);
+
+        for (int attempt = 0; attempt < count * 20 && seeds.Count < count; attempt++)
+        {
+            float x = UnityEngine.Random.Range(minX, maxX);
+            float y = UnityEngine.Random.Range(minY, maxY);
+            if (VoronoiUtils.PointInPolygon(x, y, polygon))
+                seeds.Add(new Vector2(x, y));
         }
-    }
-
-    /// <summary>Assign a district class and update its visual color.</summary>
-    public void SetDistrictClass(int districtId, DistrictClass cls) {
-        var district = GameStateManager.Instance.CityDistrictData.GetDistrict(districtId);
-        if (district == null)
-            return;
-
-        district.Class = cls;
-
-        if (districtMaterials.TryGetValue(districtId, out var material)) {
-            material.color = DistrictColors.For(cls);
-        }
-    }
-
-    /// <summary>Get the district at a world position (nearest-seed lookup).</summary>
-    public CityDistrict GetDistrictAtWorldPos(Vector3 worldPos) {
-        var allDistricts = GameStateManager.Instance.CityDistrictData.GetAllDistricts();
-        CityDistrict closest = null;
-        float closestDist = float.MaxValue;
-
-        foreach (var district in allDistricts) {
-            float dist = Vector3.Distance(district.CenterPosition, worldPos);
-            if (dist < closestDist) {
-                closestDist = dist;
-                closest = district;
-            }
-        }
-
-        return closest;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // Private helpers
-    // ═══════════════════════════════════════════════════════════════════════
-
-    private List<Vector3> GenerateSeedsWithinPolygon(List<Vector3> polygon, int targetCount) {
-        var seeds = new List<Vector3>();
-        var bounds = ComputeAABB(polygon);
-        var random = new System.Random();
-
-        // Try up to targetCount * 20 candidates
-        for (int i = 0; i < targetCount * 20 && seeds.Count < targetCount; i++) {
-            float x = (float)random.NextDouble() * (bounds.max.x - bounds.min.x) + bounds.min.x;
-            float z = (float)random.NextDouble() * (bounds.max.z - bounds.min.z) + bounds.min.z;
-            var point = new Vector3(x, 0, z);
-
-            if (IsPointInPolygon(point, polygon)) {
-                seeds.Add(point);
-            }
-        }
-
         return seeds;
     }
 
-    private List<Vector3> GenerateFallbackSeeds(List<Vector3> polygon, int count) {
-        // Generate points evenly spaced on a shrunk version of the polygon
-        var seeds = new List<Vector3>();
-        var center = polygon.Aggregate(Vector3.zero, (a, b) => a + b) / polygon.Count;
-
-        for (int i = 0; i < count; i++) {
-            float angle = (i / (float)count) * Mathf.PI * 2f;
-            float radius = 5f + i % 2; // slight variation in radius
-            var seed = center + new Vector3(Mathf.Cos(angle), 0, Mathf.Sin(angle)) * radius;
-            seeds.Add(seed);
+    private List<Vector2> FallbackSeeds(List<Vector2> polygon, int count)
+    {
+        float cx = polygon.Average(v => v.x), cy = polygon.Average(v => v.y);
+        var seeds = new List<Vector2>(count);
+        for (int i = 0; i < count; i++)
+        {
+            float ang = i / (float)count * Mathf.PI * 2f;
+            float r   = 5f + i % 2;
+            seeds.Add(new Vector2(cx + Mathf.Cos(ang)*r, cy + Mathf.Sin(ang)*r));
         }
-
         return seeds;
     }
 
-    private (Vector3 min, Vector3 max) ComputeAABB(List<Vector3> polygon) {
-        Vector3 min = polygon[0];
-        Vector3 max = polygon[0];
+    // ══════════════════════════════════════════════════════════════════
+    // Mesh building
+    // ══════════════════════════════════════════════════════════════════
 
-        foreach (var v in polygon) {
-            min = Vector3.Min(min, v);
-            max = Vector3.Max(max, v);
-        }
-
-        return (min, max);
-    }
-
-    private bool IsPointInPolygon(Vector3 point, List<Vector3> polygon) {
-        // Ray casting algorithm in XZ plane
-        // Cast a ray in +X direction and count edge crossings
-        int windingNumber = 0;
-
-        for (int i = 0; i < polygon.Count; i++) {
-            var p1 = polygon[i];
-            var p2 = polygon[(i + 1) % polygon.Count];
-
-            // Check if ray crosses this edge
-            if ((p1.z <= point.z && p2.z > point.z) || (p2.z <= point.z && p1.z > point.z)) {
-                // Compute x-intersection
-                float xIntersection = p1.x + (point.z - p1.z) / (p2.z - p1.z) * (p2.x - p1.x);
-                if (point.x < xIntersection) {
-                    windingNumber += (p2.z > p1.z) ? 1 : -1;
-                }
-            }
-        }
-
-        return windingNumber != 0;
-    }
-
-    private List<Vector3> SutherlandHodgmanClipConvex(List<Vector3> subject, List<Vector3> clipPolygon) {
-        var output = new List<Vector3>(subject);
-
-        // Clip against each edge of the clip polygon
-        for (int i = 0; i < clipPolygon.Count; i++) {
-            if (output.Count == 0)
-                break;
-
-            var A = clipPolygon[i];
-            var B = clipPolygon[(i + 1) % clipPolygon.Count];
-            var input = output;
-            output = new List<Vector3>();
-
-            for (int j = 0; j < input.Count; j++) {
-                var current = input[j];
-                var previous = input[(j + input.Count - 1) % input.Count];
-
-                bool currentInside = IsInsideEdge(current, A, B);
-                bool previousInside = IsInsideEdge(previous, A, B);
-
-                if (currentInside) {
-                    if (!previousInside) {
-                        // Entering: add intersection
-                        var intersection = LineIntersectEdge(previous, current, A, B);
-                        if (intersection.HasValue)
-                            output.Add(intersection.Value);
-                    }
-                    output.Add(current);
-                } else if (previousInside) {
-                    // Leaving: add intersection
-                    var intersection = LineIntersectEdge(previous, current, A, B);
-                    if (intersection.HasValue)
-                        output.Add(intersection.Value);
-                }
-            }
-        }
-
-        return output;
-    }
-
-    private bool IsInsideEdge(Vector3 p, Vector3 edgeA, Vector3 edgeB) {
-        // Cross product test: (B-A) × (P-A).y >= 0 means P is on the left of A→B
-        float cross = (edgeB.x - edgeA.x) * (p.z - edgeA.z) - (edgeB.z - edgeA.z) * (p.x - edgeA.x);
-        return cross >= 0;
-    }
-
-    private Vector3? LineIntersectEdge(Vector3 p1, Vector3 p2, Vector3 edgeA, Vector3 edgeB) {
-        // Find intersection of line segment p1→p2 with infinite line through edgeA→edgeB
-        // Using parametric approach: p1 + t*(p2-p1) = edgeA + s*(edgeB-edgeA)
-        float denom = (edgeB.x - edgeA.x) * (p2.z - p1.z) - (edgeB.z - edgeA.z) * (p2.x - p1.x);
-        if (Mathf.Abs(denom) < 0.0001f)
-            return null; // Lines are parallel
-
-        float numer = (edgeA.x - p1.x) * (p2.z - p1.z) - (edgeA.z - p1.z) * (p2.x - p1.x);
-        float t = numer / denom;
-
-        // Check if intersection is within the segment [p1, p2]
-        if (t < -0.0001f || t > 1.0001f)
-            return null;
-
-        return p1 + (p2 - p1) * t;
-    }
-
-    private List<Vector3> SortByAngle(Vector3 center, List<Vector3> points) {
-        var sorted = points
-            .OrderBy(p => Mathf.Atan2(p.z - center.z, p.x - center.x))
-            .ToList();
-        return sorted;
-    }
-
-    private void CreateDistrictMesh(CityDistrict district) {
+    private void CreateDistrictMesh(CityDistrict district)
+    {
         var go = new GameObject($"District_{district.Id}");
         go.transform.SetParent(transform);
         go.layer = LayerMask.NameToLayer("Buildings");
 
-        var meshFilter = go.AddComponent<MeshFilter>();
-        meshFilter.mesh = BuildPolygonMesh(district.Boundary);
+        var mf = go.AddComponent<MeshFilter>();
+        mf.mesh = BuildPolygonMesh(district.Boundary);
 
-        var meshRenderer = go.AddComponent<MeshRenderer>();
-        var shader = Shader.Find("Transparent/VertexLit");
-        if (shader == null)
-            shader = Shader.Find("Transparent/Diffuse");
-        if (shader == null)
-            shader = Shader.Find("Standard");
+        var mr     = go.AddComponent<MeshRenderer>();
+        var shader = Shader.Find("Transparent/VertexLit") ?? Shader.Find("Transparent/Diffuse") ?? Shader.Find("Standard");
+        var mat    = new Material(shader) { color = DistrictColors.For(district.Class) };
+        mr.material = mat;
 
-        var material = new Material(shader);
-        material.color = DistrictColors.For(district.Class);
-        meshRenderer.material = material;
-
-        var meshCollider = go.AddComponent<MeshCollider>();
-        meshCollider.convex = false;
+        go.AddComponent<MeshCollider>().convex = false;
 
         districtMeshObjects[district.Id] = go;
-        districtMaterials[district.Id] = material;
+        districtMaterials[district.Id]   = mat;
     }
 
-    private Mesh BuildPolygonMesh(List<Vector3> polygon) {
-        // Force Y = DistrictY on all verts, fan triangulation from vertex 0
-        var verts = polygon
-            .Select(v => new Vector3(v.x, DistrictY, v.z))
-            .ToArray();
-
+    private Mesh BuildPolygonMesh(List<Vector3> polygon)
+    {
+        var verts = polygon.Select(v => new Vector3(v.x, DistrictY, v.z)).ToArray();
         int n = verts.Length;
-        int[] tris = new int[(n - 2) * 3];
+        var tris = new int[(n-2)*3];
         int t = 0;
-
-        // Fan triangulation with clockwise winding for Y-up
-        for (int i = 1; i <= n - 2; i++) {
-            tris[t++] = 0;
-            tris[t++] = i + 1;
-            tris[t++] = i;
-        }
-
-        var mesh = new Mesh();
-        mesh.vertices = verts;
-        mesh.triangles = tris;
+        for (int i = 1; i <= n-2; i++) { tris[t++]=0; tris[t++]=i+1; tris[t++]=i; }
+        var mesh = new Mesh { vertices = verts, triangles = tris };
         mesh.RecalculateNormals();
-
         return mesh;
     }
 }
 
 /// <summary>Static color mapping for district classes.</summary>
-public static class DistrictColors {
-    private static readonly Dictionary<DistrictClass, Color> ColorMap = new() {
+public static class DistrictColors
+{
+    private static readonly Dictionary<DistrictClass, Color> ColorMap = new()
+    {
         { DistrictClass.Neutral,       new Color(0.65f, 0.65f, 0.65f) },
         { DistrictClass.Commerce,      new Color(0.90f, 0.75f, 0.20f) },
         { DistrictClass.Military,      new Color(0.60f, 0.20f, 0.20f) },
@@ -361,9 +234,8 @@ public static class DistrictColors {
         { DistrictClass.Agricultural,  new Color(0.45f, 0.75f, 0.30f) },
     };
 
-    public static Color For(DistrictClass cls) {
-        return ColorMap.TryGetValue(cls, out var color) ? color : Color.white;
-    }
+    public static Color For(DistrictClass cls)
+        => ColorMap.TryGetValue(cls, out var c) ? c : Color.white;
 
     public static Color Unassigned => new Color(0.75f, 0.75f, 0.75f);
 }

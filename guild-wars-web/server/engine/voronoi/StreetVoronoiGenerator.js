@@ -41,16 +41,18 @@ const DISTRICT_STREET_PARAMS = {
   Entertainment:        { interval: 0.5, density: 2.0, xyRatio: 1.0, jitter: 0.9, metric: 'manhattan' },
 }
 
+const FALLBACK_STREET_PARAMS = { interval: 1.0, density: 0.5, xyRatio: 1.5, jitter: 0.3, metric: 'manhattan' }
+
 function getStreetParams(district) {
   const type = district.assignedType
-  const cls = district.residentialClass
+  const cls  = district.residentialClass
   let key = type
   if (type === 'Residential') {
-    if (cls === 'Noble') key = 'Residential-Noble'
+    if      (cls === 'Noble')  key = 'Residential-Noble'
     else if (cls === 'Middle') key = 'Residential-Middle'
-    else if (cls === 'Slums') key = 'Residential-Slums'
+    else                       key = 'Residential-Slums'
   }
-  return DISTRICT_STREET_PARAMS[key] ?? DISTRICT_STREET_PARAMS.default
+  return DISTRICT_STREET_PARAMS[key] ?? FALLBACK_STREET_PARAMS
 }
 
 export default class StreetVoronoiGenerator {

@@ -22,6 +22,7 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
     // ─── State ────────────────────────────────────────────────────────
     private GameStateManager gsm;
     private bool phaseComplete;
+    private VoronoiWorldGenerator worldGen;
 
     public SetupPhaseStep CurrentStep { get; private set; }
     private List<string> setupLog = new();
@@ -122,8 +123,27 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
             return false;
         if (playerTerrainCount == 0) { Log("Place at least one terrain feature first."); return false; }
 
-        Log("Terrain placement complete.");
+        // Mark which regions touch the world boundary
+        var wg = worldGen ?? Object.FindAnyObjectByType<VoronoiWorldGenerator>();
+        if (wg != null)
+            foreach (var region in gsm.WorldTerrainData.GetAllRegions())
+                region.IsEdge = wg.IsEdgeRegion(region);
 
+        // Auto-assign Plains to any region the player left unassigned
+        foreach (var region in gsm.WorldTerrainData.GetAllRegions())
+        {
+            if (region.AssignedType == null)
+            {
+                gsm.WorldTerrainData.SetRegionTerrain(region.Id, TerrainType.Plains);
+                Log($"Auto-assigned Plains to region {region.Id}.");
+            }
+        }
+
+        // Validate river endpoints; warn but don't block
+        var riverError = wg?.ValidateRiverEndpoints();
+        if (riverError != null) Log($"WARNING: {riverError}");
+
+        Log("Terrain placement complete.");
         InitializeCitySubdivisionStep();
         return true;
     }
@@ -142,6 +162,7 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
 
         var voronoiGen = cityViz.gameObject.AddComponent<VoronoiWorldGenerator>();
         voronoiGen.Generate();
+        worldGen = voronoiGen;
         Debug.Log("[InitializeTerrainStep] VoronoiWorldGenerator created and generated");
 
         var mainCamera = Object.FindAnyObjectByType<Camera>();
@@ -224,7 +245,9 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
         if (cityViz == null) { Log("ERROR: CityVisualization not found."); return; }
 
         var cityGen = cityViz.gameObject.AddComponent<CityVoronoiGenerator>();
-        cityGen.Generate(cityRegion.Polygon, 6);
+        var cityEdges = cityGen.Generate(cityRegion.Polygon, 6);
+        gsm.CityDistrictData.CityEdges.Clear();
+        gsm.CityDistrictData.CityEdges.AddRange(cityEdges);
         Log($"City subdivided into {gsm.CityDistrictData.DistrictCount} districts.");
 
         // 5. Create UI panel
@@ -260,9 +283,33 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
         if (CurrentStep != SetupPhaseStep.CitySubdivision)
             return false;
 
+        _generateStreetsAndBuildings();
         Log("City subdivision complete. Advancing to district setup.");
         AdvanceToDistrictSetup();
         return true;
+    }
+
+    private void _generateStreetsAndBuildings()
+    {
+        var cityData = gsm.CityDistrictData;
+        var districts = cityData.GetAllDistricts();
+        if (districts.Count == 0 || cityData.CityEdges.Count == 0)
+        {
+            Log("WARNING: No city districts or edges — skipping street/building generation.");
+            return;
+        }
+
+        // Ensure every edge has a type (default Mud)
+        foreach (var edge in cityData.CityEdges)
+            if (string.IsNullOrEmpty(edge.AssignedType)) edge.AssignedType = "Mud";
+
+        var streetGen = new StreetVoronoiGenerator();
+        cityData.StreetGraph = streetGen.Generate(districts, cityData.CityEdges);
+        Log($"Street graph: {cityData.StreetGraph.Nodes.Count} nodes, {cityData.StreetGraph.Edges.Count} edges.");
+
+        var blockGen = new CityBlockGenerator();
+        cityData.BlockResult = blockGen.Generate(districts, cityData.StreetGraph);
+        Log($"City blocks: {cityData.BlockResult.Blocks.Count} blocks, {cityData.BlockResult.Buildings.Count} lots.");
     }
 
     /// <summary>Called by selection controller to record a district classification.</summary>
@@ -764,6 +811,134 @@ public class SetupPhase : MonoBehaviour, IPhaseHandler
         c.Intelligence = statValue;
         c.Wisdom = statValue;
         c.Charisma = statValue;
+    }
+
+    // ─── TERRAIN DISTRICTS ────────────────────────────────────────────
+
+    /// <summary>
+    /// Assign a resource-producing district to a world terrain region (Forestry, Mining, Agriculture, Fishing).
+    /// Port of web SetupPhase.assignTerrainDistrict.
+    /// </summary>
+    public bool AssignTerrainDistrict(int regionId, string districtType, string description = "",
+        string producedResource = "", List<string> consumedResources = null)
+    {
+        var region = gsm.WorldTerrainData.GetRegion(regionId);
+        if (region == null) { Log($"Region {regionId} not found."); return false; }
+        if (region.TerrainDistrict != null) { Log($"Region {regionId} already has a terrain district."); return false; }
+
+        var validMap = new System.Collections.Generic.Dictionary<TerrainType, string>
+        {
+            { TerrainType.Forest,  "Forestry"    },
+            { TerrainType.Hills,   "Mining"      },
+            { TerrainType.Plains,  "Agriculture" },
+            { TerrainType.Lake,    "Fishing"     },
+            { TerrainType.Sea,     "Fishing"     },
+        };
+        if (!region.AssignedType.HasValue || !validMap.TryGetValue(region.AssignedType.Value, out var expected))
+        {
+            Log($"Cannot add a terrain district to {region.AssignedType} regions."); return false;
+        }
+        if (expected != districtType)
+        {
+            Log($"{region.AssignedType} regions only support {expected} districts."); return false;
+        }
+
+        var explicit_ = (consumedResources ?? new()).Where(r => !string.IsNullOrWhiteSpace(r)).ToList();
+        if (string.IsNullOrWhiteSpace(producedResource)) { Log("A district must produce at least one resource."); return false; }
+        if (explicit_.Count < 2) { Log("A district must consume at least 2 resources (plus Water and Basic Food)."); return false; }
+
+        var implicit_ = new[] { "Water", "Basic Food" };
+        region.TerrainDistrict = districtType;
+        region.TerrainDistrictDescription = description?.Trim() ?? "";
+        region.TerrainDistrictProducedResource = producedResource.Trim();
+        region.TerrainDistrictConsumedResources = explicit_
+            .Concat(implicit_.Where(r => !explicit_.Exists(e =>
+                string.Equals(e, r, System.StringComparison.OrdinalIgnoreCase))))
+            .ToList();
+
+        Log($"Assigned {districtType} district to {region.AssignedType} region {regionId}.");
+        return true;
+    }
+
+    // ─── TRADING DESTINATION (region-based with road pathfinding) ─────
+
+    /// <summary>
+    /// Add a trading destination anchored to a world edge region.
+    /// Calculates a BFS road path to the city and counts river bridges.
+    /// Port of web SetupPhase.addTradingDestination + _findRoadPath.
+    /// </summary>
+    public bool AddTradingDestinationAtRegion(int regionId, string description = "")
+    {
+        if (!CanPlayerActInDistrictSetup()) return false;
+
+        var region = gsm.WorldTerrainData.GetRegion(regionId);
+        if (region == null) { Log($"Region {regionId} not found."); return false; }
+        if (!region.IsEdge) { Log("Trading destinations must be placed on edge regions."); return false; }
+
+        var (roadPath, bridgeCount) = _findRoadPath(regionId);
+
+        var dest = new TradingDestination(region.AssignedType?.ToString() ?? "Region", description);
+        dest.SourceRegionId = regionId;
+        dest.RoadPath = roadPath;
+        dest.BridgeCount = bridgeCount;
+
+        gsm.AddTradingDestination(dest);
+        Log($"Trading destination added at region {regionId} ({region.AssignedType}): road {roadPath.Count} regions, {bridgeCount} bridge(s).");
+
+        PlayerTookAction();
+        return true;
+    }
+
+    private (List<int> path, int bridgeCount) _findRoadPath(int startRegionId)
+    {
+        var wg = worldGen ?? Object.FindAnyObjectByType<VoronoiWorldGenerator>();
+        var empty = (new List<int> { startRegionId }, 0);
+        if (wg == null) return empty;
+
+        var regions = gsm.WorldTerrainData.GetAllRegions();
+        var cityRegion = regions.Find(r => r.AssignedType == TerrainType.City);
+        if (cityRegion == null) return empty;
+
+        var regionMap = new System.Collections.Generic.Dictionary<int, VoronoiRegion>();
+        foreach (var r in regions) regionMap[r.Id] = r;
+
+        // Build adjacency from VoronoiEdge components
+        var adj = new System.Collections.Generic.Dictionary<int, List<(int id, bool isRiver, bool isCliff)>>();
+        foreach (var e in wg.Edges)
+        {
+            if (!adj.ContainsKey(e.regionA)) adj[e.regionA] = new();
+            if (!adj.ContainsKey(e.regionB)) adj[e.regionB] = new();
+            bool isRiver = e.IsAssigned && e.AssignedFeatureType == TerrainType.River;
+            bool isCliff = e.IsAssigned && e.AssignedFeatureType == TerrainType.Cliffs;
+            adj[e.regionA].Add((e.regionB, isRiver, isCliff));
+            adj[e.regionB].Add((e.regionA, isRiver, isCliff));
+        }
+
+        var BLOCKED = new System.Collections.Generic.HashSet<TerrainType>
+            { TerrainType.Mountains, TerrainType.Swamp };
+
+        var queue   = new System.Collections.Generic.Queue<(int curr, List<int> path, int bridges)>();
+        var visited = new System.Collections.Generic.HashSet<int> { startRegionId };
+        queue.Enqueue((startRegionId, new List<int> { startRegionId }, 0));
+
+        while (queue.Count > 0)
+        {
+            var (curr, path, bridges) = queue.Dequeue();
+            if (curr == cityRegion.Id) return (path, bridges);
+
+            foreach (var (next, isRiver, isCliff) in adj.GetValueOrDefault(curr) ?? new())
+            {
+                if (visited.Contains(next) || isCliff) continue;
+                visited.Add(next);
+                if (regionMap.TryGetValue(next, out var nr) && nr.AssignedType.HasValue &&
+                    BLOCKED.Contains(nr.AssignedType.Value)) continue;
+
+                var newPath = new List<int>(path) { next };
+                queue.Enqueue((next, newPath, bridges + (isRiver ? 1 : 0)));
+            }
+        }
+
+        return empty;
     }
 }
 

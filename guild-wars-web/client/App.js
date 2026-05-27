@@ -190,7 +190,7 @@ export default class App {
           this.pendingCityEdgeType = null
           if (response.cityDistrictData) this.renderer.setCityDistrictData(response.cityDistrictData)
           this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-          this.renderer.renderBuildings(response.cityDistrictData?.blocks, response.cityDistrictData?.buildings)
+          this.renderer.renderBuildings(response.cityDistrictData?.blocks, response.cityDistrictData?.buildings, response.cityDistrictData?.buildingTemplates, response.cityDistrictData?.textureTemplates)
           if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
         } else {
           this.uiManager.showError(response.error)
@@ -314,12 +314,12 @@ export default class App {
         this.gameState = response
         this.currentPhase = 'StreetSetup'
         this.selectedTerrainRegionId = null
-        this.renderer.setMode('terrain')
+        this.renderer.setMode('streets')
         if (response.cityDistrictData) {
           this.renderer.setCityDistrictData(response.cityDistrictData)
         }
         this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-        this.renderer.renderBuildings(response.cityDistrictData?.blocks, response.cityDistrictData?.buildings)
+        this.renderer.renderBuildings(response.cityDistrictData?.blocks, response.cityDistrictData?.buildings, response.cityDistrictData?.buildingTemplates, response.cityDistrictData?.textureTemplates)
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
@@ -596,6 +596,11 @@ export default class App {
         this.pendingResidentialClass = null
         this.pendingLeadershipClass = null
         this._refreshDistrictPanel()
+        // DEV: auto-finish after 2 districts assigned
+        if (this._countAssignedDistricts() >= 2) {
+          this.eventBus.emit('SUBDIVISION_COMPLETE')
+          return
+        }
       } else {
         this.uiManager.showError(response.error)
         this._refreshDistrictPanel()
@@ -806,10 +811,10 @@ export default class App {
         if (setupStep !== 'Terrain' && cityData?.districts?.length > 0) {
           this._finalizeTerrainDisplay()
           this.renderer.setCityDistrictData(cityData)
-          this.renderer.setMode('city')
+          this.renderer.setMode(setupStep === 'StreetSetup' ? 'streets' : 'city')
           if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
             this.renderer.renderStreetGraph(cityData.streetGraph)
-            this.renderer.renderBuildings(cityData.blocks, cityData.buildings)
+            this.renderer.renderBuildings(cityData.blocks, cityData.buildings, cityData.buildingTemplates, cityData.textureTemplates)
           }
         } else {
           this.renderer.clearBuildingLayer()
