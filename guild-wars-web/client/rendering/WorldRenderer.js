@@ -75,6 +75,7 @@ export default class WorldRenderer {
     this.edgeMeshes = new Map()
     this.junctionMeshes = new Map()      // ptId → mesh (fills gap where 3+ edges meet)
     this.junctionEdgeIds = new Map()     // ptId → Set<edgeId>
+    this.junctionFills = new Map()       // ptId → { boundaryPts:[{x,y}], edgeIds:Set }
     this.edgePointsById = new Map()      // pointId → {id, x, y}
     this.districtMeshes = new Map()
     this.cityEdgeMeshes = new Map()
@@ -695,6 +696,7 @@ export default class WorldRenderer {
     this.junctionMeshes.forEach(mesh => this.scene.remove(mesh))
     this.junctionMeshes.clear()
     this.junctionEdgeIds.clear()
+    this.junctionFills.clear()
 
     console.log(`Rendering ${Object.keys(edges).length} edges`)
     const junctionOverrides = this._computeJunctionData(edges)
@@ -894,6 +896,14 @@ export default class WorldRenderer {
           trueRight: boundaryPts[(i - 1 + n) % n]
         })
       }
+
+      // Store fill polygon for junctions with 3+ edges
+      if (n >= 3) {
+        this.junctionFills.set(ptId, {
+          boundaryPts,
+          edgeIds: new Set(edgeData.map(e => e.edgeId))
+        })
+      }
     }
 
     return result
@@ -916,7 +926,37 @@ export default class WorldRenderer {
       this.junctionEdgeIds.set(ptId, new Set(edgeIds))
     }
 
-    // End caps disabled — strips only, so junction geometry is visible for debugging
+    const Y = 0.065  // slightly above edge strips (0.06) to avoid z-fighting
+
+    for (const [ptId, { boundaryPts, edgeIds }] of this.junctionFills) {
+      if (boundaryPts.length < 3) continue
+
+      const floatVerts = new Float32Array(boundaryPts.length * 3)
+      for (let i = 0; i < boundaryPts.length; i++) {
+        floatVerts[i * 3]     = boundaryPts[i].x
+        floatVerts[i * 3 + 1] = Y
+        floatVerts[i * 3 + 2] = boundaryPts[i].y
+      }
+
+      // Fan triangulation; reversed winding ([0,i+1,i]) so normal faces +Y
+      const tris = []
+      for (let i = 1; i < boundaryPts.length - 1; i++) {
+        tris.push(0, i + 1, i)
+      }
+
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(floatVerts, 3))
+      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1))
+      geo.computeVertexNormals()
+
+      const color = TerrainColors.unassigned
+      const mat = new THREE.MeshStandardMaterial({
+        color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5
+      })
+      const mesh = new THREE.Mesh(geo, mat)
+      this.scene.add(mesh)
+      this.junctionMeshes.set(ptId, mesh)
+    }
   }
 
   _refreshJunctionColor(ptId) {
