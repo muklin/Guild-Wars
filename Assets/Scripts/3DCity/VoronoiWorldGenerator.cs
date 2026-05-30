@@ -20,6 +20,7 @@ public class VoronoiWorldGenerator : MonoBehaviour {
 
     private List<EdgeFeature> edgeFeatures = new();
     private List<VoronoiEdge> edges = new();
+    private List<VoronoiJunctionCap> junctionCaps = new();
 
     public IReadOnlyList<EdgeFeature> EdgeFeatures => edgeFeatures;
     public IReadOnlyList<VoronoiEdge> Edges => edges;
@@ -113,6 +114,7 @@ public class VoronoiWorldGenerator : MonoBehaviour {
 
         // Generate edges between adjacent regions
         GenerateEdges();
+        GenerateJunctionCaps();
     }
 
     private void IdentifyCityRegion() {
@@ -520,7 +522,7 @@ public class VoronoiWorldGenerator : MonoBehaviour {
         var edgeComponent = edgeGO.AddComponent<VoronoiEdge>();
         Vector3 start = sharedVertices[0];
         Vector3 end = sharedVertices[sharedVertices.Count - 1];
-        edgeComponent.Initialize(edges.Count, regionA, regionB, start, end);
+        edgeComponent.Initialize(edges.Count, regionA, regionB, start, end, sharedVertices);
 
         edges.Add(edgeComponent);
     }
@@ -623,6 +625,89 @@ public class VoronoiWorldGenerator : MonoBehaviour {
             }
         }
         return regionEdges;
+    }
+
+    private void GenerateJunctionCaps() {
+        // Group edge endpoints: a junction vertex is one where 3+ edges meet.
+        var groups = new List<(Vector3 pos, List<VoronoiEdge> edgeList)>();
+        const float snapDist = 0.2f;
+
+        foreach (var edge in edges) {
+            if (edge.BoundaryPoints == null || edge.BoundaryPoints.Count < 2) continue;
+            var endpts = new[] { edge.BoundaryPoints[0], edge.BoundaryPoints[edge.BoundaryPoints.Count - 1] };
+            foreach (var pt in endpts) {
+                bool merged = false;
+                for (int g = 0; g < groups.Count; g++) {
+                    if (Vector3.Distance(groups[g].pos, pt) < snapDist) {
+                        groups[g].edgeList.Add(edge);
+                        merged = true;
+                        break;
+                    }
+                }
+                if (!merged)
+                    groups.Add((pt, new List<VoronoiEdge> { edge }));
+            }
+        }
+
+        foreach (var (pos, jEdges) in groups) {
+            if (jEdges.Count >= 3)
+                CreateJunctionCap(pos, jEdges);
+        }
+    }
+
+    private void CreateJunctionCap(Vector3 junctionPos, List<VoronoiEdge> meetingEdges) {
+        // Collect the two outer-corner vertices each edge contributes at this junction
+        var outerVerts = new List<Vector3>();
+        foreach (var edge in meetingEdges) {
+            var pts = edge.BoundaryPoints;
+            bool atStart = Vector3.Distance(pts[0], junctionPos) < 0.2f;
+            Vector3 p0 = atStart ? pts[0] : pts[pts.Count - 1];
+            Vector3 p1 = atStart ? pts[1] : pts[pts.Count - 2];
+
+            Vector3 dir = (p1 - p0).normalized;
+            Vector3 perp = new Vector3(-dir.z, 0, dir.x) * (EdgeThickness / 2f);
+
+            outerVerts.Add(new Vector3(junctionPos.x + perp.x, EdgeY, junctionPos.z + perp.z));
+            outerVerts.Add(new Vector3(junctionPos.x - perp.x, EdgeY, junctionPos.z - perp.z));
+        }
+
+        // Sort outer verts by angle around junction so the fan is convex
+        Vector3 center = new Vector3(junctionPos.x, EdgeY, junctionPos.z);
+        outerVerts.Sort((a, b) =>
+            Mathf.Atan2(a.z - center.z, a.x - center.x)
+                .CompareTo(Mathf.Atan2(b.z - center.z, b.x - center.x)));
+
+        // Build triangle fan from center
+        var mesh = new Mesh();
+        var verts = new List<Vector3> { center };
+        verts.AddRange(outerVerts);
+        int n = outerVerts.Count;
+        var tris = new List<int>();
+        for (int i = 0; i < n; i++) {
+            tris.Add(0);
+            tris.Add(i + 1);
+            tris.Add((i + 1) % n + 1);
+        }
+        mesh.vertices = verts.ToArray();
+        mesh.triangles = tris.ToArray();
+        mesh.RecalculateNormals();
+
+        var capGO = new GameObject($"JunctionCap_{junctionPos.x:F1}_{junctionPos.z:F1}");
+        capGO.transform.SetParent(transform);
+        capGO.layer = meetingEdges[0].gameObject.layer;
+
+        capGO.AddComponent<MeshFilter>().mesh = mesh;
+
+        var mr = capGO.AddComponent<MeshRenderer>();
+        var srcMat = meetingEdges[0].GetComponent<MeshRenderer>().sharedMaterial;
+        var mat = srcMat != null ? new Material(srcMat) : new Material(Shader.Find("Standard"));
+        mat.color = TerrainColors.Unassigned;
+        mr.material = mat;
+        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+        var cap = capGO.AddComponent<VoronoiJunctionCap>();
+        cap.Initialize(meetingEdges, TerrainColors.Unassigned);
+        junctionCaps.Add(cap);
     }
 
     /// <summary>Colors all unassigned edges around a placed terrain.</summary>

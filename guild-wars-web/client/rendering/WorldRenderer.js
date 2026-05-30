@@ -73,6 +73,8 @@ export default class WorldRenderer {
     this.fineCellMeshes = new Map()      // fineCellId  → mesh
     this.regionFineCells = new Map()     // parentRegionId → [fineCellId, ...]
     this.edgeMeshes = new Map()
+    this.junctionMeshes = new Map()      // ptId → mesh (fills gap where 3+ edges meet)
+    this.junctionEdgeIds = new Map()     // ptId → Set<edgeId>
     this.edgePointsById = new Map()      // pointId → {id, x, y}
     this.districtMeshes = new Map()
     this.cityEdgeMeshes = new Map()
@@ -690,11 +692,15 @@ export default class WorldRenderer {
   renderEdges(edges) {
     this.edgeMeshes.forEach(mesh => this.scene.remove(mesh))
     this.edgeMeshes.clear()
+    this.junctionMeshes.forEach(mesh => this.scene.remove(mesh))
+    this.junctionMeshes.clear()
+    this.junctionEdgeIds.clear()
 
     console.log(`Rendering ${Object.keys(edges).length} edges`)
+    const junctionOverrides = this._computeJunctionData(edges)
     let edgeCount = 0
     Object.entries(edges).forEach(([id, edge]) => {
-      const mesh = this.buildEdgeMesh(edge, id)
+      const mesh = this.buildEdgeMesh(edge, id, junctionOverrides)
       if (mesh) {
         this.scene.add(mesh)
         this.edgeMeshes.set(id, mesh)
@@ -702,9 +708,10 @@ export default class WorldRenderer {
       }
     })
     console.log(`Successfully created ${edgeCount} edge meshes`)
+    this._renderJunctionFills(edges)
   }
 
-  buildEdgeMesh(edge, edgeId) {
+  buildEdgeMesh(edge, edgeId, junctionOverrides = null) {
     // Resolve ordered point list from the indexed edge point pool
     const points = edge.pointIds
       ? edge.pointIds.map(id => this.edgePointsById.get(id)).filter(Boolean)
@@ -717,33 +724,77 @@ export default class WorldRenderer {
     const allVerts = []
     const allIdx = []
 
-    for (let i = 0; i < points.length - 1; i++) {
-      const p1 = points[i]
-      const p2 = points[i + 1]
-      if (!p1 || !p2 || !isFinite(p1.x) || !isFinite(p2.x)) continue
+    const ptIds = edge.pointIds || []
+    const startOvr = junctionOverrides?.get(`${edgeId}_${ptIds[0]}`)
+    const endOvr   = junctionOverrides?.get(`${edgeId}_${ptIds[ptIds.length - 1]}`)
+    const n = points.length
 
-      const dx = p2.x - p1.x
-      const dy = p2.y - p1.y
-      const len = Math.sqrt(dx * dx + dy * dy)
-      if (len === 0) continue
-
-      const perpX = (-dy / len) * r
-      const perpY = (dx / len) * r
-
-      const base = allVerts.length / 3
-      allVerts.push(
-        p1.x - perpX, Y, p1.y - perpY,
-        p1.x + perpX, Y, p1.y + perpY,
-        p2.x + perpX, Y, p2.y + perpY,
-        p2.x - perpX, Y, p2.y - perpY
-      )
-      allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    // Line intersection helper
+    const lineIsect = (q1x, q1y, d1x, d1y, q2x, q2y, d2x, d2y) => {
+      const denom = d1x * d2y - d1y * d2x
+      if (Math.abs(denom) < 1e-8) return { x: (q1x + q2x) / 2, y: (q1y + q2y) / 2 }
+      const t = ((q2x - q1x) * d2y - (q2y - q1y) * d2x) / denom
+      return { x: q1x + t * d1x, y: q1y + t * d1y }
     }
 
-    // Circle fills at every vertex close the angular gaps between consecutive segments
-    for (const pt of points) {
-      if (!pt || !isFinite(pt.x)) continue
-      addCircleFan(allVerts, allIdx, pt.x, Y, pt.y, r)
+    // Precompute per-point {left, right} strip corners.
+    // "left" = CCW side, "right" = CW side, both relative to segment travel direction.
+    const corners = []
+    for (let i = 0; i < n; i++) {
+      const pt = points[i]
+      if (!pt || !isFinite(pt.x)) { corners.push(null); continue }
+
+      if (i === 0) {
+        if (startOvr) {
+          // outgoing dir = segment dir: trueLeft/Right align with segment-left/right
+          corners.push({ left: startOvr.trueLeft, right: startOvr.trueRight })
+        } else {
+          const p2 = points[1]
+          if (!p2 || !isFinite(p2.x)) { corners.push(null); continue }
+          const dx = p2.x - pt.x, dy = p2.y - pt.y, len = Math.sqrt(dx*dx + dy*dy)
+          if (len < 1e-10) { corners.push(null); continue }
+          const ux = dx/len, uy = dy/len
+          const sx = pt.x + ux*r, sy = pt.y + uy*r  // inset dead-end
+          corners.push({ left: {x: sx - uy*r, y: sy + ux*r}, right: {x: sx + uy*r, y: sy - ux*r} })
+        }
+      } else if (i === n - 1) {
+        if (endOvr) {
+          // Segment arrives at junction: segment-left = outgoing-right (direction flipped)
+          corners.push({ left: endOvr.trueRight, right: endOvr.trueLeft })
+        } else {
+          const p0 = points[n - 2]
+          if (!p0 || !isFinite(p0.x)) { corners.push(null); continue }
+          const dx = pt.x - p0.x, dy = pt.y - p0.y, len = Math.sqrt(dx*dx + dy*dy)
+          if (len < 1e-10) { corners.push(null); continue }
+          const ux = dx/len, uy = dy/len
+          const sx = pt.x - ux*r, sy = pt.y - uy*r  // inset dead-end
+          corners.push({ left: {x: sx - uy*r, y: sy + ux*r}, right: {x: sx + uy*r, y: sy - ux*r} })
+        }
+      } else {
+        // Interior bend: miter intersection of adjacent segment rails
+        const p0 = points[i - 1], p2 = points[i + 1]
+        if (!p0 || !p2 || !isFinite(p0.x) || !isFinite(p2.x)) { corners.push(null); continue }
+        const dx1 = pt.x - p0.x, dy1 = pt.y - p0.y, len1 = Math.sqrt(dx1*dx1 + dy1*dy1)
+        const dx2 = p2.x - pt.x, dy2 = p2.y - pt.y, len2 = Math.sqrt(dx2*dx2 + dy2*dy2)
+        if (len1 < 1e-10 || len2 < 1e-10) { corners.push(null); continue }
+        const ux1 = dx1/len1, uy1 = dy1/len1
+        const ux2 = dx2/len2, uy2 = dy2/len2
+        const left  = lineIsect(pt.x - uy1*r, pt.y + ux1*r, ux1, uy1,
+                                 pt.x - uy2*r, pt.y + ux2*r, ux2, uy2)
+        const right = lineIsect(pt.x + uy1*r, pt.y - ux1*r, ux1, uy1,
+                                 pt.x + uy2*r, pt.y - ux2*r, ux2, uy2)
+        corners.push({ left, right })
+      }
+    }
+
+    const numSegs = n - 1
+    for (let i = 0; i < numSegs; i++) {
+      const c1 = corners[i], c2 = corners[i + 1]
+      if (!c1 || !c2) continue
+      const base = allVerts.length / 3
+      allVerts.push(c1.right.x, Y, c1.right.y, c1.left.x, Y, c1.left.y,
+                    c2.left.x,  Y, c2.left.y,  c2.right.x, Y, c2.right.y)
+      allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
     }
 
     if (allVerts.length === 0) return null
@@ -767,6 +818,132 @@ export default class WorldRenderer {
     const mesh = new THREE.Mesh(geometry, material)
     mesh.userData = { edgeId }
     return mesh
+  }
+
+  _computeJunctionData(edges) {
+    // Returns Map: `${edgeId}_${ptId}` → { trueLeft:{x,y}, trueRight:{x,y} }
+    // trueLeft/Right are the miter-calculated corner positions at that endpoint,
+    // where "left" = CCW side and "right" = CW side of the outgoing edge direction.
+    const result = new Map()
+    const r = 0.25  // half-thickness
+
+    // Build endpoint → edge list
+    const endpointEdges = new Map()
+    for (const [edgeId, edge] of Object.entries(edges)) {
+      const pts = edge.pointIds
+      if (!pts || pts.length < 2) continue
+      for (const [idx, ptId] of [[0, pts[0]], [1, pts[pts.length - 1]]]) {
+        if (!endpointEdges.has(ptId)) endpointEdges.set(ptId, [])
+        endpointEdges.get(ptId).push({ edgeId, edge, atStart: idx === 0 })
+      }
+    }
+
+    for (const [ptId, edgeList] of endpointEdges) {
+      if (edgeList.length < 2) continue  // dead ends get no override
+
+      const jPt = this.edgePointsById.get(ptId)
+      if (!jPt || !isFinite(jPt.x)) continue
+
+      // Compute outgoing unit direction for each edge at this junction
+      const edgeData = []
+      for (const { edgeId, edge, atStart } of edgeList) {
+        const pts = edge.pointIds.map(id => this.edgePointsById.get(id)).filter(Boolean)
+        if (pts.length < 2) continue
+        let dx, dy
+        if (atStart) {
+          dx = pts[1].x - pts[0].x; dy = pts[1].y - pts[0].y
+        } else {
+          const n = pts.length - 1
+          dx = pts[n - 1].x - pts[n].x; dy = pts[n - 1].y - pts[n].y  // AWAY from junction
+        }
+        const len = Math.sqrt(dx * dx + dy * dy)
+        if (len < 1e-10) continue
+        edgeData.push({ edgeId, ux: dx / len, uy: dy / len })
+      }
+      if (edgeData.length < 2) continue
+
+      // Sort CCW by outgoing angle
+      edgeData.sort((a, b) => Math.atan2(a.uy, a.ux) - Math.atan2(b.uy, b.ux))
+      const n = edgeData.length
+
+      // Compute n miter boundary points.
+      // P_i = intersection of edgeData[i]'s left rail with edgeData[(i+1)%n]'s right rail.
+      // Left rail of A: through (J - A.uy*r, J + A.ux*r) in direction (A.ux, A.uy)
+      // Right rail of B: through (J + B.uy*r, J - B.ux*r) in direction (B.ux, B.uy)
+      const boundaryPts = []
+      for (let i = 0; i < n; i++) {
+        const A = edgeData[i], B = edgeData[(i + 1) % n]
+        const q1x = jPt.x - A.uy * r, q1y = jPt.y + A.ux * r
+        const q2x = jPt.x + B.uy * r, q2y = jPt.y - B.ux * r
+        const denom = A.ux * B.uy - A.uy * B.ux
+        let px, py
+        if (Math.abs(denom) < 1e-8) {
+          px = (q1x + q2x) / 2; py = (q1y + q2y) / 2
+        } else {
+          const t = ((q2x - q1x) * B.uy - (q2y - q1y) * B.ux) / denom
+          px = q1x + t * A.ux; py = q1y + t * A.uy
+        }
+        boundaryPts.push({ x: px, y: py })
+      }
+
+      // Assign: edgeData[i] trueLeft = boundaryPts[i], trueRight = boundaryPts[(i-1+n)%n]
+      for (let i = 0; i < n; i++) {
+        const { edgeId } = edgeData[i]
+        result.set(`${edgeId}_${ptId}`, {
+          trueLeft:  boundaryPts[i],
+          trueRight: boundaryPts[(i - 1 + n) % n]
+        })
+      }
+    }
+
+    return result
+  }
+
+  _renderJunctionFills(edges) {
+    // Map each endpoint vertex to all edges that terminate there
+    const endpointMap = new Map()  // ptId → [edgeId, ...]
+    for (const [edgeId, edge] of Object.entries(edges)) {
+      const pts = edge.pointIds
+      if (!pts || pts.length < 2) continue
+      for (const ptId of [pts[0], pts[pts.length - 1]]) {
+        if (!endpointMap.has(ptId)) endpointMap.set(ptId, [])
+        endpointMap.get(ptId).push(edgeId)
+      }
+    }
+
+    // Store adjacency for ALL endpoints so _refreshJunctionColor can update them
+    for (const [ptId, edgeIds] of endpointMap) {
+      this.junctionEdgeIds.set(ptId, new Set(edgeIds))
+    }
+
+    // End caps disabled — strips only, so junction geometry is visible for debugging
+  }
+
+  _refreshJunctionColor(ptId) {
+    const mesh = this.junctionMeshes.get(ptId)
+    if (!mesh) return
+    const adjEdgeIds = this.junctionEdgeIds.get(ptId)
+    if (!adjEdgeIds) return
+
+    let color = TerrainColors.unassigned
+    for (const adjEdgeId of adjEdgeIds) {
+      const adjMesh = this.edgeMeshes.get(adjEdgeId)
+      if (!adjMesh) continue
+      const c = adjMesh.material.color.getHex()
+      if (c === 0xffffff) { color = 0xffffff; break }
+      const adjEdge = this.terrainData?.edges?.[adjEdgeId]
+      if (adjEdge?.assignedType) color = TerrainColors.get(adjEdge.assignedType)
+    }
+    mesh.material.color.setHex(color)
+    mesh.material.emissive?.setHex(color)
+  }
+
+  _updateJunctionFromEdge(edgeId) {
+    const edge = this.terrainData?.edges?.[edgeId]
+    const pts = edge?.pointIds
+    if (!pts || pts.length < 2) return
+    this._refreshJunctionColor(pts[0])
+    this._refreshJunctionColor(pts[pts.length - 1])
   }
 
   _applyRegionColor(regionId, color) {
@@ -858,10 +1035,12 @@ export default class WorldRenderer {
 
   selectEdge(edgeId) {
     this._applyEdgeColor(edgeId, 0xffffff)
+    this._updateJunctionFromEdge(edgeId)
   }
 
   deselectEdge(edgeId) {
     this._applyEdgeColor(edgeId, this._edgeBaseColor(edgeId))
+    this._updateJunctionFromEdge(edgeId)
   }
 
   previewEdgeType(edgeId, edgeType) {
@@ -875,6 +1054,7 @@ export default class WorldRenderer {
       const color = TerrainColors.get(terrainType) || TerrainColors.unassigned
       mesh.material.color.setHex(color)
     }
+    this._updateJunctionFromEdge(edgeId)
   }
 
   updateDistrictColor(districtId, districtType) {

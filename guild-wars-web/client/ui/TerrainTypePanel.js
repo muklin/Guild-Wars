@@ -1,5 +1,27 @@
 import TerrainColors from '../rendering/TerrainColors.js'
 
+// Attaches a custom tooltip to a button that may be visually-disabled.
+// We avoid btn.disabled because that strips pointer events, making native title/hover unusable.
+function _attachDisabledTooltip(btn, reason) {
+  let tip = null
+  btn.addEventListener('mouseenter', () => {
+    tip = document.createElement('div')
+    tip.textContent = reason
+    tip.style.cssText = [
+      'position:fixed', 'z-index:9999', 'pointer-events:none',
+      'background:#1a1a1a', 'color:#ccc', 'border:1px solid #555',
+      'border-radius:4px', 'padding:5px 8px',
+      'font-size:11px', 'line-height:1.4', 'max-width:180px', 'white-space:normal'
+    ].join(';')
+    document.body.appendChild(tip)
+    const r = btn.getBoundingClientRect()
+    tip.style.left = Math.max(0, r.left) + 'px'
+    tip.style.top = (r.bottom + 4) + 'px'
+  })
+  btn.addEventListener('mouseleave', () => { tip?.remove(); tip = null })
+  btn.addEventListener('click', e => e.stopImmediatePropagation())
+}
+
 //const TERRAIN_TYPES = ['Plains', 'Forest', 'Mountains', 'Desert', 'Swamp', 'Hills', 'Lake', 'Delta']
 const TERRAIN_TYPES = ['Plains', 'Forest', 'Mountains', 'Desert', 'Swamp', 'Hills', 'Lake', 'Sea']
 const EDGE_TYPES = ['River', 'Cliff']
@@ -51,15 +73,20 @@ export default class TerrainTypePanel {
       const color = TerrainColors.get(type)
       const hex = '#' + color.toString(16).padStart(6, '0')
       const isActive = type === pendingType
-      const disabled = (EDGE_ONLY.includes(type) && !isEdge)
-        || (type === 'Sea' && adjacentTypes.includes('Lake'))
-        || (type === 'Lake' && adjacentTypes.includes('Sea'))
+
+      let disabledReason = null
+      if (EDGE_ONLY.includes(type) && !isEdge)              disabledReason = `${type} can only be placed on boundary (edge-of-map) regions`
+      else if (type === 'Sea' && adjacentTypes.includes('Lake'))  disabledReason = 'Cannot be placed adjacent to a Lake'
+      else if (type === 'Lake' && adjacentTypes.includes('Sea'))  disabledReason = 'Cannot be placed adjacent to the Sea'
+      const disabled = disabledReason !== null
+
       const btn = document.createElement('button')
       btn.textContent = type
-      btn.title = disabled ? `${type} not allowed here` : type
-      btn.disabled = disabled
+      // Don't set btn.disabled — it strips pointer events and breaks hover tooltips
       btn.style.cssText = `padding:6px 4px;background:${isActive ? hex : '#2a2a2a'};border:2px solid ${disabled ? '#444' : hex};color:${disabled ? '#555' : '#fff'};cursor:${disabled ? 'not-allowed' : 'pointer'};border-radius:3px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`
-      if (!disabled) {
+      if (disabled) {
+        _attachDisabledTooltip(btn, disabledReason)
+      } else {
         btn.addEventListener('click', () => this.eventBus.emit('TERRAIN_TYPE_PREVIEW', type))
       }
       grid.appendChild(btn)
@@ -109,15 +136,21 @@ export default class TerrainTypePanel {
     grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px'
 
     for (const type of EDGE_TYPES) {
-      if (type === 'Cliff' && edgeCount > 2) continue
       const isActive = type === pendingType
-      const disabled = type === 'River' && riverParallel
+
+      let disabledReason = null
+      if (type === 'Cliff' && edgeCount > 2)  disabledReason = 'Cliffs can only span 1–2 edges'
+      else if (type === 'River' && riverParallel) disabledReason = 'Cannot run alongside an existing river'
+      const disabled = disabledReason !== null
+
       const btn = document.createElement('button')
       btn.textContent = type
-      btn.disabled = disabled
-      btn.title = disabled ? 'Cannot run alongside an existing river' : type
-      btn.style.cssText = `padding:6px 4px;background:${isActive ? '#667' : '#2a2a2a'};border:2px solid ${disabled ? '#444' : '#667'};color:${disabled ? '#555' : '#fff'};cursor:${disabled ? 'not-allowed' : 'pointer'};border-radius:3px;font-size:11px`
-      if (!disabled) btn.addEventListener('click', () => this.eventBus.emit('EDGE_TYPE_PREVIEW', type))
+      btn.style.cssText = `padding:6px 4px;background:${isActive && !disabled ? '#667' : '#2a2a2a'};border:2px solid ${disabled ? '#444' : '#667'};color:${disabled ? '#555' : '#fff'};cursor:${disabled ? 'not-allowed' : 'pointer'};border-radius:3px;font-size:11px`
+      if (disabled) {
+        _attachDisabledTooltip(btn, disabledReason)
+      } else {
+        btn.addEventListener('click', () => this.eventBus.emit('EDGE_TYPE_PREVIEW', type))
+      }
       grid.appendChild(btn)
     }
     container.appendChild(grid)

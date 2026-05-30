@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections.Generic;
 
 /// <summary>
 /// Represents a clickable edge between two Voronoi regions.
@@ -11,6 +12,7 @@ public class VoronoiEdge : MonoBehaviour {
     public int regionB;
     public Vector3 edgeStartPoint;
     public Vector3 edgeEndPoint;
+    public List<Vector3> BoundaryPoints { get; private set; }
 
     private Material material;
     private MeshRenderer meshRenderer;
@@ -20,17 +22,22 @@ public class VoronoiEdge : MonoBehaviour {
     private bool isAssigned = false;
     private TerrainType assignedType;
 
+    public bool IsSelected => isSelected;
+    public bool IsHovered => isHovered;
+    public Color CurrentColor => material != null ? material.color : normalColor;
+
     private Color normalColor; // Matches default terrain color
     private Color hoveredColor; // Lightened version of normal
     private Color selectedColor = new Color(1f, 1f, 1f, 1f); // Bright white for selection
     private Color assignedColor; // Will be set based on terrain type
 
-    public void Initialize(int edgeId, int a, int b, Vector3 start, Vector3 end) {
+    public void Initialize(int edgeId, int a, int b, Vector3 start, Vector3 end, List<Vector3> boundaryPoints = null) {
         id = edgeId;
         regionA = a;
         regionB = b;
         edgeStartPoint = start;
         edgeEndPoint = end;
+        BoundaryPoints = boundaryPoints != null ? new List<Vector3>(boundaryPoints) : new List<Vector3> { start, end };
 
         // Set colors based on default terrain color
         normalColor = TerrainColors.Unassigned;
