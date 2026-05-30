@@ -190,8 +190,7 @@ export default class App {
           this.pendingCityEdgeType = null
           if (response.cityDistrictData) this.renderer.setCityDistrictData(response.cityDistrictData)
           this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-          this.renderer.renderBuildings(response.cityDistrictData?.blocks, response.cityDistrictData?.buildings, response.cityDistrictData?.buildingTemplates, response.cityDistrictData?.textureTemplates)
-          if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
+          this.renderer.renderPlots(response.cityDistrictData?.blocks, response.cityDistrictData?.plots, response.cityDistrictData)
         } else {
           this.uiManager.showError(response.error)
         }
@@ -319,7 +318,7 @@ export default class App {
           this.renderer.setCityDistrictData(response.cityDistrictData)
         }
         this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-        this.renderer.renderBuildings(response.cityDistrictData?.blocks, response.cityDistrictData?.buildings, response.cityDistrictData?.buildingTemplates, response.cityDistrictData?.textureTemplates)
+        this.renderer.renderPlots(response.cityDistrictData?.blocks, response.cityDistrictData?.plots, response.cityDistrictData)
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
@@ -439,21 +438,76 @@ export default class App {
       .filter(Boolean)
   }
 
-  _isParallelToRiver(edgeId) {
+  _getRiverDisabledReason(selectedEdgeIds) {
     const edges = this.renderer.terrainData?.edges || {}
-    const edge = edges[edgeId]
-    if (!edge) return false
-    const myRegions = new Set([edge.regionA, edge.regionB].filter(r => r != null))
-    const pts = edge.pointIds || []
-    const myEndpoints = new Set([pts[0], pts[pts.length - 1]].filter(p => p != null))
-    for (const [otherId, other] of Object.entries(edges)) {
-      if (otherId === edgeId || other.assignedType !== 'River') continue
-      const sharesRegion = [other.regionA, other.regionB].some(r => r != null && myRegions.has(r))
-      if (!sharesRegion) continue
-      const otherPts = other.pointIds || []
-      const otherEndpoints = new Set([otherPts[0], otherPts[otherPts.length - 1]].filter(p => p != null))
-      const sharesEndpoint = [...myEndpoints].some(p => otherEndpoints.has(p))
-      if (!sharesEndpoint) return true
+    const regions = this.renderer.terrainData?.regions || []
+    const regionMap = new Map(regions.map(r => [r.id, r]))
+
+    const pointPositions = this.renderer.edgePointsById
+    const worldSize = this.renderer.terrainData?.worldSize ?? 50
+
+    for (const edgeId of selectedEdgeIds) {
+      const edge = edges[edgeId]
+      if (!edge) continue
+      const myRegions = new Set([edge.regionA, edge.regionB].filter(r => r != null))
+      const pts = edge.pointIds || []
+      const myEndpoints = new Set([pts[0], pts[pts.length - 1]].filter(p => p != null))
+
+      // Cannot flow alongside a Lake
+      for (const rId of myRegions) {
+        if (regionMap.get(rId)?.assignedType === 'Lake') return 'Cannot flow alongside a Lake'
+      }
+
+      // Cannot run parallel to an existing River
+      for (const [otherId, other] of Object.entries(edges)) {
+        if (otherId === edgeId || other.assignedType !== 'River') continue
+        const sharesRegion = [other.regionA, other.regionB].some(r => r != null && myRegions.has(r))
+        if (!sharesRegion) continue
+        const otherPts = other.pointIds || []
+        const otherEndpoints = new Set([otherPts[0], otherPts[otherPts.length - 1]].filter(p => p != null))
+        if (![...myEndpoints].some(p => otherEndpoints.has(p))) return 'Cannot run alongside an existing River'
+      }
+    }
+
+    // Find free endpoints (appear in only one selected edge)
+    const ptCount = new Map()
+    for (const edgeId of selectedEdgeIds) {
+      const pts = edges[edgeId]?.pointIds || []
+      if (pts.length < 2) continue
+      const first = pts[0], last = pts[pts.length - 1]
+      ptCount.set(first, (ptCount.get(first) || 0) + 1)
+      if (last !== first) ptCount.set(last, (ptCount.get(last) || 0) + 1)
+    }
+    const freeEndpoints = [...ptCount].filter(([, c]) => c === 1).map(([p]) => p)
+
+    for (const ptId of freeEndpoints) {
+      if (!this._isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap, pointPositions, worldSize)) {
+        return 'Endpoints must connect to a River, Sea, Lake, or the map edge'
+      }
+    }
+
+    return null
+  }
+
+  _isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap, pointPositions, worldSize) {
+    // Map boundary: point coordinates on the world edge
+    const pt = pointPositions.get(ptId)
+    const eps = 0.5
+    if (pt && (pt.x < eps || pt.x > worldSize - eps || pt.y < eps || pt.y > worldSize - eps)) return true
+
+    for (const [edgeId, edge] of Object.entries(edges)) {
+      const pts = edge.pointIds || []
+      if (pts[0] !== ptId && pts[pts.length - 1] !== ptId) continue
+
+      // Existing River edge at this point (not in selection)
+      if (!selectedEdgeIds.has(edgeId) && edge.assignedType === 'River') return true
+
+      const rA = regionMap.get(edge.regionA)
+      const rB = regionMap.get(edge.regionB)
+
+      // Sea or Lake adjacent to this point
+      if (rA?.assignedType === 'Sea' || rB?.assignedType === 'Sea') return true
+      if (rA?.assignedType === 'Lake' || rB?.assignedType === 'Lake') return true
     }
     return false
   }
@@ -468,12 +522,11 @@ export default class App {
       })
     } else if (this.selectedEdgeIds.size > 0) {
       const firstEdgeId = [...this.selectedEdgeIds][0]
-      const riverParallel = [...this.selectedEdgeIds].some(id => this._isParallelToRiver(id))
       this.uiManager.terrainTypePanel?.showContext('edge', {
         edgeCount: this.selectedEdgeIds.size,
         pendingType: this.pendingEdgeType,
         adjacentTypes: firstEdgeId ? this._getEdgeAdjacentTypes(firstEdgeId) : [],
-        riverParallel
+        riverDisabledReason: this._getRiverDisabledReason(this.selectedEdgeIds)
       })
     } else {
       this.uiManager.terrainTypePanel?.showContext('none')
@@ -623,10 +676,17 @@ export default class App {
 
       if (!this._isCityEdgeConnectedToSelection(edge)) this._clearCityEdgeSelection()
 
-      if (this.selectedCityEdgeIds.size === 0 && this.selectedDistrictId !== null) {
-        this.renderer.deselectDistrict(this.selectedDistrictId)
-        this.selectedDistrictId = null
-        this.pendingDistrictType = null
+      if (this.selectedCityEdgeIds.size === 0) {
+        if (this.selectedTerrainRegionId !== null) {
+          this.renderer.deselectRegion(this.selectedTerrainRegionId)
+          this.selectedTerrainRegionId = null
+          this.pendingTerrainAction = null
+        }
+        if (this.selectedDistrictId !== null) {
+          this.renderer.deselectDistrict(this.selectedDistrictId)
+          this.selectedDistrictId = null
+          this.pendingDistrictType = null
+        }
       }
 
       this.selectedCityEdgeIds.add(edge.id)
@@ -814,10 +874,9 @@ export default class App {
           this.renderer.setMode(setupStep === 'StreetSetup' ? 'streets' : 'city')
           if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
             this.renderer.renderStreetGraph(cityData.streetGraph)
-            this.renderer.renderBuildings(cityData.blocks, cityData.buildings, cityData.buildingTemplates, cityData.textureTemplates)
+            this.renderer.renderPlots(cityData.blocks, cityData.plots, cityData)
           }
         } else {
-          this.renderer.clearBuildingLayer()
           this.renderer.clearStreetLayer()
           this.renderer.setCityDistrictData([])
           this.renderer.setMode('terrain')
@@ -895,7 +954,6 @@ export default class App {
         this.uiManager.updateFactions([])
         this.uiManager.updateThreats([])
         this.renderer.clearStreetLayer()
-        this.renderer.clearBuildingLayer()
         this.renderer.setCityDistrictData([])
         this.renderer.setMode('terrain')
         this.renderer.setTerrainData(response.regions, response.edges || {}, response.fineCells || [], response.edgePoints || [])

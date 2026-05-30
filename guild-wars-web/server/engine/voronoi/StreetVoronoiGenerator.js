@@ -164,24 +164,25 @@ export default class StreetVoronoiGenerator {
       })
     }
 
-    // ── Boundary nodes + edges from Mud city boundary edges ──────────────────
+    // ── Boundary nodes + edges from ALL city boundary edges ──────────────────
     // Segmented at BOUNDARY_INTERVAL so they match the interior street density.
     // Each city edge's sampled points become first-class street graph nodes,
     // and consecutive nodes become street edges — same store, same render, same pathing.
+    // All edge types are processed so that the face tracer in CityBlockGenerator
+    // can detect blocks that touch any district boundary, not just Mud ones.
     const boundaryNodeByPtId = new Map()   // actual edgePoint id → node
     const boundaryNodes = []
     const boundaryEdges = []
     const boundaryNodesByEdge = new Map()  // edgeId → [node, ...]  (all nodes incl. interp.)
 
     for (const [edgeId, cityEdge] of Object.entries(cityEdges)) {
-      if (cityEdge.assignedType !== 'Mud') continue
       const pts = (cityEdge.pointIds || []).map(id => edgePointById.get(id)).filter(Boolean)
       if (pts.length < 2) continue
 
       // Expand each segment into nodes spaced at BOUNDARY_INTERVAL
       const ordered = []
       for (let i = 0; i < pts.length; i++) {
-        // Actual edge point — reuse node if shared with another Mud edge
+        // Actual edge point — reuse node if shared with another edge
         if (!boundaryNodeByPtId.has(pts[i].id)) {
           const node = { id: nextNodeId++, x: pts[i].x, y: pts[i].y }
           boundaryNodeByPtId.set(pts[i].id, node)
@@ -205,10 +206,16 @@ export default class StreetVoronoiGenerator {
         }
       }
 
-      // Street edges along the boundary — upgrade to the better adjacent district type
-      const typeA = streetTypeForDistrict(districtById.get(cityEdge.districtA))
-      const typeB = streetTypeForDistrict(districtById.get(cityEdge.districtB))
-      const boundaryType = betterStreetType(typeA, typeB)
+      // Edge type: Mud boundaries take the better adjacent street type;
+      // non-Mud boundaries (Wall, MainRoad, Canal, Docks) keep their city edge type.
+      let boundaryType
+      if (!cityEdge.assignedType || cityEdge.assignedType === 'Mud') {
+        const typeA = streetTypeForDistrict(districtById.get(cityEdge.districtA))
+        const typeB = streetTypeForDistrict(districtById.get(cityEdge.districtB))
+        boundaryType = betterStreetType(typeA, typeB)
+      } else {
+        boundaryType = cityEdge.assignedType
+      }
 
       for (let i = 0; i < ordered.length - 1; i++) {
         boundaryEdges.push({
@@ -283,9 +290,11 @@ export default class StreetVoronoiGenerator {
       nodesByDistrict.set(dr.districtId, dr.nodes.map(n => ({ ...n, id: find(n.id) })))
     }
 
+    // ── Connect all boundary nodes into each adjacent district's Voronoi ─────
+    // Every node along every city edge boundary gets an edge to its nearest
+    // Voronoi node in each adjacent district, bridging boundary → interior.
     let connectIdx = 0
     for (const [edgeId, cityEdge] of Object.entries(cityEdges)) {
-      if (cityEdge.assignedType !== 'Mud') continue
       const dA = cityEdge.districtA, dB = cityEdge.districtB
       const bNodes = boundaryNodesByEdge.get(edgeId) || []
 
@@ -313,40 +322,6 @@ export default class StreetVoronoiGenerator {
               finalEdges.push({ id: `street-connect-${connectIdx++}`, nodeA: bestId, nodeB: bId, type: connectType, districtId })
             }
           }
-        }
-      }
-    }
-
-    // ── Cross-district connectivity for non-Mud boundaries ───────────────────
-    // Mud boundaries are already bridged above; non-Mud ones (Wall, MainRoad…)
-    // still need one closest-pair edge so the interior Voronoi graphs connect.
-    let crossIdx = 0
-    for (const cityEdge of Object.values(cityEdges)) {
-      if (cityEdge.assignedType === 'Mud') continue
-      const dA = cityEdge.districtA, dB = cityEdge.districtB
-      if (dB == null) continue
-
-      const nodesA = nodesByDistrict.get(dA) || []
-      const nodesB = nodesByDistrict.get(dB) || []
-      if (!nodesA.length || !nodesB.length) continue
-
-      let bestDist = Infinity, bestA = null, bestB = null
-      for (const ra of nodesA) {
-        const pa = finalNodeById.get(ra.id)
-        if (!pa) continue
-        for (const rb of nodesB) {
-          const pb = finalNodeById.get(rb.id)
-          if (!pb) continue
-          const d = Math.hypot(pa.x - pb.x, pa.y - pb.y)
-          if (d < bestDist) { bestDist = d; bestA = ra.id; bestB = rb.id }
-        }
-      }
-
-      if (bestA !== null && bestA !== bestB) {
-        const eKey = bestA < bestB ? `${bestA}_${bestB}` : `${bestB}_${bestA}`
-        if (!seenEdgeKeys.has(eKey)) {
-          seenEdgeKeys.add(eKey)
-          finalEdges.push({ id: `street-cross-${crossIdx++}`, nodeA: bestA, nodeB: bestB, type: 'Mud', districtId: dA })
         }
       }
     }

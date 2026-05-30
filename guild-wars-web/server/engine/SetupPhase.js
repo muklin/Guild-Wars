@@ -667,8 +667,7 @@ export default class SetupPhase {
       edge.assignedType = null
     }
     cityData.streetGraph = null
-    cityData.buildings = []
-    cityData.alleys = []
+    cityData.plots = []
     this.cityEdgePlacements = []
     this._generateStreetGraph(Date.now())
     this._generateBuildings()
@@ -722,24 +721,11 @@ export default class SetupPhase {
 
   _generateBuildings() {
     const cityData = this.gameStateManager.cityDistrictData
-    if (!cityData?.districts?.length || !cityData?.streetGraph) return
-
+    if (!cityData?.streetGraph) return
     const result = new CityBlockGenerator().generate(cityData.districts, cityData.streetGraph)
-    cityData.blocks    = result.blocks
-    cityData.buildings = result.buildings
-
-    const seed = cityData.seed ?? 0
-    cityData.buildingTemplates = new BuildingTemplateGenerator().generate(5, seed)
-    cityData.textureTemplates  = new TextureTemplateGenerator().generate(5, seed)
-
-    const tCount = cityData.buildingTemplates.length
-    const xCount = cityData.textureTemplates.length
-    for (const b of cityData.buildings) {
-      b.templateId = b.id % tCount
-      b.textureId  = (b.id * 3 + Math.floor(b.id / tCount)) % xCount
-    }
-
-    this.log.push(`Generated ${result.blocks.length} blocks, ${result.buildings.length} lots, ${tCount} building templates, ${xCount} texture templates`)
+    cityData.blocks = result.blocks
+    cityData.plots  = result.plots
+    this.log.push(`Generated ${result.blocks.length} blocks, ${result.plots.length} plots`)
   }
 
   finishStreetSetup() {

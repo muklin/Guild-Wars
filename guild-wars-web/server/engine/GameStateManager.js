@@ -19,11 +19,9 @@ export default class GameStateManager {
     }
 
     this.cityDistrictData = {
-      districts: []
-    }
-
-    this.buildingData = {
-      buildings: []
+      districts: [],
+      blocks: [],
+      plots: []
     }
 
     // Track next auto-IDs
@@ -116,7 +114,6 @@ export default class GameStateManager {
       successionMethod: this.successionMethod,
       worldTerrainData: this.worldTerrainData,
       cityDistrictData: this.cityDistrictData,
-      buildingData: this.buildingData,
       nextFactionAutoId: this.nextFactionAutoId
     }
   }
@@ -143,7 +140,6 @@ export default class GameStateManager {
     this.successionMethod = data.successionMethod
     this.worldTerrainData = data.worldTerrainData || this.worldTerrainData
     this.cityDistrictData = data.cityDistrictData || this.cityDistrictData
-    this.buildingData = data.buildingData || this.buildingData
     if (data.nextFactionAutoId) {
       this.nextFactionAutoId = data.nextFactionAutoId
     } else {
@@ -168,10 +164,9 @@ export default class GameStateManager {
       edges: []
     }
     this.cityDistrictData = {
-      districts: []
-    }
-    this.buildingData = {
-      buildings: []
+      districts: [],
+      blocks: [],
+      plots: []
     }
     this.nextFactionAutoId = 100
   }

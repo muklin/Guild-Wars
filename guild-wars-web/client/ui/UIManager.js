@@ -1,6 +1,7 @@
 import TerrainTypePanel from './TerrainTypePanel.js'
 import DistrictTypePanel from './DistrictTypePanel.js'
 import FactionsPanel from './FactionsPanel.js'
+import GameAPI from '../api/GameAPI.js'
 
 const STAGES = [
   { step: 'Terrain',         label: 'Terrain Setup',       event: 'TERRAIN_COMPLETE' },
@@ -238,6 +239,7 @@ export default class UIManager {
   setupEventListeners() {
     this.eventBus.on('DEBUG_TOGGLED', (isDebug) => {
       if (this._rebuildStreetsBtn) this._rebuildStreetsBtn.style.display = isDebug ? 'block' : 'none'
+      if (this._restartServerBtn)  this._restartServerBtn.style.display  = isDebug ? 'inline-block' : 'none'
     })
   }
 }

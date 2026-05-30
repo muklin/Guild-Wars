@@ -108,7 +108,24 @@ export function generateGridSeeds(polygon, density, xyRatio = 1.0, jitter = 0.3,
 // Use this when a known bounding polygon exists (district, world bbox, etc.).
 // metric: 'euclidean' (default) | 'chebyshev' | 'manhattan' | 'centroid'
 export function computeVoronoiCells(seeds, clipPolygon, metric = 'euclidean') {
-  const points = seeds.map(s => new Point(s.x, s.y))
+  if (!seeds.length) return []
+
+  // Add 3 super-seeds forming a large outer triangle so every real seed gets
+  // ≥3 Delaunay triangles — boundary seeds otherwise produce no Voronoi cell.
+  const xs = seeds.map(s => s.x).concat(clipPolygon.map(v => v.x))
+  const ys = seeds.map(s => s.y).concat(clipPolygon.map(v => v.y))
+  const minX = Math.min(...xs), maxX = Math.max(...xs)
+  const minY = Math.min(...ys), maxY = Math.max(...ys)
+  const pad = Math.max(maxX - minX, maxY - minY) * 3 + 1
+  const n = seeds.length
+  const allSeeds = [
+    ...seeds,
+    { x: (minX + maxX) / 2, y: minY - pad },
+    { x: maxX + pad,        y: maxY + pad },
+    { x: minX - pad,        y: maxY + pad },
+  ]
+
+  const points = allSeeds.map(s => new Point(s.x, s.y))
   const triangulator = DelaunayTriangulator.createFromPoints(points)
 
   const vertexTris = new Map()
@@ -120,7 +137,7 @@ export function computeVoronoiCells(seeds, clipPolygon, metric = 'euclidean') {
   }
 
   const cells = []
-  for (let i = 0; i < points.length; i++) {
+  for (let i = 0; i < n; i++) {  // n = original seed count, excludes super-seeds
     const seed = seeds[i], point = points[i]
     const corners = []
     for (const tri of (vertexTris.get(point._id) || [])) {

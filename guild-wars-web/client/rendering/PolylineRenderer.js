@@ -1,0 +1,298 @@
+import * as THREE from 'three'
+
+// Renders a set of thick polyline edges with miter-jointed strips and filled junction caps.
+//
+// Usage:
+//   const renderer = new PolylineRenderer(scene, { thickness: 0.5, stripY: 0.06 })
+//   renderer.render(edges, pointsById, (edge, edgeId) => hexColor)
+//   renderer.setEdgeColor(edgeId, 0xffffff)   // e.g. selection highlight
+//   renderer.resetEdgeColor(edgeId)            // back to base
+//   renderer.updateBaseColor(edgeId, color)    // persist new assigned color
+//   renderer.dispose()
+//
+// edges format: { [edgeId]: { pointIds: [id, ...], ... } }
+// pointsById: Map<id, {x, y}>
+
+export default class PolylineRenderer {
+  constructor(scene, options = {}) {
+    this.scene = scene
+    this.thickness = options.thickness ?? 0.5
+    this.stripY    = options.stripY    ?? 0.06
+    this.fillY     = options.fillY     ?? (options.stripY ?? 0.06) + 0.005
+
+    this._edgeMeshes     = new Map()  // edgeId → mesh
+    this._junctionMeshes = new Map()  // ptId → mesh
+    this._junctionEdgeIds = new Map() // ptId → Set<edgeId>
+    this._edgeEndpoints  = new Map()  // edgeId → [ptId, ptId]
+    this._edgeBaseColors = new Map()  // edgeId → hex
+  }
+
+  // ─── Public API ────────────────────────────────────────────────────────────
+
+  render(edges, pointsById, getColor) {
+    this.dispose()
+    const r = this.thickness / 2
+
+    const junctionFills = new Map()  // ptId → { boundaryPts, edgeIds }
+    const overrides = this._computeJunctionData(edges, pointsById, r, junctionFills)
+
+    for (const [edgeId, edge] of Object.entries(edges)) {
+      const color = getColor(edge, edgeId)
+      const mesh = this._buildEdgeMesh(edge, edgeId, overrides, pointsById, r, color)
+      if (!mesh) continue
+      this.scene.add(mesh)
+      this._edgeMeshes.set(edgeId, mesh)
+      this._edgeBaseColors.set(edgeId, color)
+      const pts = edge.pointIds
+      if (pts?.length >= 2) this._edgeEndpoints.set(edgeId, [pts[0], pts[pts.length - 1]])
+    }
+
+    // Adjacency for all endpoints (needed for junction color refresh)
+    for (const [edgeId, edge] of Object.entries(edges)) {
+      const pts = edge.pointIds
+      if (!pts || pts.length < 2) continue
+      for (const ptId of [pts[0], pts[pts.length - 1]]) {
+        if (!this._junctionEdgeIds.has(ptId)) this._junctionEdgeIds.set(ptId, new Set())
+        this._junctionEdgeIds.get(ptId).add(edgeId)
+      }
+    }
+
+    // Junction fill meshes (3+ way)
+    for (const [ptId, { boundaryPts, edgeIds }] of junctionFills) {
+      if (boundaryPts.length < 3) continue
+      const verts = new Float32Array(boundaryPts.length * 3)
+      for (let i = 0; i < boundaryPts.length; i++) {
+        verts[i*3] = boundaryPts[i].x; verts[i*3+1] = this.fillY; verts[i*3+2] = boundaryPts[i].y
+      }
+      const tris = []
+      for (let i = 1; i < boundaryPts.length - 1; i++) tris.push(0, i + 1, i)
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1))
+      geo.computeVertexNormals()
+      const color = this._junctionColor(edgeIds)
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5 })
+      const mesh = new THREE.Mesh(geo, mat)
+      this.scene.add(mesh)
+      this._junctionMeshes.set(ptId, mesh)
+    }
+  }
+
+  getEdgeMesh(edgeId) { return this._edgeMeshes.get(edgeId) }
+  get edgeMeshes()     { return this._edgeMeshes }
+  get junctionMeshes() { return this._junctionMeshes }
+
+  setEdgeColor(edgeId, color) {
+    const mesh = this._edgeMeshes.get(edgeId)
+    if (mesh) { mesh.material.color.setHex(color); mesh.material.emissive?.setHex(color) }
+    this._refreshJunctionsForEdge(edgeId)
+  }
+
+  resetEdgeColor(edgeId) {
+    this.setEdgeColor(edgeId, this._edgeBaseColors.get(edgeId) ?? 0)
+  }
+
+  updateBaseColor(edgeId, color) {
+    this._edgeBaseColors.set(edgeId, color)
+    this.setEdgeColor(edgeId, color)
+  }
+
+  dispose() {
+    this._edgeMeshes.forEach(m => this.scene.remove(m))
+    this._junctionMeshes.forEach(m => this.scene.remove(m))
+    this._edgeMeshes.clear()
+    this._junctionMeshes.clear()
+    this._junctionEdgeIds.clear()
+    this._edgeEndpoints.clear()
+    this._edgeBaseColors.clear()
+  }
+
+  // ─── Private ───────────────────────────────────────────────────────────────
+
+  _refreshJunctionsForEdge(edgeId) {
+    const pts = this._edgeEndpoints.get(edgeId)
+    if (pts) for (const ptId of pts) this._refreshJunctionColor(ptId)
+  }
+
+  _refreshJunctionColor(ptId) {
+    const mesh = this._junctionMeshes.get(ptId)
+    if (!mesh) return
+    const color = this._junctionColor(this._junctionEdgeIds.get(ptId) ?? new Set())
+    mesh.material.color.setHex(color)
+    mesh.material.emissive?.setHex(color)
+  }
+
+  _junctionColor(edgeIds) {
+    const counts = new Map()
+    for (const edgeId of edgeIds) {
+      const mesh = this._edgeMeshes.get(edgeId)
+      if (!mesh) continue
+      const c = mesh.material.color.getHex()
+      if (c === 0xffffff) return 0xffffff  // any selected edge → white
+      counts.set(c, (counts.get(c) || 0) + 1)
+    }
+    if (!counts.size) return 0x888888
+    let best = null, bestCount = 0
+    for (const [c, n] of counts) if (n > bestCount) { best = c; bestCount = n }
+    return best ?? 0x888888
+  }
+
+  _computeJunctionData(edges, pointsById, r, fillsOut) {
+    const result = new Map()  // `${edgeId}_${ptId}` → { trueLeft:{x,y}, trueRight:{x,y} }
+
+    const endpointEdges = new Map()
+    for (const [edgeId, edge] of Object.entries(edges)) {
+      const pts = edge.pointIds
+      if (!pts || pts.length < 2) continue
+      for (const [idx, ptId] of [[0, pts[0]], [1, pts[pts.length - 1]]]) {
+        if (!endpointEdges.has(ptId)) endpointEdges.set(ptId, [])
+        endpointEdges.get(ptId).push({ edgeId, edge, atStart: idx === 0 })
+      }
+    }
+
+    for (const [ptId, edgeList] of endpointEdges) {
+      if (edgeList.length < 2) continue
+
+      const jPt = pointsById.get(ptId)
+      if (!jPt || !isFinite(jPt.x)) continue
+
+      const edgeData = []
+      for (const { edgeId, edge, atStart } of edgeList) {
+        const pts = edge.pointIds.map(id => pointsById.get(id)).filter(Boolean)
+        if (pts.length < 2) continue
+        let dx, dy
+        if (atStart) {
+          dx = pts[1].x - pts[0].x; dy = pts[1].y - pts[0].y
+        } else {
+          const n = pts.length - 1
+          dx = pts[n - 1].x - pts[n].x; dy = pts[n - 1].y - pts[n].y
+        }
+        const len = Math.sqrt(dx * dx + dy * dy)
+        if (len < 1e-10) continue
+        edgeData.push({ edgeId, ux: dx / len, uy: dy / len })
+      }
+      if (edgeData.length < 2) continue
+
+      edgeData.sort((a, b) => Math.atan2(a.uy, a.ux) - Math.atan2(b.uy, b.ux))
+      const n = edgeData.length
+
+      const boundaryPts = []
+      for (let i = 0; i < n; i++) {
+        const A = edgeData[i], B = edgeData[(i + 1) % n]
+        const q1x = jPt.x - A.uy * r, q1y = jPt.y + A.ux * r
+        const q2x = jPt.x + B.uy * r, q2y = jPt.y - B.ux * r
+        const denom = A.ux * B.uy - A.uy * B.ux
+        let px, py
+        if (Math.abs(denom) < 1e-8) {
+          px = (q1x + q2x) / 2; py = (q1y + q2y) / 2
+        } else {
+          const t = ((q2x - q1x) * B.uy - (q2y - q1y) * B.ux) / denom
+          px = q1x + t * A.ux; py = q1y + t * A.uy
+        }
+        boundaryPts.push({ x: px, y: py })
+      }
+
+      for (let i = 0; i < n; i++) {
+        result.set(`${edgeData[i].edgeId}_${ptId}`, {
+          trueLeft:  boundaryPts[i],
+          trueRight: boundaryPts[(i - 1 + n) % n]
+        })
+      }
+
+      if (n >= 3) fillsOut.set(ptId, { boundaryPts, edgeIds: new Set(edgeData.map(e => e.edgeId)) })
+    }
+
+    return result
+  }
+
+  _buildEdgeMesh(edge, edgeId, overrides, pointsById, r, color) {
+    const points = edge.pointIds
+      ? edge.pointIds.map(id => pointsById.get(id)).filter(Boolean)
+      : edge.vertices
+    if (!points || points.length < 2) return null
+
+    const Y = this.stripY
+    const ptIds = edge.pointIds || []
+    const startOvr = overrides.get(`${edgeId}_${ptIds[0]}`)
+    const endOvr   = overrides.get(`${edgeId}_${ptIds[ptIds.length - 1]}`)
+    const n = points.length
+
+    const lineIsect = (q1x, q1y, d1x, d1y, q2x, q2y, d2x, d2y) => {
+      const denom = d1x * d2y - d1y * d2x
+      if (Math.abs(denom) < 1e-8) return { x: (q1x + q2x) / 2, y: (q1y + q2y) / 2 }
+      const t = ((q2x - q1x) * d2y - (q2y - q1y) * d2x) / denom
+      return { x: q1x + t * d1x, y: q1y + t * d1y }
+    }
+
+    const corners = []
+    for (let i = 0; i < n; i++) {
+      const pt = points[i]
+      if (!pt || !isFinite(pt.x)) { corners.push(null); continue }
+
+      if (i === 0) {
+        if (startOvr) {
+          corners.push({ left: startOvr.trueLeft, right: startOvr.trueRight })
+        } else {
+          const p2 = points[1]
+          if (!p2 || !isFinite(p2.x)) { corners.push(null); continue }
+          const dx = p2.x - pt.x, dy = p2.y - pt.y, len = Math.sqrt(dx*dx + dy*dy)
+          if (len < 1e-10) { corners.push(null); continue }
+          const ux = dx/len, uy = dy/len
+          const sx = pt.x + ux*r, sy = pt.y + uy*r
+          corners.push({ left: {x: sx - uy*r, y: sy + ux*r}, right: {x: sx + uy*r, y: sy - ux*r} })
+        }
+      } else if (i === n - 1) {
+        if (endOvr) {
+          corners.push({ left: endOvr.trueRight, right: endOvr.trueLeft })
+        } else {
+          const p0 = points[n - 2]
+          if (!p0 || !isFinite(p0.x)) { corners.push(null); continue }
+          const dx = pt.x - p0.x, dy = pt.y - p0.y, len = Math.sqrt(dx*dx + dy*dy)
+          if (len < 1e-10) { corners.push(null); continue }
+          const ux = dx/len, uy = dy/len
+          const sx = pt.x - ux*r, sy = pt.y - uy*r
+          corners.push({ left: {x: sx - uy*r, y: sy + ux*r}, right: {x: sx + uy*r, y: sy - ux*r} })
+        }
+      } else {
+        const p0 = points[i - 1], p2 = points[i + 1]
+        if (!p0 || !p2 || !isFinite(p0.x) || !isFinite(p2.x)) { corners.push(null); continue }
+        const dx1 = pt.x - p0.x, dy1 = pt.y - p0.y, len1 = Math.sqrt(dx1*dx1 + dy1*dy1)
+        const dx2 = p2.x - pt.x, dy2 = p2.y - pt.y, len2 = Math.sqrt(dx2*dx2 + dy2*dy2)
+        if (len1 < 1e-10 || len2 < 1e-10) { corners.push(null); continue }
+        const ux1 = dx1/len1, uy1 = dy1/len1
+        const ux2 = dx2/len2, uy2 = dy2/len2
+        corners.push({
+          left:  lineIsect(pt.x - uy1*r, pt.y + ux1*r, ux1, uy1, pt.x - uy2*r, pt.y + ux2*r, ux2, uy2),
+          right: lineIsect(pt.x + uy1*r, pt.y - ux1*r, ux1, uy1, pt.x + uy2*r, pt.y - ux2*r, ux2, uy2)
+        })
+      }
+    }
+
+    const allVerts = [], allIdx = []
+    for (let i = 0; i < n - 1; i++) {
+      const c1 = corners[i], c2 = corners[i + 1]
+      if (!c1 || !c2) continue
+      const base = allVerts.length / 3
+      allVerts.push(c1.right.x, Y, c1.right.y, c1.left.x, Y, c1.left.y,
+                    c2.left.x,  Y, c2.left.y,  c2.right.x, Y, c2.right.y)
+      allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    }
+    if (allVerts.length === 0) return null
+
+    let geometry
+    try {
+      geometry = new THREE.BufferGeometry()
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allVerts), 3))
+      geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(allIdx), 1))
+      geometry.computeVertexNormals()
+    } catch (e) {
+      console.error(`PolylineRenderer: geometry error for edge ${edgeId}:`, e)
+      return null
+    }
+
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5 })
+    const mesh = new THREE.Mesh(geometry, mat)
+    mesh.userData = { edgeId }
+    return mesh
+  }
+}

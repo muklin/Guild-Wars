@@ -74,4 +74,7 @@ Add Status, Considered Options, or Consequences only when they provide meaningfu
 
 ## Execution
 
+Switch to Plan Mode.
 Begin by asking the user what design plan or decision they want to stress-test. Then proceed one question at a time.
+Write the plan to a Plan file, and confirm with the user if they want to proceed with the plan as written.
+

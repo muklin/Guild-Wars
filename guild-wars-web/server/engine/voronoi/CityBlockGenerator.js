@@ -1,35 +1,35 @@
-import { computeVoronoiCells, generateGridSeeds } from './VoronoiUtils.js'
+import { computeVoronoiCells } from './VoronoiUtils.js'
 
-const DISTRICT_BUILDING_PARAMS = {
-  Market:               { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.50, setback: 0.06, lotWidth: 0.25, lotDepth: 0.35, alleyWidth: 0.15, metric: 'manhattan' },
-  Military:             { minBlockSize: 0.5, maxAspectRatio: 5.0, minLotSize: 1.5, lotSpacing: 0.80, setback: 0.08, lotWidth: 0.40, lotDepth: 0.55, alleyWidth: 0.20, metric: 'manhattan' },
-  Residential:          { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 0.8, lotSpacing: 0.50, setback: 0.04, lotWidth: 0.20, lotDepth: 0.30, alleyWidth: 0.12, metric: 'manhattan' },
-  'Residential-Middle': { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 0.8, lotSpacing: 0.50, setback: 0.04, lotWidth: 0.20, lotDepth: 0.30, alleyWidth: 0.12, metric: 'manhattan' },
-  'Residential-Noble':  { minBlockSize: 0.5, maxAspectRatio: 3.5, minLotSize: 1.5, lotSpacing: 0.80, setback: 0.08, lotWidth: 0.30, lotDepth: 0.45, alleyWidth: 0.18, metric: 'manhattan' },
-  'Residential-Slums':  { minBlockSize: 0.2, maxAspectRatio: 5.0, minLotSize: 0.5, lotSpacing: 0.35, setback: 0.02, lotWidth: 0.15, lotDepth: 0.22, alleyWidth: 0.10, metric: 'manhattan' },
-  Leadership:           { minBlockSize: 0.8, maxAspectRatio: 3.0, minLotSize: 2.5, lotSpacing: 1.00, setback: 0.10, lotWidth: 0.35, lotDepth: 0.55, alleyWidth: 0.25, metric: 'manhattan' },
-  Entertainment:        { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.60, setback: 0.07, lotWidth: 0.28, lotDepth: 0.38, alleyWidth: 0.16, metric: 'manhattan' },
-  Religious:            { minBlockSize: 0.5, maxAspectRatio: 3.0, minLotSize: 2.0, lotSpacing: 0.70, setback: 0.10, lotWidth: 0.30, lotDepth: 0.50, alleyWidth: 0.20, metric: 'manhattan' },
-  Magical:              { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.55, setback: 0.08, lotWidth: 0.25, lotDepth: 0.40, alleyWidth: 0.15, metric: 'manhattan' },
-  Industry:             { minBlockSize: 0.5, maxAspectRatio: 6.0, minLotSize: 2.0, lotSpacing: 0.90, setback: 0.05, lotWidth: 0.45, lotDepth: 0.60, alleyWidth: 0.20, metric: 'manhattan' },
-  default:              { minBlockSize: 0.3, maxAspectRatio: 4.0, minLotSize: 1.0, lotSpacing: 0.55, setback: 0.05, lotWidth: 0.22, lotDepth: 0.32, alleyWidth: 0.14, metric: 'manhattan' },
+const DISTRICT_PARAMS = {
+  Market:               { minBlockSize: 0.3, lotWidth: 0.25 },
+  Military:             { minBlockSize: 0.5, lotWidth: 0.40 },
+  Residential:          { minBlockSize: 0.3, lotWidth: 0.20 },
+  'Residential-Middle': { minBlockSize: 0.3, lotWidth: 0.20 },
+  'Residential-Noble':  { minBlockSize: 0.5, lotWidth: 0.30 },
+  'Residential-Slums':  { minBlockSize: 0.2, lotWidth: 0.15 },
+  Leadership:           { minBlockSize: 0.8, lotWidth: 0.35 },
+  Entertainment:        { minBlockSize: 0.3, lotWidth: 0.28 },
+  Religious:            { minBlockSize: 0.5, lotWidth: 0.30 },
+  Magical:              { minBlockSize: 0.3, lotWidth: 0.25 },
+  Industry:             { minBlockSize: 0.5, lotWidth: 0.45 },
+  default:              { minBlockSize: 0.3, lotWidth: 0.22 },
 }
 
-export { DISTRICT_BUILDING_PARAMS }
+export { DISTRICT_PARAMS }
 
 function getParams(district) {
-  if (!district) return DISTRICT_BUILDING_PARAMS.default
+  if (!district) return DISTRICT_PARAMS.default
   const type = district.assignedType
-  const cls = district.residentialClass
+  const cls  = district.residentialClass
   let key = type
-  if (type === 'Residential' && cls === 'Noble') key = 'Residential-Noble'
-  else if (type === 'Residential' && cls === 'Slums') key = 'Residential-Slums'
-  else if (type === 'Residential' && cls === 'Middle') key = 'Residential-Middle'
-  return DISTRICT_BUILDING_PARAMS[key] ?? DISTRICT_BUILDING_PARAMS.default
+  if (type === 'Residential' && cls === 'Noble')   key = 'Residential-Noble'
+  else if (type === 'Residential' && cls === 'Slums')   key = 'Residential-Slums'
+  else if (type === 'Residential' && cls === 'Middle')  key = 'Residential-Middle'
+  return DISTRICT_PARAMS[key] ?? DISTRICT_PARAMS.default
 }
 
 function normalizeAngle(a) {
-  while (a > Math.PI) a -= 2 * Math.PI
+  while (a >  Math.PI) a -= 2 * Math.PI
   while (a <= -Math.PI) a += 2 * Math.PI
   return a
 }
@@ -37,152 +37,83 @@ function normalizeAngle(a) {
 export default class CityBlockGenerator {
   generate(districts, streetGraph) {
     const districtMap = new Map(districts.map(d => [d.id, d]))
-    const { nodes, edges } = streetGraph
-    const nodeById = new Map(nodes.map(n => [n.id, n]))
-
-    // Edge lookup by directed node pair for districtId tagging during face tracing
-    const edgeDistrictByKey = new Map()
-    for (const edge of edges) {
-      edgeDistrictByKey.set(`${edge.nodeA}-${edge.nodeB}`, edge.districtId)
-      edgeDistrictByKey.set(`${edge.nodeB}-${edge.nodeA}`, edge.districtId)
-    }
-
-    // ── Phase 1: Build angle-sorted adjacency for planar face tracing ──────────
-    const adj = new Map()
-    for (const node of nodes) adj.set(node.id, [])
-
-    for (const edge of edges) {
-      const nA = nodeById.get(edge.nodeA), nB = nodeById.get(edge.nodeB)
-      if (!nA || !nB || edge.nodeA === edge.nodeB) continue
-      const angle = Math.atan2(nB.y - nA.y, nB.x - nA.x)
-      adj.get(edge.nodeA).push({ neighborId: edge.nodeB, angle: normalizeAngle(angle) })
-      adj.get(edge.nodeB).push({ neighborId: edge.nodeA, angle: normalizeAngle(angle + Math.PI) })
-    }
-
-    for (const [nodeId, list] of adj) {
-      const seen = new Set()
-      const deduped = []
-      for (const nb of list) {
-        if (!seen.has(nb.neighborId)) { seen.add(nb.neighborId); deduped.push(nb) }
-      }
-      deduped.sort((a, b) => a.angle - b.angle)
-      adj.set(nodeId, deduped)
-    }
-
-    // For directed half-edge u→v, return w where v→w continues the same face.
-    function next(u, v) {
-      const list = adj.get(v)
-      if (!list?.length) return null
-      const idx = list.findIndex(nb => nb.neighborId === u)
-      if (idx === -1) return null
-      return list[(idx - 1 + list.length) % list.length].neighborId
-    }
-
-    // ── Phase 2: Trace faces → blocks, classify, generate lots ───────────────
-    const visited = new Set()
+    const cells = streetGraph?.cells || []
     const blocks = []
-    const buildings = []
-    let blockId = 0, buildingId = 0
-    let squareCount = 0, singleCount = 0, subdivCount = 0
+    const plots  = []
+    let blockId = 0, plotId = 0
 
-    for (const node of nodes) {
-      for (const nb of (adj.get(node.id) || [])) {
-        const startKey = `${node.id}→${nb.neighborId}`
-        if (visited.has(startKey)) continue
+    for (const cell of cells) {
+      const vertices = cell.polygon
+      if (!vertices || vertices.length < 3) continue
 
-        const faceNodes = []
-        const faceEdgeKeys = []
-        let u = node.id, v = nb.neighborId
-        let iters = 0
+      // Use absolute area — cells may be wound either way after clipping.
+      let area = 0
+      for (let i = 0; i < vertices.length; i++) {
+        const a = vertices[i], b = vertices[(i + 1) % vertices.length]
+        area += a.x * b.y - b.x * a.y
+      }
+      area = Math.abs(area) / 2
+      if (area < 1e-6) continue
 
-        while (true) {
-          const key = `${u}→${v}`
-          if (visited.has(key) || ++iters > nodes.length + 5) break
-          visited.add(key)
-          faceNodes.push(nodeById.get(u))
-          faceEdgeKeys.push(`${u}-${v}`)
-          const w = next(u, v)
-          if (w === null) break
-          u = v; v = w
+      const district  = districtMap.get(cell.districtId)
+      const params    = getParams(district)
+      const districtId = cell.districtId
+
+      // ── City block: too small to subdivide ──────────────────────────────────
+      if (area < params.minBlockSize) {
+        blocks.push({ id: blockId++, districtId, vertices, area, blockType: 'square' })
+        continue
+      }
+
+      // ── Seed along cell edges ────────────────────────────────────────────────
+      // Every cell vertex is a Voronoi vertex where three or more cells meet,
+      // so the dead zone (lotWidth/2 pull-back) applies at every endpoint.
+      const halfWidth = params.lotWidth / 2
+      const seeds = []
+      const n = vertices.length
+      for (let i = 0; i < n; i++) {
+        const uv = vertices[i], vv = vertices[(i + 1) % n]
+        const dx = vv.x - uv.x, dy = vv.y - uv.y
+        const edgeLen = Math.sqrt(dx * dx + dy * dy)
+        if (edgeLen < 1e-10) continue
+        const startDist = halfWidth
+        const endDist   = edgeLen - halfWidth
+        if (startDist >= endDist) continue
+        const ux = dx / edgeLen, uy = dy / edgeLen
+        for (let t = startDist; t <= endDist; t += params.lotWidth) {
+          seeds.push({ x: uv.x + ux * t, y: uv.y + uy * t })
         }
+      }
 
-        if (faceNodes.length < 3) continue
+      // Add centroid as interior seed to break collinearity of edge seeds.
+      // Centroid of a convex polygon is always inside, giving every edge seed
+      // at least one non-collinear Delaunay triangle → valid circumcenters.
+      if (seeds.length > 0) {
+        const cx = vertices.reduce((s, v) => s + v.x, 0) / vertices.length
+        const cy = vertices.reduce((s, v) => s + v.y, 0) / vertices.length
+        seeds.push({ x: cx, y: cy })
+      }
 
-        // Shoelace signed area — interior faces are positive in y-down screen coords
-        let area = 0
-        for (let i = 0; i < faceNodes.length; i++) {
-          const a = faceNodes[i], b = faceNodes[(i + 1) % faceNodes.length]
-          area += a.x * b.y - b.x * a.y
-        }
-        area /= 2
-        if (area <= 0.001) continue
+      const bId = blockId++
 
-        // Cull triangles where any vertex is a dead-end (degree 2 = no offshoot streets)
-        if (faceNodes.length === 3 && faceNodes.some(n => (adj.get(n.id)?.length ?? 0) <= 2)) continue
+      // ── Single plot: above threshold but no seeds fit ────────────────────────
+      if (seeds.length === 0) {
+        blocks.push({ id: bId, districtId, vertices, area, blockType: 'single' })
+        plots.push({ id: plotId++, blockId: bId, districtId, vertices })
+        continue
+      }
 
-        // Tag block with the majority districtId from its bounding half-edges
-        const districtVotes = new Map()
-        for (const key of faceEdgeKeys) {
-          const dId = edgeDistrictByKey.get(key)
-          if (dId != null) districtVotes.set(dId, (districtVotes.get(dId) || 0) + 1)
-        }
-        let districtId = null, maxVotes = 0
-        for (const [dId, votes] of districtVotes) {
-          if (votes > maxVotes) { maxVotes = votes; districtId = dId }
-        }
-
-        const vertices = faceNodes.map(n => ({ x: n.x, y: n.y }))
-
-        // ── Block classification ───────────────────────────────────────────────
-        const district = districtId != null ? districtMap.get(districtId) : null
-        const params = getParams(district)
-
-        // AABB aspect ratio: max extent / min extent
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-        for (const v of vertices) {
-          if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x
-          if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y
-        }
-        const w = maxX - minX, h = maxY - minY
-        const aspectRatio = Math.max(w, h) / Math.max(Math.min(w, h), 1e-6)
-
-        let blockType
-        if (area < params.minBlockSize) {
-          blockType = 'square'
-        } else if (area < params.minLotSize || aspectRatio > params.maxAspectRatio) {
-          blockType = 'single'
-        } else {
-          blockType = 'subdivided'
-        }
-
-        const block = { id: blockId++, districtId, vertices, area, blockType, insetDepth: params.lotDepth, alleyWidth: params.alleyWidth, lotWidth: params.lotWidth }
-        blocks.push(block)
-
-        if (blockType === 'square') {
-          squareCount++
-          continue
-        }
-
-        if (blockType === 'single') {
-          singleCount++
-          buildings.push({ id: buildingId++, blockId: block.id, districtId, vertices })
-          continue
-        }
-
-        // ── Phase 3: Voronoi lots seeded on a jittered interior grid ─────────
-        subdivCount++
-        const density = 1 / (params.lotSpacing * params.lotSpacing)
-        const xyRatio = params.lotWidth / params.lotDepth
-        const seeds = generateGridSeeds(vertices, density, xyRatio, 0.35, blockId)
-        if (seeds.length < 3) continue
-
-        for (const cell of computeVoronoiCells(seeds, vertices, params.metric ?? 'euclidean')) {
-          buildings.push({ id: buildingId++, blockId: block.id, districtId, vertices: cell.polygon })
-        }
+      // ── Subdivided: plot Voronoi clipped to cell ─────────────────────────────
+      blocks.push({ id: bId, districtId, vertices, area, blockType: 'subdivided' })
+      for (const plotCell of computeVoronoiCells(seeds, vertices)) {
+        plots.push({ id: plotId++, blockId: bId, districtId, vertices: plotCell.polygon })
       }
     }
 
-    console.log(`CityBlockGenerator: ${blocks.length} blocks (${squareCount} squares, ${singleCount} single, ${subdivCount} subdivided), ${buildings.length} lots`)
-    return { blocks, buildings }
+    const sq = blocks.filter(b => b.blockType === 'square').length
+    const si = blocks.filter(b => b.blockType === 'single').length
+    const sd = blocks.filter(b => b.blockType === 'subdivided').length
+    console.log(`CityBlockGenerator: ${blocks.length} blocks (${sq} city, ${si} single, ${sd} subdivided), ${plots.length} plots`)
+    return { blocks, plots }
   }
 }

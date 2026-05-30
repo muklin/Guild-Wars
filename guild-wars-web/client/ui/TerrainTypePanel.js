@@ -121,7 +121,7 @@ export default class TerrainTypePanel {
     }
   }
 
-  _buildEdgeContent(container, { edgeCount, pendingType, adjacentTypes = [], riverParallel = false }) {
+  _buildEdgeContent(container, { edgeCount, pendingType, adjacentTypes = [], riverDisabledReason = null }) {
     const label = document.createElement('div')
     label.textContent = `${edgeCount} Edge${edgeCount > 1 ? 's' : ''} Selected`
     label.style.cssText = 'margin-bottom:8px;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px'
@@ -139,8 +139,8 @@ export default class TerrainTypePanel {
       const isActive = type === pendingType
 
       let disabledReason = null
-      if (type === 'Cliff' && edgeCount > 2)  disabledReason = 'Cliffs can only span 1–2 edges'
-      else if (type === 'River' && riverParallel) disabledReason = 'Cannot run alongside an existing river'
+      if (type === 'Cliff' && edgeCount > 2)     disabledReason = 'Cliffs can only span 1–2 edges'
+      else if (type === 'River' && riverDisabledReason) disabledReason = riverDisabledReason
       const disabled = disabledReason !== null
 
       const btn = document.createElement('button')
