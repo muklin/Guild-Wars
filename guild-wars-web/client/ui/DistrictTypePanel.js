@@ -197,15 +197,18 @@ export default class DistrictTypePanel {
     consDatalist.id = 'terrain-resource-cons-list'
     container.appendChild(consDatalist)
 
-    const rebuildConsDatalist = (producedValue) => {
-      const produced = (producedValue || '').trim().toLowerCase()
+    const rebuildConsDatalist = () => {
+      const produced = (document.getElementById('terrain-district-produced-resource')?.value || '').trim().toLowerCase()
+      const selected = [0, 1, 2].map(i => document.getElementById(`terrain-district-consumed-${i}`)?.value?.trim().toLowerCase()).filter(Boolean)
       consDatalist.innerHTML = ''
       for (const r of allDropdownResources) {
-        if (r.toLowerCase() === produced && produced !== 'labour') continue
+        const lower = r.toLowerCase()
+        if (lower === produced && produced !== 'labour') continue
+        if (selected.includes(lower)) continue
         const opt = document.createElement('option'); opt.value = r; consDatalist.appendChild(opt)
       }
     }
-    rebuildConsDatalist('')
+    rebuildConsDatalist()
 
     container.appendChild(this._fieldLabel('Consumed Resources'))
     for (let i = 0; i < 3; i++) {
@@ -215,7 +218,7 @@ export default class DistrictTypePanel {
       inp.placeholder = `Resource ${i + 1}...`
       inp.setAttribute('list', 'terrain-resource-cons-list')
       inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:3px'
-      inp.addEventListener('change', () => inp.blur())
+      inp.addEventListener('change', () => { inp.blur(); rebuildConsDatalist() })
       container.appendChild(inp)
     }
     
@@ -380,11 +383,20 @@ export default class DistrictTypePanel {
 
     const consDatalist = document.createElement('datalist')
     consDatalist.id = 'resource-cons-list'
-    for (const r of allDropdownResources) {
-      const opt = document.createElement('option'); opt.value = r; consDatalist.appendChild(opt)
-    }
     container.appendChild(consDatalist)
 
+    const rebuildConsDatalist = () => {
+      const produced = isResidential ? '' : (document.getElementById('district-produced-resource')?.value?.trim().toLowerCase() || '')
+      const selected = [0, 1, 2].map(i => document.getElementById(`district-consumed-${i}`)?.value?.trim().toLowerCase()).filter(Boolean)
+      consDatalist.innerHTML = ''
+      for (const r of allDropdownResources) {
+        const lower = r.toLowerCase()
+        if (lower === produced && produced !== 'labour') continue
+        if (selected.includes(lower)) continue
+        const opt = document.createElement('option'); opt.value = r; consDatalist.appendChild(opt)
+      }
+    }
+    rebuildConsDatalist()
 
     container.appendChild(this._fieldLabel('Consumed Resources'))
     for (let i = 0; i < 3; i++) {
@@ -394,7 +406,7 @@ export default class DistrictTypePanel {
       inp.placeholder = `Resource ${i + 1}...`
       inp.setAttribute('list', 'resource-cons-list')
       inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:3px'
-      inp.addEventListener('change', () => inp.blur())
+      inp.addEventListener('change', () => { inp.blur(); rebuildConsDatalist() })
       container.appendChild(inp)
     }
     
@@ -414,6 +426,7 @@ export default class DistrictTypePanel {
       dupWarn.textContent = 'Already produced by another district'
       prodInput.addEventListener('input', () => {
         dupWarn.style.display = (prodInput.value.trim().toLowerCase() && usedProducedResources.includes(prodInput.value.trim().toLowerCase())) ? 'block' : 'none'
+        rebuildConsDatalist()
       })
       prodInput.addEventListener('change', () => prodInput.blur())
       prodWrap.appendChild(prodInput)
