@@ -169,8 +169,12 @@ _Avoid_: port, harbor
 
 ### Blocks & Plots
 
+**Gutter**:
+The edge of the road on each side of a street centerline.  These are offset from the street centers, and at junctions are mitred to find the junction point with the adjacent road's gutter
+_Avoid_: curb, kerb, road edge
+
 **Block**:
-A contiguous polygon of land bounded by streets, derived by tracing planar faces of the street graph. The raw unit of land between roads.
+A contiguous polygon of land bounded by gutters, derived by tracing planar faces of the gutter graph. The raw unit of land between roads.
 _Avoid_: parcel, lot, face
 
 **City square**:
