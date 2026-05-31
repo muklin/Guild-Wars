@@ -1,6 +1,6 @@
 import DelaunayTriangulator from './DelaunayTriangulator.js'
 import Point from './Point.js'
-import { clipToPolygon, triangleCenter, generateGridSeeds } from './VoronoiUtils.js'
+import { triangleCenter, generateGridSeeds } from './VoronoiUtils.js'
 
 const SNAP_THRESHOLD = 0.25   // world units — near-duplicate node merge
 const BOUNDARY_INTERVAL = 1.0 // segment length along city boundary edges
@@ -55,6 +55,22 @@ function getStreetParams(district) {
   return DISTRICT_STREET_PARAMS[key] ?? FALLBACK_STREET_PARAMS
 }
 
+function halfPlaneClip(polygon, mx, my, nx, ny) {
+  const out = []
+  const len = polygon.length
+  for (let i = 0; i < len; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % len]
+    const da = (a.x - mx) * nx + (a.y - my) * ny
+    const db = (b.x - mx) * nx + (b.y - my) * ny
+    if (da <= 0) out.push(a)
+    if ((da > 0) !== (db > 0)) {
+      const t = da / (da - db)
+      if (t > 0 && t < 1) out.push({ x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) })
+    }
+  }
+  return out
+}
+
 export default class StreetVoronoiGenerator {
 
   generate(districts, cityEdges, edgePoints, epochSeed = 0) {
@@ -79,16 +95,20 @@ export default class StreetVoronoiGenerator {
       }
 
       const points = seeds.map(s => new Point(s.x, s.y))
-      const triangulator = DelaunayTriangulator.createFromPoints(points)
-
-      // Build vertex → triangle adjacency for Voronoi cell computation
-      const vertexTris = new Map()
-      for (const tri of triangulator.triangulation) {
-        for (const v of tri.vertices) {
-          if (!vertexTris.has(v._id)) vertexTris.set(v._id, [])
-          vertexTris.get(v._id).push(tri)
-        }
-      }
+      // Super-seeds outside the district bbox so every perimeter seed gets
+      // ≥3 Delaunay triangle neighbors — mirrors computeVoronoiCells in VoronoiUtils.js.
+      const bxs = seeds.map(s => s.x).concat(district.polygon.map(v => v.x))
+      const bys = seeds.map(s => s.y).concat(district.polygon.map(v => v.y))
+      const bMinX = Math.min(...bxs), bMaxX = Math.max(...bxs)
+      const bMinY = Math.min(...bys), bMaxY = Math.max(...bys)
+      const pad = Math.max(bMaxX - bMinX, bMaxY - bMinY) * 3 + 1
+      const allPoints = [
+        ...points,
+        new Point((bMinX + bMaxX) / 2, bMinY - pad),
+        new Point(bMaxX + pad,         bMaxY + pad),
+        new Point(bMinX - pad,         bMaxY + pad),
+      ]
+      const triangulator = DelaunayTriangulator.createFromPoints(allPoints)
 
       const edgeTriMap = new Map()
       for (const tri of triangulator.triangulation) {
@@ -133,27 +153,22 @@ export default class StreetVoronoiGenerator {
         })
       }
 
-      // Compute Voronoi cell for every seed, clipping to district polygon.
-      // District polygons are Voronoi cells (convex), so Sutherland-Hodgman clipping is exact.
+      // Compute Voronoi cells via perpendicular-bisector halfplane clipping.
+      // Start with the district polygon and clip against the bisector to every
+      // other seed — guarantees complete coverage (union of cells = district polygon).
       const cells = []
       for (let i = 0; i < seeds.length; i++) {
-        const seed = seeds[i]
-        const point = points[i]
-        const tris = vertexTris.get(point._id) || []
-
-        const corners = []
-        for (const tri of tris) {
-          const c = triangleCenter(tri, metric)
-          if (c) corners.push(c)
+        let cellPoly = district.polygon
+        for (let j = 0; j < seeds.length; j++) {
+          if (j === i) continue
+          const mx = (seeds[i].x + seeds[j].x) / 2
+          const my = (seeds[i].y + seeds[j].y) / 2
+          const nx = seeds[j].x - seeds[i].x
+          const ny = seeds[j].y - seeds[i].y
+          cellPoly = halfPlaneClip(cellPoly, mx, my, nx, ny)
+          if (cellPoly.length < 3) break
         }
-        if (corners.length < 3) continue
-
-        corners.sort((a, b) =>
-          Math.atan2(a.y - seed.y, a.x - seed.x) - Math.atan2(b.y - seed.y, b.x - seed.x)
-        )
-
-        const clipped = clipToPolygon(corners, district.polygon)
-        if (clipped && clipped.length >= 3) cells.push({ districtId: district.id, polygon: clipped })
+        if (cellPoly.length >= 3) cells.push({ districtId: district.id, polygon: cellPoly })
       }
 
       districtResults.push({

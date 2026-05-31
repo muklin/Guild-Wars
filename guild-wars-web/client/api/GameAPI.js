@@ -43,10 +43,6 @@ export default class GameAPI {
     return this.request('/setup/trade', 'POST', { regionId, description })
   }
 
-  static async assignDistrictClass(districtId, districtClass) {
-    return this.request('/setup/subdivision/assign', 'POST', { districtId, districtClass })
-  }
-
   static async assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null) {
     return this.request('/setup/city/assign', 'POST', { districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass })
   }
@@ -71,31 +67,4 @@ export default class GameAPI {
     return this.request('/setup/streets/rebuild', 'POST')
   }
 
-  static async placeDistrict(formData) {
-    return this.request('/setup/district', 'POST', formData)
-  }
-
-  static async passDistrictTurn() {
-    return this.request('/setup/district/pass', 'POST')
-  }
-
-  static async placeHQ(districtId) {
-    return this.request('/setup/hq', 'POST', { districtId })
-  }
-
-  static async createGuild(guildData) {
-    return this.request('/setup/guild', 'POST', guildData)
-  }
-
-  static async submitAction(actionData) {
-    return this.request('/action', 'POST', actionData)
-  }
-
-  static async finishPlanning() {
-    return this.request('/planning/done', 'POST')
-  }
-
-  static async getPhaseInfo() {
-    return this.request('/phase')
-  }
 }

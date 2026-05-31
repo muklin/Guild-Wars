@@ -191,6 +191,8 @@ export default class App {
           if (response.cityDistrictData) this.renderer.setCityDistrictData(response.cityDistrictData)
           this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
           this.renderer.renderPlots(response.cityDistrictData?.blocks, response.cityDistrictData?.plots, response.cityDistrictData)
+          this.renderer.drawBlockAndPlotCenters(response.cityDistrictData?.blocks, response.cityDistrictData?.plots)
+          this.renderer.clearDistrictMeshes()
         } else {
           this.uiManager.showError(response.error)
         }
@@ -250,6 +252,8 @@ export default class App {
         const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
         if (region) { region.assignedType = terrainType; region.description = description }
         this.renderer.updateRegionColor(regionId, terrainType)
+        this.renderer.deselectRegion(regionId)
+        this.renderer.clearHover()
 
         for (const edgeId of response.clearedEdgeIds || []) {
           const edge = this.renderer.terrainData?.edges?.[edgeId]
@@ -289,6 +293,10 @@ export default class App {
       if (response.ok) {
         this.gameState = response
         this.currentPhase = 'CitySubdivision'
+        if (this.selectedRegionId !== null) this.renderer.deselectRegion(this.selectedRegionId)
+        this.selectedRegionId = null
+        this.pendingTerrainType = null
+        this._clearEdgeSelection()
         this.selectedDistrictId = null
         this.pendingDistrictType = null
         this.pendingResidentialClass = null
@@ -299,6 +307,7 @@ export default class App {
         const cityData = response.cityDistrictData || { districts: [], edges: {}, edgePoints: [] }
         this.renderer.setCityDistrictData(cityData)
         this.renderer.setMode('city')
+        this.renderer.drawDistrictCenters(cityData.districts)
         this.uiManager.showSetupPhase('CitySubdivision')
       } else {
         this.uiManager.showError(response.error)
@@ -319,6 +328,8 @@ export default class App {
         }
         this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
         this.renderer.renderPlots(response.cityDistrictData?.blocks, response.cityDistrictData?.plots, response.cityDistrictData)
+        this.renderer.drawBlockAndPlotCenters(response.cityDistrictData?.blocks, response.cityDistrictData?.plots)
+        this.renderer.clearDistrictMeshes()
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
@@ -875,9 +886,14 @@ export default class App {
           if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
             this.renderer.renderStreetGraph(cityData.streetGraph)
             this.renderer.renderPlots(cityData.blocks, cityData.plots, cityData)
+            this.renderer.drawBlockAndPlotCenters(cityData.blocks, cityData.plots)
+            this.renderer.clearDistrictMeshes()
+          } else {
+            this.renderer.drawDistrictCenters(cityData.districts)
           }
         } else {
           this.renderer.clearStreetLayer()
+          this.renderer.clearBlockLayer()
           this.renderer.setCityDistrictData([])
           this.renderer.setMode('terrain')
         }
@@ -954,6 +970,8 @@ export default class App {
         this.uiManager.updateFactions([])
         this.uiManager.updateThreats([])
         this.renderer.clearStreetLayer()
+        this.renderer.clearBlockLayer()
+        this.renderer.clearAllDebugObjects()
         this.renderer.setCityDistrictData([])
         this.renderer.setMode('terrain')
         this.renderer.setTerrainData(response.regions, response.edges || {}, response.fineCells || [], response.edgePoints || [])

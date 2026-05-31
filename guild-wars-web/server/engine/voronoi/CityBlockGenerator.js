@@ -28,12 +28,6 @@ function getParams(district) {
   return DISTRICT_PARAMS[key] ?? DISTRICT_PARAMS.default
 }
 
-function normalizeAngle(a) {
-  while (a >  Math.PI) a -= 2 * Math.PI
-  while (a <= -Math.PI) a += 2 * Math.PI
-  return a
-}
-
 export default class CityBlockGenerator {
   generate(districts, streetGraph) {
     const districtMap = new Map(districts.map(d => [d.id, d]))
@@ -59,16 +53,23 @@ export default class CityBlockGenerator {
       const params    = getParams(district)
       const districtId = cell.districtId
 
-      // ── City block: too small to subdivide ──────────────────────────────────
+      // ── City block: too small to subdivide — one plot = whole block ────────
       if (area < params.minBlockSize) {
-        blocks.push({ id: blockId++, districtId, vertices, area, blockType: 'square' })
+        const bId = blockId++
+        blocks.push({ id: bId, districtId, vertices, area, blockType: 'square' })
+        plots.push({ id: plotId++, blockId: bId, districtId, vertices })
         continue
       }
 
-      // ── Seed along cell edges ────────────────────────────────────────────────
-      // Every cell vertex is a Voronoi vertex where three or more cells meet,
-      // so the dead zone (lotWidth/2 pull-back) applies at every endpoint.
+      // ── Seed along cell edges, inset slightly toward centroid ─────────────────
+      // Seeds placed exactly on the perimeter are collinear for elongated blocks,
+      // causing degenerate Delaunay triangles with circumcenters far outside the
+      // polygon. Pushing each seed inward by halfWidth/2 breaks collinearity
+      // while keeping the edge-aligned plot character.
       const halfWidth = params.lotWidth / 2
+      const insetAmount = halfWidth * 0.5
+      const bcx = vertices.reduce((s, v) => s + v.x, 0) / vertices.length
+      const bcy = vertices.reduce((s, v) => s + v.y, 0) / vertices.length
       const seeds = []
       const n = vertices.length
       for (let i = 0; i < n; i++) {
@@ -81,17 +82,16 @@ export default class CityBlockGenerator {
         if (startDist >= endDist) continue
         const ux = dx / edgeLen, uy = dy / edgeLen
         for (let t = startDist; t <= endDist; t += params.lotWidth) {
-          seeds.push({ x: uv.x + ux * t, y: uv.y + uy * t })
+          const sx = uv.x + ux * t, sy = uv.y + uy * t
+          const toCx = bcx - sx, toCy = bcy - sy
+          const d = Math.sqrt(toCx * toCx + toCy * toCy)
+          if (d > 1e-10) {
+            const push = Math.min(insetAmount, d * 0.5)
+            seeds.push({ x: sx + toCx / d * push, y: sy + toCy / d * push })
+          } else {
+            seeds.push({ x: sx, y: sy })
+          }
         }
-      }
-
-      // Add centroid as interior seed to break collinearity of edge seeds.
-      // Centroid of a convex polygon is always inside, giving every edge seed
-      // at least one non-collinear Delaunay triangle → valid circumcenters.
-      if (seeds.length > 0) {
-        const cx = vertices.reduce((s, v) => s + v.x, 0) / vertices.length
-        const cy = vertices.reduce((s, v) => s + v.y, 0) / vertices.length
-        seeds.push({ x: cx, y: cy })
       }
 
       const bId = blockId++
@@ -104,9 +104,16 @@ export default class CityBlockGenerator {
       }
 
       // ── Subdivided: plot Voronoi clipped to cell ─────────────────────────────
-      blocks.push({ id: bId, districtId, vertices, area, blockType: 'subdivided' })
-      for (const plotCell of computeVoronoiCells(seeds, vertices)) {
-        plots.push({ id: plotId++, blockId: bId, districtId, vertices: plotCell.polygon })
+      const plotCells = computeVoronoiCells(seeds, vertices)
+      if (plotCells.length === 0) {
+        // Voronoi degenerated (collinear seeds, non-convex polygon, etc.) — whole block = one plot
+        blocks.push({ id: bId, districtId, vertices, area, blockType: 'single' })
+        plots.push({ id: plotId++, blockId: bId, districtId, vertices })
+      } else {
+        blocks.push({ id: bId, districtId, vertices, area, blockType: 'subdivided' })
+        for (const plotCell of plotCells) {
+          plots.push({ id: plotId++, blockId: bId, districtId, vertices: plotCell.polygon })
+        }
       }
     }
 

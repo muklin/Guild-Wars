@@ -239,7 +239,6 @@ export default class UIManager {
   setupEventListeners() {
     this.eventBus.on('DEBUG_TOGGLED', (isDebug) => {
       if (this._rebuildStreetsBtn) this._rebuildStreetsBtn.style.display = isDebug ? 'block' : 'none'
-      if (this._restartServerBtn)  this._restartServerBtn.style.display  = isDebug ? 'inline-block' : 'none'
     })
   }
 }

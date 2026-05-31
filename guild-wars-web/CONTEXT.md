@@ -21,7 +21,7 @@ _Avoid_: border, boundary
 **River** (edge type):
 An edge marked as a river channel. A valid River selection must satisfy all four rules:
 1. No two River edges may run alongside each other (share an adjacent region) unless they share an endpoint — rivers may converge but not run in parallel.
-2. A River edge may not run alongside a Lake region (neither adjacent region may be a Lake).
+2. A River edge may not run alongside a Lake or a Sea region (neither adjacent region may be a Lake or a Sea).
 3. Every free endpoint of a River path must terminate at one of: an existing River, a Sea region, a Lake region, or the physical map boundary.
 _Avoid_: stream, waterway
 

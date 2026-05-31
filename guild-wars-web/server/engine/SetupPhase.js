@@ -611,54 +611,6 @@ export default class SetupPhase {
     return { ok: true, log: this.log }
   }
 
-  _validateRiverEndpoints() {
-    const edges = this.gameStateManager.worldTerrainData.edges
-    const regions = this.gameStateManager.worldTerrainData.regions
-    const edgePoints = this.gameStateManager.worldTerrainData.edgePoints || []
-    const regionMap = new Map(regions.map(r => [r.id, r]))
-    const pointMap = new Map(edgePoints.map(p => [p.id, p]))
-    const VALID_TYPES = new Set(['Lake', 'Sea', 'Mountains'])
-    const worldSize = 50, eps = 1.0
-
-    const riverEdges = Object.entries(edges).filter(([, e]) => e.assignedType === 'River')
-    console.log(`[SetupPhase] _validateRiverEndpoints: ${riverEdges.length} river edge(s)`)
-    if (riverEdges.length === 0) return null
-
-    // Map each endpoint point-id to the river edge IDs it terminates
-    const ptToEdges = new Map()
-    for (const [edgeId, edge] of riverEdges) {
-      const pts = edge.pointIds
-      if (!pts?.length) continue
-      const first = pts[0], last = pts[pts.length - 1]
-      for (const pt of [first, last]) {
-        if (!ptToEdges.has(pt)) ptToEdges.set(pt, [])
-        ptToEdges.get(pt).push(edgeId)
-      }
-    }
-
-    // Terminal points are those touched by exactly one river edge endpoint
-    for (const [ptId, edgeIds] of ptToEdges) {
-      if (edgeIds.length !== 1) continue  // junction with another river — always valid
-
-      // Check 1: terminal point is on the actual world boundary
-      const pt = pointMap.get(ptId)
-      if (pt && (pt.x <= eps || pt.x >= worldSize - eps || pt.y <= eps || pt.y >= worldSize - eps)) continue
-
-      // Check 2: either adjacent region is Lake, Sea, or Mountains
-      const edge = edges[edgeIds[0]]
-      const rA = regionMap.get(edge.regionA)
-      const rB = regionMap.get(edge.regionB)
-      const okA = rA == null || VALID_TYPES.has(rA.assignedType)
-      const okB = rB == null || VALID_TYPES.has(rB.assignedType)
-      console.log(`[SetupPhase]   terminal pt ${ptId}: rA=${rA?.assignedType}(${rA?.id}) rB=${rB?.assignedType}(${rB?.id}) okA=${okA} okB=${okB}`)
-      if (!okA && !okB) {
-        return 'Every river must start and end at the map edge, a Lake, Sea, or Mountain, or join another river. At least one river endpoint meets none of these conditions.'
-      }
-    }
-
-    return null
-  }
-
   rebuildStreets() {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData) throw new Error('No city district data')

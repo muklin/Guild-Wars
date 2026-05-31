@@ -56,7 +56,12 @@ export default class WorldRenderer {
     this.worldSize = 50
     this.isPaused = false
     this.originalMaterials = new Map()
+    this._debugPreHoverColors = new Map()
     this.debugObjects = []
+    this._terrainDebugMeshes = []
+    this._districtDebugMeshes = []
+    this._blockDebugMeshes = []
+    this._plotDebugMeshes = []
     this.showDebug = false
     this.hoveredRegionId = null
     this.hoveredEdgeId = null
@@ -72,10 +77,36 @@ export default class WorldRenderer {
     this.clearHover()
     this.mode = mode
     const inStreets = mode === 'streets'
-    this.districtMeshes.forEach(m => { m.visible = !inStreets })
     this.cityPolylines?.edgeMeshes.forEach(m => { m.visible = !inStreets })
     this.cityPolylines?.junctionMeshes.forEach(m => { m.visible = !inStreets })
     this.cityEdgeMeshes.forEach(m => { m.visible = !inStreets })
+
+    if (mode === 'city' || mode === 'streets') {
+      this._deleteCityTerrainCells()
+      this._clearDebugGroup(this._terrainDebugMeshes)
+    }
+    if (mode === 'streets') {
+      this._clearDebugGroup(this._districtDebugMeshes)
+    }
+  }
+
+  _deleteCityTerrainCells() {
+    const cityRegion = this.terrainData?.regions?.find(r => r.assignedType === 'City')
+    if (!cityRegion) return
+    const cellIds = this.regionFineCells.get(cityRegion.id) || []
+    for (const cellId of cellIds) {
+      const mesh = this.fineCellMeshes.get(cellId)
+      if (mesh) { this.scene.remove(mesh); this.fineCellMeshes.delete(cellId) }
+    }
+    this.regionFineCells.delete(cityRegion.id)
+    const regionMesh = this.regionMeshes.get(cityRegion.id)
+    if (regionMesh) { this.scene.remove(regionMesh); this.regionMeshes.delete(cityRegion.id) }
+  }
+
+  clearDistrictMeshes() {
+    console.log(`clearDistrictMeshes: removing ${this.districtMeshes.size} meshes`)
+    this.districtMeshes.forEach(m => this.scene.remove(m))
+    this.districtMeshes.clear()
   }
 
   hideUndefinedEdges() {
@@ -83,7 +114,7 @@ export default class WorldRenderer {
     const hiddenEdgeIds = new Set()
     for (const [edgeId, edge] of Object.entries(edges)) {
       if (!edge.assignedType) {
-        const mesh = this.edgeMeshes.get(edgeId)
+        const mesh = this.terrainPolylines?._edgeMeshes?.get(edgeId)
         if (mesh) mesh.visible = false
         hiddenEdgeIds.add(edgeId)
       }
@@ -98,7 +129,7 @@ export default class WorldRenderer {
 
   init() {
     this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(0x1a1a1a)
+    this.scene.background = new THREE.Color(0xff00ff)
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     this.renderer.setSize(window.innerWidth, window.innerHeight)
@@ -170,12 +201,6 @@ export default class WorldRenderer {
       this.cityEdgePointsById = new Map((data.edgePoints || []).map(p => [p.id, p]))
       this.renderDistricts(data.districts || [])
       this.renderCityEdges(data.edges || {})
-    }
-    if (this.mode === 'streets') {
-      this.districtMeshes.forEach(m => { m.visible = false })
-      this.cityPolylines?.edgeMeshes.forEach(m => { m.visible = false })
-      this.cityPolylines?.junctionMeshes.forEach(m => { m.visible = false })
-      this.cityEdgeMeshes.forEach(m => { m.visible = false })
     }
   }
 
@@ -569,28 +594,6 @@ export default class WorldRenderer {
     return mesh
   }
 
-  insetPolygon(polygon, inset) {
-    if (polygon.length < 3 || inset <= 0) return polygon
-
-    let centroidX = 0, centroidY = 0
-    polygon.forEach(v => {
-      centroidX += v.x
-      centroidY += v.y
-    })
-    centroidX /= polygon.length
-    centroidY /= polygon.length
-
-    return polygon.map(v => {
-      const dx = centroidX - v.x
-      const dy = centroidY - v.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist === 0) return { x: v.x, y: v.y }
-      const nx = dx / dist
-      const ny = dy / dist
-      return { x: v.x + nx * inset, y: v.y + ny * inset }
-    })
-  }
-
   get edgeMeshes()     { return this.terrainPolylines?.edgeMeshes     ?? new Map() }
   get junctionMeshes() { return this.terrainPolylines?.junctionMeshes ?? new Map() }
 
@@ -795,7 +798,7 @@ export default class WorldRenderer {
     this.districtMeshes.forEach(mesh => this.scene.remove(mesh))
     this.districtMeshes.clear()
 
-    console.log(`Rendering ${districts.length} city districts`)
+    console.log(`renderDistricts: ${districts.length} districts, mode=${this.mode}`, new Error().stack.split('\n')[2]?.trim())
     for (const district of districts) {
       const mesh = this.buildDistrictMesh(district)
       if (mesh) {
@@ -827,7 +830,6 @@ export default class WorldRenderer {
     const color = colorKey ? TerrainColors.get(colorKey) : TerrainColors.Neutral
     const material = new THREE.MeshStandardMaterial({
       color, roughness: 0.5, metalness: 0,
-      transparent: true, opacity: 0.85, depthWrite: false,
       emissive: color, emissiveIntensity: 0.1,
       side: THREE.DoubleSide
     })
@@ -991,14 +993,6 @@ export default class WorldRenderer {
     }
 
     return closestEdge
-  }
-
-  // startPoint/endPoint are vertex IDs that index into edge.vertices.
-  // (Falls back to treating them as embedded objects for old saves.)
-  resolveEdgeVertex(edge, ref) {
-    if (ref && typeof ref === 'object') return ref
-    if (!edge.vertices) return null
-    return edge.vertices.find(v => v.id === ref) || null
   }
 
   distanceToLineSegment(px, py, x1, y1, x2, y2) {
@@ -1166,22 +1160,27 @@ export default class WorldRenderer {
   clearHover() {
     if (this.hoveredRegionId !== null) {
       const isSelected = this.selectedRegionId === this.hoveredRegionId
-      const restoreColor = isSelected ? 0xffffff : this._regionBaseColor(this.hoveredRegionId)
+      const baseColor = isSelected ? 0xffffff : this._regionBaseColor(this.hoveredRegionId)
       const cellIds = this.regionFineCells.get(this.hoveredRegionId) || []
       for (const cellId of cellIds) {
         const mesh = this.fineCellMeshes.get(cellId)
         if (mesh?.material) {
+          const restoreColor = this.showDebug ? (this._debugPreHoverColors.get(cellId) ?? baseColor) : baseColor
           mesh.material.color.setHex(restoreColor)
           mesh.material.emissive?.setHex(restoreColor)
           mesh.material.emissiveIntensity = 0.2
+          this._debugPreHoverColors.delete(cellId)
         }
       }
       if (cellIds.length === 0) {
         const rm = this.regionMeshes.get(this.hoveredRegionId)
         if (rm?.material) {
+          const key = 'region_' + this.hoveredRegionId
+          const restoreColor = this.showDebug ? (this._debugPreHoverColors.get(key) ?? baseColor) : baseColor
           rm.material.color.setHex(restoreColor)
           rm.material.emissive?.setHex(restoreColor)
           rm.material.emissiveIntensity = 0.2
+          this._debugPreHoverColors.delete(key)
         }
       }
       this.hoveredRegionId = null
@@ -1251,6 +1250,7 @@ export default class WorldRenderer {
     this.clearHover()
 
     const region = this.terrainData?.regions?.find(r => r.id === regionId)
+    if (this.mode === 'terrain' && region?.assignedType) return
     if (this.mode === 'city') {
       const DISTRICT_ELIGIBLE = new Set(['Forest', 'Hills', 'Plains', 'Lake', 'Sea'])
       const canDistrict = DISTRICT_ELIGIBLE.has(region?.assignedType) && !region?.terrainDistrict
@@ -1267,6 +1267,7 @@ export default class WorldRenderer {
     for (const cellId of cellIds) {
       const mesh = this.fineCellMeshes.get(cellId)
       if (mesh?.material) {
+        if (this.showDebug) this._debugPreHoverColors.set(cellId, mesh.material.color.getHex())
         mesh.material.color.setHex(lightenedHex)
         mesh.material.emissive?.setHex(lightenedHex)
         mesh.material.emissiveIntensity = 0.45
@@ -1275,6 +1276,7 @@ export default class WorldRenderer {
     if (cellIds.length === 0) {
       const rm = this.regionMeshes.get(regionId)
       if (rm?.material) {
+        if (this.showDebug) this._debugPreHoverColors.set('region_' + regionId, rm.material.color.getHex())
         rm.material.color.setHex(lightenedHex)
         rm.material.emissive?.setHex(lightenedHex)
         rm.material.emissiveIntensity = 0.45
@@ -1341,7 +1343,7 @@ export default class WorldRenderer {
     geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
     geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1))
     geometry.computeVertexNormals()
-    const mat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.5, metalness: 0, emissive: colorHex, emissiveIntensity: 0.15 })
+    const mat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.5, metalness: 0, emissive: colorHex, emissiveIntensity: 0.15, side: THREE.DoubleSide })
     return new THREE.Mesh(geometry, mat)
   }
 
@@ -1361,7 +1363,32 @@ export default class WorldRenderer {
 
     for (const plot of plots) {
       const mesh = this._makeFill(plot.vertices, getColor(plot.districtId), 0.072)
-      if (mesh) { this.scene.add(mesh); this.plotMeshes.push(mesh) }
+      if (mesh) {
+        if (this.showDebug) {
+          this.originalMaterials.set(mesh, mesh.material)
+          mesh.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6) })
+        }
+        this.scene.add(mesh)
+        this.plotMeshes.push(mesh)
+      }
+    }
+
+    // Block outlines at Y=0.08 (above streets and plot lines)
+    const blockLineVerts = []
+    for (const block of (blocks || [])) {
+      const poly = block.vertices
+      if (!poly?.length) continue
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length]
+        blockLineVerts.push(a.x, 0.08, a.y, b.x, 0.08, b.y)
+      }
+    }
+    if (blockLineVerts.length > 0) {
+      const geom = new THREE.BufferGeometry()
+      geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(blockLineVerts), 3))
+      const lines = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xff8800 }))
+      this.scene.add(lines)
+      this.blockMeshes.push(lines)
     }
 
     // Batch all plot outline edges into a single LineSegments geometry
@@ -1390,7 +1417,7 @@ export default class WorldRenderer {
 
     if (this.showDebug) {
       this.scene.children.forEach((child) => {
-        if (child.material && !this.debugObjects.includes(child) && child.visible) {
+        if (child.isMesh && child.material && !this.debugObjects.includes(child) && child.visible) {
           this.originalMaterials.set(child, child.material)
           const hue = Math.random()
           const color = new THREE.Color().setHSL(hue, 0.7, 0.6)
@@ -1410,35 +1437,102 @@ export default class WorldRenderer {
   }
 
   drawVoronoiCenters(regions) {
-    // Remove old debug objects
-    this.debugObjects.forEach(obj => this.scene.remove(obj))
-    this.debugObjects = []
+    this._clearDebugGroup(this._terrainDebugMeshes)
 
-    // Draw seed points as small spheres
-    const seedGeometry = new THREE.SphereGeometry(0.3, 8, 8)
-    const seedMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    const seedGeo = new THREE.SphereGeometry(0.075, 8, 8)
+    const seedMat = new THREE.MeshBasicMaterial({ color: 0xff0000 })
     regions.forEach(region => {
-      const seed = new THREE.Mesh(seedGeometry, seedMaterial)
-      seed.position.set(region.seedPoint.x, 0.0, region.seedPoint.y)
+      const seed = new THREE.Mesh(seedGeo, seedMat)
+      seed.position.set(region.seedPoint.x, 0.1, region.seedPoint.y)
       seed.visible = this.showDebug
       this.scene.add(seed)
       this.debugObjects.push(seed)
+      this._terrainDebugMeshes.push(seed)
     })
 
-    // Draw polygon vertices as small cubes
-    const vertGeometry = new THREE.BoxGeometry(0.2, 0.2, 0.2)
-    const vertMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+    const vertGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05)
+    const vertMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 })
     regions.forEach(region => {
-      region.polygon.forEach((vertex) => {
-        const vert = new THREE.Mesh(vertGeometry, vertMaterial)
-        vert.position.set(vertex.x, 0.2, vertex.y)
+      region.polygon.forEach(vertex => {
+        const vert = new THREE.Mesh(vertGeo, vertMat)
+        vert.position.set(vertex.x, 0.1, vertex.y)
         vert.visible = this.showDebug
         this.scene.add(vert)
         this.debugObjects.push(vert)
+        this._terrainDebugMeshes.push(vert)
       })
     })
+  }
 
-    console.log(`Drew ${regions.length} seed points and ${regions.reduce((sum, r) => sum + r.polygon.length, 0)} vertices`)
+  drawDistrictCenters(districts) {
+    this._clearDebugGroup(this._districtDebugMeshes)
+    const geo = new THREE.SphereGeometry(0.075, 8, 8)
+    const mat = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    for (const d of (districts || [])) {
+      const sp = d.seedPoint || this._centroid(d.polygon || d.boundary || [])
+      if (!sp) continue
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.set(sp.x, 0.15, sp.y)
+      mesh.visible = this.showDebug
+      this.scene.add(mesh)
+      this.debugObjects.push(mesh)
+      this._districtDebugMeshes.push(mesh)
+    }
+  }
+
+  drawBlockAndPlotCenters(blocks, plots) {
+    this._clearDebugGroup(this._blockDebugMeshes)
+    this._clearDebugGroup(this._plotDebugMeshes)
+
+    const blockGeo = new THREE.SphereGeometry(0.0375, 6, 6)
+    const blockMat = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    for (const b of (blocks || [])) {
+      const c = this._centroid(b.vertices)
+      if (!c) continue
+      const mesh = new THREE.Mesh(blockGeo, blockMat)
+      mesh.position.set(c.x, 0.09, c.y)
+      mesh.visible = this.showDebug
+      this.scene.add(mesh)
+      this.debugObjects.push(mesh)
+      this._blockDebugMeshes.push(mesh)
+    }
+
+    const plotGeo = new THREE.SphereGeometry(0.0375, 6, 6)
+    const plotMat = new THREE.MeshBasicMaterial({ color: 0xff69b4 })
+    for (const p of (plots || [])) {
+      const c = this._centroid(p.vertices)
+      if (!c) continue
+      const mesh = new THREE.Mesh(plotGeo, plotMat)
+      mesh.position.set(c.x, 0.09, c.y)
+      mesh.visible = this.showDebug
+      this.scene.add(mesh)
+      this.debugObjects.push(mesh)
+      this._plotDebugMeshes.push(mesh)
+    }
+  }
+
+  _centroid(poly) {
+    if (!poly?.length) return null
+    return {
+      x: poly.reduce((s, v) => s + v.x, 0) / poly.length,
+      y: poly.reduce((s, v) => s + v.y, 0) / poly.length
+    }
+  }
+
+  _clearDebugGroup(arr) {
+    for (const obj of arr) this.scene.remove(obj)
+    const toRemove = new Set(arr)
+    this.debugObjects = this.debugObjects.filter(o => !toRemove.has(o))
+    arr.length = 0
+  }
+
+  clearAllDebugObjects() {
+    this._clearDebugGroup(this._terrainDebugMeshes)
+    this._clearDebugGroup(this._districtDebugMeshes)
+    this._clearDebugGroup(this._blockDebugMeshes)
+    this._clearDebugGroup(this._plotDebugMeshes)
+    for (const obj of this.debugObjects) this.scene.remove(obj)
+    this.debugObjects = []
   }
 
 }
