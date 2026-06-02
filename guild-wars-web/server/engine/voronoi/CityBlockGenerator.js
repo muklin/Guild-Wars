@@ -1,4 +1,6 @@
 import { computeVoronoiCells } from './VoronoiUtils.js'
+import { STREET_HALF_WIDTH } from './StreetVoronoiGenerator.js'
+import { CALC_PLOTS } from '../pipelineFlags.js'
 
 
 const DISTRICT_PARAMS = {
@@ -31,8 +33,10 @@ function getParams(district) {
 
 export default class CityBlockGenerator {
   generate(districts, streetGraph) {
-    const nodes = streetGraph?.nodes || []
-    const edges = streetGraph?.edges || []
+    const nodes       = streetGraph?.gutterNodes || streetGraph?.nodes || []
+    const edges       = streetGraph?.gutterEdges || streetGraph?.edges || []
+    const streetNodes = streetGraph?.nodes || []
+    const streetEdges = streetGraph?.edges || []
     const blocks = []
     const plots  = []
     let blockId = 0, plotId = 0
@@ -41,6 +45,7 @@ export default class CityBlockGenerator {
 
     for (const vertices of faces) {
       if (vertices.length < 3) continue
+      if (this._isRoadFace(vertices, streetNodes, streetEdges)) continue
 
       let area = 0
       for (let i = 0; i < vertices.length; i++) {
@@ -53,6 +58,11 @@ export default class CityBlockGenerator {
       const districtId = this._findDistrict(vertices, districts)
       const district   = districts.find(d => d.id === districtId)
       const params     = getParams(district)
+
+      if (!CALC_PLOTS) {
+        blocks.push({ id: blockId++, districtId, vertices, area, blockType: 'single' })
+        continue
+      }
 
       // ── City block: too small to subdivide — one plot = whole block ────────
       if (area < params.minBlockSize) {
@@ -117,6 +127,33 @@ export default class CityBlockGenerator {
     return { blocks, plots }
   }
 
+  // Returns true if the face is road surface (junction fill or road strip) rather than a block.
+  // Centroid within STREET_HALF_WIDTH of any centerline node or edge → road face.
+  _isRoadFace(vertices, streetNodes, streetEdges) {
+    const cx = vertices.reduce((s, v) => s + v.x, 0) / vertices.length
+    const cy = vertices.reduce((s, v) => s + v.y, 0) / vertices.length
+    const rSq = (STREET_HALF_WIDTH * 0.9) ** 2
+    const nodeById = new Map(streetNodes.map(n => [n.id, n]))
+    for (const n of streetNodes) {
+      const dx = cx - n.x, dy = cy - n.y
+      if (dx * dx + dy * dy < rSq) return true
+    }
+    for (const e of streetEdges) {
+      const a = nodeById.get(e.nodeA), b = nodeById.get(e.nodeB)
+      if (!a || !b) continue
+      if (this._distToSegSq(cx, cy, a.x, a.y, b.x, b.y) < rSq) return true
+    }
+    return false
+  }
+
+  _distToSegSq(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay
+    const lenSq = dx * dx + dy * dy
+    if (lenSq === 0) return (px - ax) ** 2 + (py - ay) ** 2
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
+    return (px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2
+  }
+
   // Trace all interior faces of the planar street graph.
   // For each directed edge, walk by always taking the most-clockwise turn at each
   // junction — this traces the face to the right of travel direction.
@@ -126,28 +163,45 @@ export default class CityBlockGenerator {
 
     const nodeById = new Map(nodes.map(n => [n.id, n]))
 
-    // Build adjacency: nodeId → [neighborId, ...]
-    const adj = new Map(nodes.map(n => [n.id, []]))
+    // Build adjacency: nodeId → [neighborId, ...] (deduplicated — guards against
+    // bidirectional edge pairs that would otherwise add each neighbor twice).
+    const adjSets = new Map(nodes.map(n => [n.id, new Set()]))
     for (const edge of edges) {
-      adj.get(edge.nodeA)?.push(edge.nodeB)
-      adj.get(edge.nodeB)?.push(edge.nodeA)
+      adjSets.get(edge.nodeA)?.add(edge.nodeB)
+      adjSets.get(edge.nodeB)?.add(edge.nodeA)
     }
+    const adj = new Map([...adjSets.entries()].map(([id, s]) => [id, [...s]]))
 
-    // Sort each node's neighbor list counterclockwise by angle (needed for getNext)
+    // Sort each node's neighbor list counterclockwise by angle, with a stable
+    // tiebreak on node id so collinear neighbors always have a deterministic order.
     for (const [nodeId, neighbors] of adj) {
       const node = nodeById.get(nodeId)
       if (!node) continue
       neighbors.sort((a, b) => {
         const na = nodeById.get(a), nb = nodeById.get(b)
         if (!na || !nb) return 0
-        return Math.atan2(na.y - node.y, na.x - node.x) -
-               Math.atan2(nb.y - node.y, nb.x - node.x)
+        const angA = Math.atan2(na.y - node.y, na.x - node.x)
+        const angB = Math.atan2(nb.y - node.y, nb.x - node.x)
+        const diff = angA - angB
+        if (Math.abs(diff) > 1e-9) return diff
+        // Stable tiebreak for collinear neighbors: sort by distance (closer first),
+        // then by node id.  This ensures a consistent CCW order even when two
+        // neighbors lie on the same ray from this node.
+        const dA = (na.x - node.x) ** 2 + (na.y - node.y) ** 2
+        const dB = (nb.x - node.x) ** 2 + (nb.y - node.y) ** 2
+        return dA !== dB ? dA - dB : a - b
       })
     }
 
     // Given directed edge from→to, return the next node in the face walk:
     // the neighbor of 'to' that requires the smallest counterclockwise rotation
     // from the reverse-of-arrival direction — equivalent to the most-clockwise turn.
+    // Tie-breaking rules (applied in order):
+    //   1. Non-U-turn candidates beat U-turn candidates (diff < 2π beats diff = 2π).
+    //   2. Among equal-diff candidates, prefer the one that is NOT `from` (avoids
+    //      spuriously re-using the arrival edge when collinear neighbors all appear
+    //      to be U-turns).
+    //   3. Final stable tiebreak: prefer lower node id for deterministic output.
     const getNext = (from, to) => {
       const fromNode = nodeById.get(from), toNode = nodeById.get(to)
       if (!fromNode || !toNode) return null
@@ -160,14 +214,21 @@ export default class CityBlockGenerator {
         const outAngle = Math.atan2(nbNode.y - toNode.y, nbNode.x - toNode.x)
         let diff = (outAngle - reverseAngle + 2 * Math.PI) % (2 * Math.PI)
         if (diff < 1e-10) diff = 2 * Math.PI  // near-zero = U-turn, use as last resort
-        if (diff < bestDiff) { bestDiff = diff; best = nb }
+        const isBetter = diff < bestDiff ||
+          (diff === bestDiff && best === null) ||
+          (diff === bestDiff && best === from && nb !== from) ||
+          (diff === bestDiff && nb !== from && best !== from && nb < best)
+        if (isBetter) { bestDiff = diff; best = nb }
       }
       return best
     }
 
     const visited = new Set()
     const faces   = []
-    const maxSteps = nodes.length + 2
+    // Cap at 200: the largest legitimate block face has ~24 vertices; 200 gives
+    // ample headroom while aborting genuine infinite loops far sooner than
+    // the old nodes.length + 2 (which was 844 for the current city graph).
+    const maxSteps = Math.min(200, nodes.length + 2)
 
     for (const edge of edges) {
       for (const [u, v] of [[edge.nodeA, edge.nodeB], [edge.nodeB, edge.nodeA]]) {

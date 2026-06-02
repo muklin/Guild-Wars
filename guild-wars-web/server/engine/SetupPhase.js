@@ -3,6 +3,7 @@ import StreetVoronoiGenerator from './voronoi/StreetVoronoiGenerator.js'
 import CityBlockGenerator from './voronoi/CityBlockGenerator.js'
 import BuildingTemplateGenerator from './buildings/BuildingTemplateGenerator.js'
 import TextureTemplateGenerator from './buildings/TextureTemplateGenerator.js'
+import { CALC_BLOCKS } from './pipelineFlags.js'
 
 export default class SetupPhase {
   constructor(gameStateManager) {
@@ -674,6 +675,12 @@ export default class SetupPhase {
   _generateBuildings() {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.streetGraph) return
+    if (!CALC_BLOCKS) {
+      cityData.blocks = []
+      cityData.plots  = []
+      this.log.push('Block calculation disabled (pipelineFlags.CALC_BLOCKS)')
+      return
+    }
     const result = new CityBlockGenerator().generate(cityData.districts, cityData.streetGraph)
     cityData.blocks = result.blocks
     cityData.plots  = result.plots

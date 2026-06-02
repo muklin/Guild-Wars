@@ -19,6 +19,10 @@ export default class PolylineRenderer {
     this.thickness = options.thickness ?? 0.5
     this.stripY    = options.stripY    ?? 0.06
     this.fillY     = options.fillY     ?? (options.stripY ?? 0.06) + 0.005
+    // World-distance ceiling for the miter intersection from a junction point.
+    // Beyond this, the corner is beveled (two boundary points) instead of
+    // mitered to a single far-flung spike vertex. Default Infinity = no limit.
+    this.miterLimitDist = options.miterLimitDist ?? Infinity
 
     this._edgeMeshes     = new Map()  // edgeId → mesh
     this._junctionMeshes = new Map()  // ptId → mesh
@@ -57,15 +61,21 @@ export default class PolylineRenderer {
       }
     }
 
-    // Junction fill meshes (3+ way)
-    for (const [ptId, { boundaryPts, edgeIds }] of junctionFills) {
-      if (boundaryPts.length < 3) continue
-      const verts = new Float32Array(boundaryPts.length * 3)
-      for (let i = 0; i < boundaryPts.length; i++) {
-        verts[i*3] = boundaryPts[i].x; verts[i*3+1] = this.fillY; verts[i*3+2] = boundaryPts[i].y
+    // Junction fill meshes (3+ way). Fan-triangulated from the junction
+    // center (`center`) — the cap is always star-shaped around the center,
+    // even when beveled corners make the boundary polygon non-convex.
+    for (const [ptId, { boundaryPts, edgeIds, center }] of junctionFills) {
+      if (boundaryPts.length < 3 || !center) continue
+      const n = boundaryPts.length
+      const verts = new Float32Array((n + 1) * 3)
+      verts[0] = center.x; verts[1] = this.fillY; verts[2] = center.y
+      for (let i = 0; i < n; i++) {
+        verts[(i + 1) * 3]     = boundaryPts[i].x
+        verts[(i + 1) * 3 + 1] = this.fillY
+        verts[(i + 1) * 3 + 2] = boundaryPts[i].y
       }
       const tris = []
-      for (let i = 1; i < boundaryPts.length - 1; i++) tris.push(0, i + 1, i)
+      for (let i = 0; i < n; i++) tris.push(0, ((i + 1) % n) + 1, i + 1)
       const geo = new THREE.BufferGeometry()
       geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
       geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1))
@@ -175,31 +185,56 @@ export default class PolylineRenderer {
 
       edgeData.sort((a, b) => Math.atan2(a.uy, a.ux) - Math.atan2(b.uy, b.ux))
       const n = edgeData.length
+      const limitSq = this.miterLimitDist * this.miterLimitDist
 
-      const boundaryPts = []
+      // For each consecutive edge pair (A, B), compute three points:
+      //   q1 — sits on edge A's left offset line (distance r perpendicular from jPt)
+      //   q2 — sits on edge B's right offset line
+      //   capPt — used as the cap-polygon vertex for this slot
+      //
+      // When the miter intersection of A's left line and B's right line is
+      // within miterLimitDist of jPt, q1 = q2 = capPt = miter (original
+      // behavior). When the miter would fly past the limit OR the lines are
+      // parallel, q1/q2 stay on their respective offset lines (so edge strip
+      // corners stay parallel to their road), and capPt is set to the midpoint
+      // of q1 and q2 — which collapses near jPt for acute wedges, avoiding
+      // spikes in the cap polygon.
+      const slots = new Array(n)
       for (let i = 0; i < n; i++) {
         const A = edgeData[i], B = edgeData[(i + 1) % n]
-        const q1x = jPt.x - A.uy * r, q1y = jPt.y + A.ux * r
-        const q2x = jPt.x + B.uy * r, q2y = jPt.y - B.ux * r
+        const q1 = { x: jPt.x - A.uy * r, y: jPt.y + A.ux * r }
+        const q2 = { x: jPt.x + B.uy * r, y: jPt.y - B.ux * r }
         const denom = A.ux * B.uy - A.uy * B.ux
-        let px, py
         if (Math.abs(denom) < 1e-8) {
-          px = (q1x + q2x) / 2; py = (q1y + q2y) / 2
-        } else {
-          const t = ((q2x - q1x) * B.uy - (q2y - q1y) * B.ux) / denom
-          px = q1x + t * A.ux; py = q1y + t * A.uy
+          const capPt = { x: (q1.x + q2.x) / 2, y: (q1.y + q2.y) / 2 }
+          slots[i] = { q1, q2, capPt }
+          continue
         }
-        boundaryPts.push({ x: px, y: py })
+        const t = ((q2.x - q1.x) * B.uy - (q2.y - q1.y) * B.ux) / denom
+        const px = q1.x + t * A.ux, py = q1.y + t * A.uy
+        const mdx = px - jPt.x, mdy = py - jPt.y
+        if (mdx * mdx + mdy * mdy <= limitSq) {
+          const miter = { x: px, y: py }
+          slots[i] = { q1: miter, q2: miter, capPt: miter }
+        } else {
+          slots[i] = { q1, q2, capPt: { x: (q1.x + q2.x) / 2, y: (q1.y + q2.y) / 2 } }
+        }
       }
 
+      // Edge strip corners stay on the edge's own offset line — never on the
+      // far miter spike — so strips remain parallel-sided at every junction.
       for (let i = 0; i < n; i++) {
         result.set(`${edgeData[i].edgeId}_${ptId}`, {
-          trueLeft:  boundaryPts[i],
-          trueRight: boundaryPts[(i - 1 + n) % n]
+          trueLeft:  slots[i].q1,
+          trueRight: slots[(i - 1 + n) % n].q2
         })
       }
 
-      if (n >= 3) fillsOut.set(ptId, { boundaryPts, edgeIds: new Set(edgeData.map(e => e.edgeId)) })
+      if (n >= 3) fillsOut.set(ptId, {
+        boundaryPts: slots.map(s => s.capPt),
+        edgeIds: new Set(edgeData.map(e => e.edgeId)),
+        center: { x: jPt.x, y: jPt.y },
+      })
     }
 
     return result
@@ -238,8 +273,8 @@ export default class PolylineRenderer {
           const dx = p2.x - pt.x, dy = p2.y - pt.y, len = Math.sqrt(dx*dx + dy*dy)
           if (len < 1e-10) { corners.push(null); continue }
           const ux = dx/len, uy = dy/len
-          const sx = pt.x + ux*r, sy = pt.y + uy*r
-          corners.push({ left: {x: sx - uy*r, y: sy + ux*r}, right: {x: sx + uy*r, y: sy - ux*r} })
+          // Flat perpendicular endcap exactly at pt — no inset along the direction.
+          corners.push({ left: {x: pt.x - uy*r, y: pt.y + ux*r}, right: {x: pt.x + uy*r, y: pt.y - ux*r} })
         }
       } else if (i === n - 1) {
         if (endOvr) {
@@ -250,8 +285,7 @@ export default class PolylineRenderer {
           const dx = pt.x - p0.x, dy = pt.y - p0.y, len = Math.sqrt(dx*dx + dy*dy)
           if (len < 1e-10) { corners.push(null); continue }
           const ux = dx/len, uy = dy/len
-          const sx = pt.x - ux*r, sy = pt.y - uy*r
-          corners.push({ left: {x: sx - uy*r, y: sy + ux*r}, right: {x: sx + uy*r, y: sy - ux*r} })
+          corners.push({ left: {x: pt.x - uy*r, y: pt.y + ux*r}, right: {x: pt.x + uy*r, y: pt.y - ux*r} })
         }
       } else {
         const p0 = points[i - 1], p2 = points[i + 1]

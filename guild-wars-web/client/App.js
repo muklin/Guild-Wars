@@ -190,8 +190,11 @@ export default class App {
           this.pendingCityEdgeType = null
           if (response.cityDistrictData) this.renderer.setCityDistrictData(response.cityDistrictData)
           this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-          this.renderer.renderPlots(response.cityDistrictData?.blocks, response.cityDistrictData?.plots, response.cityDistrictData)
+          this.renderer.renderGutters(response.cityDistrictData?.streetGraph)
+          this.renderer.renderBlocks(response.cityDistrictData?.blocks)
+          this.renderer.renderPlots(response.cityDistrictData?.plots, response.cityDistrictData)
           this.renderer.drawBlockAndPlotCenters(response.cityDistrictData?.blocks, response.cityDistrictData?.plots)
+          this.renderer.drawStreetSeeds(response.cityDistrictData?.streetGraph)
           this.renderer.clearDistrictMeshes()
         } else {
           this.uiManager.showError(response.error)
@@ -327,8 +330,11 @@ export default class App {
           this.renderer.setCityDistrictData(response.cityDistrictData)
         }
         this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-        this.renderer.renderPlots(response.cityDistrictData?.blocks, response.cityDistrictData?.plots, response.cityDistrictData)
+        this.renderer.renderGutters(response.cityDistrictData?.streetGraph)
+        this.renderer.renderBlocks(response.cityDistrictData?.blocks)
+        this.renderer.renderPlots(response.cityDistrictData?.plots, response.cityDistrictData)
         this.renderer.drawBlockAndPlotCenters(response.cityDistrictData?.blocks, response.cityDistrictData?.plots)
+        this.renderer.drawStreetSeeds(response.cityDistrictData?.streetGraph)
         this.renderer.clearDistrictMeshes()
         if (response.factions) {
           this.factions = response.factions
@@ -660,11 +666,6 @@ export default class App {
         this.pendingResidentialClass = null
         this.pendingLeadershipClass = null
         this._refreshDistrictPanel()
-        // DEV: auto-finish after 2 districts assigned
-        if (this._countAssignedDistricts() >= 2) {
-          this.eventBus.emit('SUBDIVISION_COMPLETE')
-          return
-        }
       } else {
         this.uiManager.showError(response.error)
         this._refreshDistrictPanel()
@@ -885,15 +886,18 @@ export default class App {
           this.renderer.setMode(setupStep === 'StreetSetup' ? 'streets' : 'city')
           if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
             this.renderer.renderStreetGraph(cityData.streetGraph)
-            this.renderer.renderPlots(cityData.blocks, cityData.plots, cityData)
+            this.renderer.renderGutters(cityData.streetGraph)
+            this.renderer.renderBlocks(cityData.blocks)
+            this.renderer.renderPlots(cityData.plots, cityData)
             this.renderer.drawBlockAndPlotCenters(cityData.blocks, cityData.plots)
+            this.renderer.drawStreetSeeds(cityData.streetGraph)
             this.renderer.clearDistrictMeshes()
           } else {
             this.renderer.drawDistrictCenters(cityData.districts)
           }
         } else {
           this.renderer.clearStreetLayer()
-          this.renderer.clearBlockLayer()
+          this.renderer.clearDerivedLayers()
           this.renderer.setCityDistrictData([])
           this.renderer.setMode('terrain')
         }
@@ -970,7 +974,7 @@ export default class App {
         this.uiManager.updateFactions([])
         this.uiManager.updateThreats([])
         this.renderer.clearStreetLayer()
-        this.renderer.clearBlockLayer()
+        this.renderer.clearDerivedLayers()
         this.renderer.clearAllDebugObjects()
         this.renderer.setCityDistrictData([])
         this.renderer.setMode('terrain')

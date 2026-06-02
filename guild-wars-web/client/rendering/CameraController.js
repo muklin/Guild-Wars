@@ -14,7 +14,7 @@ export default class CameraController {
 
     // Zoom — start framing the full map; allow deep zoom-in
     this.minZoom = 4.5   // enforced dynamically via world bounds
-    this.maxZoom = 20.0
+    this.maxZoom = 40.0
     this.camera.zoom = 4.5
     this.camera.updateProjectionMatrix()
 

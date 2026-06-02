@@ -1,28 +1,11 @@
 import * as THREE from 'three'
 import CameraController from './CameraController.js'
 
-// Offset each edge of poly inward by `offset`, then intersect adjacent offset lines at
-// corners (miter joint). Bevels corners where the miter would exceed 3× the offset.
-// Returns a new polygon (array of {x,y}) or null if the result is degenerate.
-
-// Appends a filled circle fan into allVerts/allIdx at (x, Y, z) with given radius.
-// Winding order: reversed so the cross-product AB×AC points +Y (visible from above).
-function addCircleFan(allVerts, allIdx, x, Y, z, r, segs = 10) {
-  const base = allVerts.length / 3
-  allVerts.push(x, Y, z)
-  for (let s = 0; s < segs; s++) {
-    const a = (s / segs) * Math.PI * 2
-    allVerts.push(x + Math.cos(a) * r, Y, z + Math.sin(a) * r)
-  }
-  for (let s = 0; s < segs; s++) {
-    allIdx.push(base, base + 1 + (s + 1) % segs, base + 1 + s)
-  }
-}
-
 import TerrainColors from './TerrainColors.js'
 import TerrainFeatureManager from './TerrainFeatureManager.js'
 import BuildingRenderer from './BuildingRenderer.js'
 import PolylineRenderer from './PolylineRenderer.js'
+import { RENDER_STREETS, RENDER_GUTTERS, RENDER_BLOCKS, RENDER_PLOTS } from './pipelineFlags.js'
 
 
 export default class WorldRenderer {
@@ -36,6 +19,7 @@ export default class WorldRenderer {
     this.regionFineCells = new Map()     // parentRegionId → [fineCellId, ...]
     this.terrainPolylines = null          // PolylineRenderer instance for terrain edges
     this.cityPolylines    = null          // PolylineRenderer instance for non-Wall city edges
+    this.streetPolylines  = null          // PolylineRenderer instance for streets
     this.edgePointsById = new Map()      // pointId → {id, x, y}
     this.districtMeshes = new Map()
     this.cityEdgeMeshes = new Map()      // Wall-type city edge meshes only
@@ -47,6 +31,7 @@ export default class WorldRenderer {
     this.streetMeshes = []
     this.blockMeshes = []
     this.plotMeshes = []
+    this.gutterMeshes = []
     this.buildingRenderer = new BuildingRenderer()
     this.featureManager = null
     this.spawnedFeatureRegions = new Map()  // regionId → Set<featureName>
@@ -62,11 +47,14 @@ export default class WorldRenderer {
     this._districtDebugMeshes = []
     this._blockDebugMeshes = []
     this._plotDebugMeshes = []
+    this._streetSeedMeshes = []
     this.showDebug = false
     this.hoveredRegionId = null
     this.hoveredEdgeId = null
     this.hoveredDistrictId = null
     this.hoveredCityEdgeId = null
+    this.hoveredStreetEdgeKey = null
+    this._streetHoverMesh = null
     this.selectedRegionId = null
     this.selectedDistrictId = null
     this.wallAnimations = new Map()  // edgeId → { object: Group, frame }
@@ -216,86 +204,32 @@ export default class WorldRenderer {
   }
 
   clearStreetLayer() {
+    this.streetPolylines?.dispose()
     for (const m of this.streetMeshes) this.scene.remove(m)
     this.streetMeshes = []
   }
 
   renderStreetGraph(streetGraph) {
     this.clearStreetLayer()
+    if (!RENDER_STREETS) return
     if (!streetGraph) return
     if (!streetGraph.nodes?.length || !streetGraph.edges?.length) return
 
-    const nodeById = new Map(streetGraph.nodes.map(n => [n.id, n]))
-    const thickness = 0.0875
-    const r = thickness / 2
-    const Y = 0.075
-
-    // Group edges by type
-    const byType = new Map()
-    for (const edge of streetGraph.edges) {
-      const type = edge.type || 'Mud'
-      if (!byType.has(type)) byType.set(type, [])
-      byType.get(type).push(edge)
+    if (!this.streetPolylines) {
+      // miterLimitDist matches SNAP_THRESHOLD / 2 in StreetVoronoiGenerator's
+      // buildGutterGraph — so the rendered street outline matches the gutter
+      // graph the block tracer consumes.
+      this.streetPolylines = new PolylineRenderer(this.scene, { thickness: 0.0875, stripY: 0.075, fillY: 0.076, miterLimitDist: 0.125 })
     }
 
-    // Assign highest-priority street type to each node (fills intersection gaps)
-    const typePriority = { Stone: 2, Brick: 1, Mud: 0 }
-    const nodeType = new Map()
-    for (const edge of streetGraph.edges) {
-      const type = edge.type || 'Mud'
-      const pri = typePriority[type] ?? 0
-      for (const nid of [edge.nodeA, edge.nodeB]) {
-        if (!nodeType.has(nid) || pri > (typePriority[nodeType.get(nid)] ?? 0)) {
-          nodeType.set(nid, type)
-        }
-      }
+    const pointsById = new Map(streetGraph.nodes.map(n => [n.id, { x: n.x, y: n.y }]))
+    const edgesById = {}
+    for (const e of streetGraph.edges) {
+      edgesById[e.id] = { pointIds: [e.nodeA, e.nodeB], type: e.type || 'Mud' }
     }
-    const nodesByType = new Map()
-    for (const [nid, type] of nodeType) {
-      if (!nodesByType.has(type)) nodesByType.set(type, [])
-      nodesByType.get(type).push(nid)
-    }
-
-    const CIRCLE_SEGS = 8
-    const allTypes = new Set([...byType.keys(), ...nodesByType.keys()])
-    for (const type of allTypes) {
-      const allVerts = [], allIdx = []
-
-      for (const edge of (byType.get(type) || [])) {
-        const nA = nodeById.get(edge.nodeA), nB = nodeById.get(edge.nodeB)
-        if (!nA || !nB) continue
-        const dx = nB.x - nA.x, dy = nB.y - nA.y
-        const len = Math.sqrt(dx * dx + dy * dy)
-        if (len === 0) continue
-        const perpX = (-dy / len) * r, perpY = (dx / len) * r
-        const base = allVerts.length / 3
-        allVerts.push(
-          nA.x - perpX, Y, nA.y - perpY,
-          nA.x + perpX, Y, nA.y + perpY,
-          nB.x + perpX, Y, nB.y + perpY,
-          nB.x - perpX, Y, nB.y - perpY
-        )
-        allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
-      }
-
-      // Filled circle at each node to close gaps between quads
-      for (const nid of (nodesByType.get(type) || [])) {
-        const node = nodeById.get(nid)
-        if (!node) continue
-        addCircleFan(allVerts, allIdx, node.x, Y, node.y, r, CIRCLE_SEGS)
-      }
-
-      if (allVerts.length === 0) continue
-      const geometry = new THREE.BufferGeometry()
-      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allVerts), 3))
-      geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(allIdx), 1))
-      geometry.computeVertexNormals()
-      const color = TerrainColors.get(type)
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5 })
-      const mesh = new THREE.Mesh(geometry, mat)
-      this.scene.add(mesh)
-      this.streetMeshes.push(mesh)
-    }
+    const fallback = TerrainColors.get('Mud') || 0x6b4226
+    const getColor = (edge) => TerrainColors.get(edge.type) || fallback
+    this.streetPolylines.render(edgesById, pointsById, getColor)
   }
 
   renderThreats(threats, regions) {
@@ -1221,6 +1155,50 @@ export default class WorldRenderer {
       }
       this.hoveredCityEdgeId = null
     }
+    if (this.hoveredStreetEdgeKey !== null) {
+      if (this._streetHoverMesh) {
+        this.scene.remove(this._streetHoverMesh)
+        this._streetHoverMesh.geometry?.dispose?.()
+        this._streetHoverMesh.material?.dispose?.()
+        this._streetHoverMesh = null
+      }
+      this.hoveredStreetEdgeKey = null
+    }
+  }
+
+  setStreetEdgeHover(edge) {
+    if (!edge) return
+    const key = edge.id ?? `${edge.nodeA}_${edge.nodeB}`
+    if (this.hoveredStreetEdgeKey === key) return
+    this.clearHover()
+    const sg = this.cityDistrictData?.streetGraph
+    if (!sg?.nodes?.length) return
+    const byId = new Map(sg.nodes.map(n => [n.id, n]))
+    const a = byId.get(edge.nodeA), b = byId.get(edge.nodeB)
+    if (!a || !b) return
+    const dx = b.x - a.x, dy = b.y - a.y
+    const len = Math.hypot(dx, dy)
+    if (len === 0) return
+    const thickness = 0.0875 * 1.2
+    const r = thickness / 2
+    const px = (-dy / len) * r, py = (dx / len) * r
+    const Y = 0.078
+    const verts = new Float32Array([
+      a.x - px, Y, a.y - py,
+      a.x + px, Y, a.y + py,
+      b.x + px, Y, b.y + py,
+      b.x - px, Y, b.y - py,
+    ])
+    const idx = new Uint16Array([0, 1, 2, 0, 2, 3])
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+    geom.setIndex(new THREE.BufferAttribute(idx, 1))
+    geom.computeVertexNormals()
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffff66, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
+    const mesh = new THREE.Mesh(geom, mat)
+    this.scene.add(mesh)
+    this._streetHoverMesh = mesh
+    this.hoveredStreetEdgeKey = key
   }
 
   highlightFaction(faction) {
@@ -1329,8 +1307,22 @@ export default class WorldRenderer {
   clearBlockLayer() {
     for (const m of this.blockMeshes) this.scene.remove(m)
     this.blockMeshes = []
+  }
+
+  clearPlotLayer() {
     for (const m of this.plotMeshes) this.scene.remove(m)
     this.plotMeshes = []
+  }
+
+  clearGutterLayer() {
+    for (const m of this.gutterMeshes) this.scene.remove(m)
+    this.gutterMeshes = []
+  }
+
+  clearDerivedLayers() {
+    this.clearGutterLayer()
+    this.clearBlockLayer()
+    this.clearPlotLayer()
   }
 
   _makeFill(poly, colorHex, Y) {
@@ -1347,8 +1339,153 @@ export default class WorldRenderer {
     return new THREE.Mesh(geometry, mat)
   }
 
-  renderPlots(blocks, plots, districtData) {
+  renderGutters(streetGraph) {
+    this.clearGutterLayer()
+    if (!RENDER_GUTTERS) return
+    const nodes = streetGraph?.nodes || []
+    const edges = streetGraph?.edges || []
+    if (!nodes.length || !edges.length) return
+
+    // Build the gutter geometry directly from the street centerlines, using
+    // the same miter math as PolylineRenderer (so the gutters exactly hug the
+    // visible street strips):
+    //   1. At every junction (degree ≥ 2) compute one miter point per slot
+    //      (consecutive edge pair in CCW order). Clamp the miter to
+    //      miterLimitDist along its direction to avoid spikes.
+    //   2. At every dead-end (degree 1) place two perpendicular corners on
+    //      either side of the street, exactly at the dead-end node.
+    //   3. For each street edge, draw two line segments — one per side —
+    //      from its start-node corner to its end-node corner.
+    //   4. For each dead-end, draw a cap line connecting its two corners.
+
+    const r = 0.0875 / 2          // STREET_HALF_WIDTH (mirrors streetPolylines)
+    const miterLimit = 0.125      // mirrors streetPolylines.miterLimitDist
+    const limitSq = miterLimit * miterLimit
+    const Y = 0.077
+
+    const nodeById = new Map(nodes.map(n => [n.id, n]))
+    const adj = new Map()
+    for (const n of nodes) adj.set(n.id, [])
+    for (const e of edges) {
+      adj.get(e.nodeA)?.push({ edgeId: e.id, otherId: e.nodeB })
+      adj.get(e.nodeB)?.push({ edgeId: e.id, otherId: e.nodeA })
+    }
+
+    const corners = new Map()      // `${edgeId}_${nodeId}` → { left, right }
+    const deadEndEdgeByNode = new Map()  // nodeId → edgeId (degree-1 only)
+
+    for (const [nodeId, neighbors] of adj) {
+      const jPt = nodeById.get(nodeId)
+      if (!jPt || !neighbors.length) continue
+
+      if (neighbors.length === 1) {
+        const { edgeId, otherId } = neighbors[0]
+        const other = nodeById.get(otherId)
+        if (!other) continue
+        const dx = other.x - jPt.x, dy = other.y - jPt.y
+        const len = Math.hypot(dx, dy)
+        if (len < 1e-10) continue
+        const ux = dx / len, uy = dy / len
+        corners.set(`${edgeId}_${nodeId}`, {
+          left:  { x: jPt.x - uy * r, y: jPt.y + ux * r },
+          right: { x: jPt.x + uy * r, y: jPt.y - ux * r },
+        })
+        deadEndEdgeByNode.set(nodeId, edgeId)
+        continue
+      }
+
+      const edgeData = []
+      for (const { edgeId, otherId } of neighbors) {
+        const other = nodeById.get(otherId)
+        if (!other) continue
+        const dx = other.x - jPt.x, dy = other.y - jPt.y
+        const len = Math.hypot(dx, dy)
+        if (len < 1e-10) continue
+        edgeData.push({ edgeId, ux: dx / len, uy: dy / len })
+      }
+      if (edgeData.length < 2) continue
+      edgeData.sort((a, b) => Math.atan2(a.uy, a.ux) - Math.atan2(b.uy, b.ux))
+      const n = edgeData.length
+
+      const slotMiters = new Array(n)
+      for (let i = 0; i < n; i++) {
+        const A = edgeData[i], B = edgeData[(i + 1) % n]
+        const q1x = jPt.x - A.uy * r, q1y = jPt.y + A.ux * r
+        const q2x = jPt.x + B.uy * r, q2y = jPt.y - B.ux * r
+        const denom = A.ux * B.uy - A.uy * B.ux
+        let px, py
+        if (Math.abs(denom) < 1e-8) {
+          px = (q1x + q2x) / 2; py = (q1y + q2y) / 2
+        } else {
+          const t = ((q2x - q1x) * B.uy - (q2y - q1y) * B.ux) / denom
+          px = q1x + t * A.ux; py = q1y + t * A.uy
+          const mdx = px - jPt.x, mdy = py - jPt.y
+          const distSq = mdx * mdx + mdy * mdy
+          if (distSq > limitSq) {
+            const scale = miterLimit / Math.sqrt(distSq)
+            px = jPt.x + mdx * scale
+            py = jPt.y + mdy * scale
+          }
+        }
+        slotMiters[i] = { x: px, y: py }
+      }
+      for (let i = 0; i < n; i++) {
+        corners.set(`${edgeData[i].edgeId}_${nodeId}`, {
+          left:  slotMiters[i],
+          right: slotMiters[(i - 1 + n) % n],
+        })
+      }
+    }
+
+    const verts = []
+    for (const e of edges) {
+      const cA = corners.get(`${e.id}_${e.nodeA}`)
+      const cB = corners.get(`${e.id}_${e.nodeB}`)
+      if (!cA || !cB) continue
+      // At nodeB, the edge's outward direction is reversed, so the override's
+      // "left" maps to the strip's right and vice versa.
+      verts.push(cA.left.x,  Y, cA.left.y,  cB.right.x, Y, cB.right.y)
+      verts.push(cA.right.x, Y, cA.right.y, cB.left.x,  Y, cB.left.y)
+    }
+    for (const [nodeId, edgeId] of deadEndEdgeByNode) {
+      const c = corners.get(`${edgeId}_${nodeId}`)
+      if (!c) continue
+      verts.push(c.left.x, Y, c.left.y, c.right.x, Y, c.right.y)
+    }
+
+    if (verts.length === 0) return
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+    const lines = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0x00ffff }))
+    this.scene.add(lines)
+    this.gutterMeshes.push(lines)
+  }
+
+  renderBlocks(blocks) {
     this.clearBlockLayer()
+    if (!RENDER_BLOCKS) return
+    if (!blocks?.length) return
+
+    const blockLineVerts = []
+    for (const block of blocks) {
+      const poly = block.vertices
+      if (!poly?.length) continue
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length]
+        blockLineVerts.push(a.x, 0.08, a.y, b.x, 0.08, b.y)
+      }
+    }
+    if (blockLineVerts.length === 0) return
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(blockLineVerts), 3))
+    const lines = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xff8800 }))
+    this.scene.add(lines)
+    this.blockMeshes.push(lines)
+  }
+
+  renderPlots(plots, districtData) {
+    this.clearPlotLayer()
+    if (!RENDER_PLOTS) return
     if (!plots?.length) return
 
     const districtById = new Map((districtData?.districts || []).map(d => [d.id, d]))
@@ -1373,25 +1510,6 @@ export default class WorldRenderer {
       }
     }
 
-    // Block outlines at Y=0.08 (above streets and plot lines)
-    const blockLineVerts = []
-    for (const block of (blocks || [])) {
-      const poly = block.vertices
-      if (!poly?.length) continue
-      for (let i = 0; i < poly.length; i++) {
-        const a = poly[i], b = poly[(i + 1) % poly.length]
-        blockLineVerts.push(a.x, 0.08, a.y, b.x, 0.08, b.y)
-      }
-    }
-    if (blockLineVerts.length > 0) {
-      const geom = new THREE.BufferGeometry()
-      geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(blockLineVerts), 3))
-      const lines = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xff8800 }))
-      this.scene.add(lines)
-      this.blockMeshes.push(lines)
-    }
-
-    // Batch all plot outline edges into a single LineSegments geometry
     const lineVerts = []
     for (const plot of plots) {
       const poly = plot.vertices
@@ -1491,6 +1609,7 @@ export default class WorldRenderer {
       if (!c) continue
       const mesh = new THREE.Mesh(blockGeo, blockMat)
       mesh.position.set(c.x, 0.09, c.y)
+      mesh.userData = { kind: 'block', id: b.id, blockType: b.blockType, districtId: b.districtId }
       mesh.visible = this.showDebug
       this.scene.add(mesh)
       this.debugObjects.push(mesh)
@@ -1504,10 +1623,65 @@ export default class WorldRenderer {
       if (!c) continue
       const mesh = new THREE.Mesh(plotGeo, plotMat)
       mesh.position.set(c.x, 0.09, c.y)
+      mesh.userData = { kind: 'plot', id: p.id, blockId: p.blockId, districtId: p.districtId }
       mesh.visible = this.showDebug
       this.scene.add(mesh)
       this.debugObjects.push(mesh)
       this._plotDebugMeshes.push(mesh)
+    }
+  }
+
+  getBlockOrPlotCenterAtWorldPos(worldX, worldY, threshold = 0.2) {
+    const rSq = threshold * threshold
+    for (const mesh of this._blockDebugMeshes) {
+      if (!mesh.visible) continue
+      const dx = worldX - mesh.position.x, dy = worldY - mesh.position.z
+      if (dx * dx + dy * dy < rSq) return mesh.userData
+    }
+    for (const mesh of this._plotDebugMeshes) {
+      if (!mesh.visible) continue
+      const dx = worldX - mesh.position.x, dy = worldY - mesh.position.z
+      if (dx * dx + dy * dy < rSq) return mesh.userData
+    }
+    return null
+  }
+
+  // Hit-test the cursor against every street edge by point-to-segment distance.
+  // Returns the closest edge within `threshold` world units, or null.
+  getStreetEdgeAtWorldPos(worldX, worldY, threshold = 0.0875) {
+    const sg = this.cityDistrictData?.streetGraph
+    const nodes = sg?.nodes, edges = sg?.edges
+    if (!nodes?.length || !edges?.length) return null
+    const byId = new Map(nodes.map(n => [n.id, n]))
+    const thrSq = threshold * threshold
+    let bestEdge = null, bestDistSq = Infinity, bestT = 0
+    for (const e of edges) {
+      const a = byId.get(e.nodeA), b = byId.get(e.nodeB)
+      if (!a || !b) continue
+      const dx = b.x - a.x, dy = b.y - a.y
+      const lenSq = dx * dx + dy * dy
+      if (lenSq < 1e-12) continue
+      let t = ((worldX - a.x) * dx + (worldY - a.y) * dy) / lenSq
+      t = Math.max(0, Math.min(1, t))
+      const px = a.x + t * dx, py = a.y + t * dy
+      const distSq = (worldX - px) ** 2 + (worldY - py) ** 2
+      if (distSq < thrSq && distSq < bestDistSq) {
+        bestDistSq = distSq; bestEdge = e; bestT = t
+      }
+    }
+    if (!bestEdge) return null
+    const a = byId.get(bestEdge.nodeA), b = byId.get(bestEdge.nodeB)
+    const length = Math.hypot(b.x - a.x, b.y - a.y)
+    return {
+      kind: 'streetEdge',
+      id: bestEdge.id ?? null,
+      type: bestEdge.type ?? null,
+      districtId: bestEdge.districtId ?? null,
+      nodeA: bestEdge.nodeA,
+      nodeB: bestEdge.nodeB,
+      length,
+      tipDist: Math.sqrt(bestDistSq),
+      t: bestT,
     }
   }
 
@@ -1531,8 +1705,33 @@ export default class WorldRenderer {
     this._clearDebugGroup(this._districtDebugMeshes)
     this._clearDebugGroup(this._blockDebugMeshes)
     this._clearDebugGroup(this._plotDebugMeshes)
+    this._clearDebugGroup(this._streetSeedMeshes)
     for (const obj of this.debugObjects) this.scene.remove(obj)
     this.debugObjects = []
+  }
+
+  drawStreetSeeds(streetGraph) {
+    this._clearDebugGroup(this._streetSeedMeshes)
+    const seeds = streetGraph?.seeds
+    if (!seeds?.length) return
+    const geo = new THREE.SphereGeometry(0.035, 8, 8)
+    const matInterior     = new THREE.MeshBasicMaterial({ color: 0x2244ff })
+    const matPerimeter    = new THREE.MeshBasicMaterial({ color: 0x66ccff })
+    const matDropBoundary = new THREE.MeshBasicMaterial({ color: 0x884444 })
+    const matDropPerim    = new THREE.MeshBasicMaterial({ color: 0xff8800 })
+    for (const s of seeds) {
+      const mat = s.kind === 'perimeter'     ? matPerimeter
+                : s.kind === 'dropped'       ? matDropBoundary
+                : s.kind === 'dropped-perim' ? matDropPerim
+                : matInterior
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.set(s.x, 0.11, s.y)
+      mesh.userData = { kind: 'streetSeed', seedKind: s.kind, districtId: s.districtId }
+      mesh.visible = this.showDebug
+      this.scene.add(mesh)
+      this.debugObjects.push(mesh)
+      this._streetSeedMeshes.push(mesh)
+    }
   }
 
 }
