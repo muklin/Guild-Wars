@@ -8,7 +8,7 @@ const BOUNDARY_INTERVAL = 1.0 // segment length along city boundary edges
 export const STREET_HALF_WIDTH = 0.04375  // half road width — must match WorldRenderer thickness / 2
 const MIN_STUB_ANGLE_DEG = 30  // dead-end stubs at <this angle to a neighbor are pruned
 const MIN_COMPONENT_NODES = 3  // disconnected components below this many nodes are deleted
-const COLLINEAR_NODE_MARGIN = 0.2  // a node within this perpendicular distance of an edge interior is absorbed onto that edge
+const COLLINEAR_NODE_MARGIN = 0.4  // a node within this perpendicular distance of an edge interior is absorbed onto that edge
 
 const STREET_PRIORITY = { Stone: 2, Brick: 1, Mud: 0 }
 
