@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
+import { pointInPolygon } from './renderUtils.js'
 
 const FEATURES = {
   fields: {
@@ -64,7 +65,7 @@ const FEATURES = {
   }
 }
 
-export default class TerrainFeatureManager {
+export default class FeatureManager {
   constructor(scene) {
     this.scene = scene
     this.loader = new GLTFLoader()
@@ -91,17 +92,6 @@ export default class TerrainFeatureManager {
     }
   }
 
-  _pointInPolygon(x, y, polygon) {
-    let inside = false
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const xi = polygon[i].x, yi = polygon[i].y
-      const xj = polygon[j].x, yj = polygon[j].y
-      if (((yi > y) !== (yj > y)) && x < ((xj - xi) * (y - yi) / (yj - yi) + xi))
-        inside = !inside
-    }
-    return inside
-  }
-
   _samplePolygon(polygon, count, rng) {
     const xs = polygon.map(v => v.x), ys = polygon.map(v => v.y)
     const minX = Math.min(...xs), maxX = Math.max(...xs)
@@ -111,7 +101,7 @@ export default class TerrainFeatureManager {
     while (pts.length < count && attempts < count * 40) {
       const x = minX + rng() * (maxX - minX)
       const y = minY + rng() * (maxY - minY)
-      if (this._pointInPolygon(x, y, polygon)) pts.push({ x, z: y })
+      if (pointInPolygon(x, y, polygon)) pts.push({ x, z: y })
       attempts++
     }
     return pts
@@ -160,17 +150,17 @@ export default class TerrainFeatureManager {
   async spawn(featureName, cells, absolutePos={x:0,z:0,rotX:0,rotY:0,rotZ:0}) {
 
     const cfg = FEATURES[featureName]
-    if (!cfg) { console.warn(`TerrainFeatureManager: unknown feature '${featureName}'`); return }
+    if (!cfg) { console.warn(`FeatureManager: unknown feature '${featureName}'`); return }
 
     let gltf
     try {
       gltf = await this._loadGLTF(cfg.glbPath)
     } catch (err) {
-      console.error(`TerrainFeatureManager: failed to load ${cfg.glbPath}`, err)
+      console.error(`FeatureManager: failed to load ${cfg.glbPath}`, err)
       return
     }
 
-    console.log(`TerrainFeatureManager: spawning '${featureName}' for ${cells.length} cells`)
+    console.log(`FeatureManager: spawning '${featureName}' for ${cells.length} cells`)
 
     for (const cell of cells) {
       const rng = this._mkRng(cell.id ?? 0)

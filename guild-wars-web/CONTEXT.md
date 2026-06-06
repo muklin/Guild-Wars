@@ -170,7 +170,7 @@ _Avoid_: port, harbor
 ### Blocks & Plots
 
 **Gutter**:
-The edge of the road on each side of a street centerline.  These are offset from the street centers, and at junctions are mitred to find the junction point with the adjacent road's gutter
+The edge of the road on each side of a street centerline.  These are offset from the street centers, and at junctions are mitred to find the junction point with the adjacent road's gutter.  They do not cross roads or cross into junctions at all.  They are always continous, multi segment loops, which are the logical boundary of Blocks.
 _Avoid_: curb, kerb, road edge
 
 **Block**:
@@ -178,7 +178,7 @@ A contiguous polygon of land bounded by gutters, derived by tracing planar faces
 _Avoid_: parcel, lot, face
 
 **City square**:
-A block whose area falls below the district's `minBlockSize` threshold, or one that cannot fit any plots. Rendered as a paved surface in the district's street colour rather than subdivided.
+A block whose area falls below the district's `square_threshhold` threshold, or one that cannot fit any plots. Rendered as a paved surface in the district's street colour rather than subdivided.
 _Avoid_: plaza (plaza is a design intent, not a generation category)
 
 **Plot**:

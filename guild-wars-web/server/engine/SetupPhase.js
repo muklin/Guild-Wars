@@ -1,9 +1,10 @@
-import TerrainVoronoiGenerator from './voronoi/TerrainVoronoiGenerator.js'
-import StreetVoronoiGenerator from './voronoi/StreetVoronoiGenerator.js'
-import CityBlockGenerator from './voronoi/CityBlockGenerator.js'
-import BuildingTemplateGenerator from './buildings/BuildingTemplateGenerator.js'
-import TextureTemplateGenerator from './buildings/TextureTemplateGenerator.js'
-import { CALC_BLOCKS } from './pipelineFlags.js'
+import TerrainVoronoiGenerator from './CityGenerator/TerrainVoronoiGenerator.js'
+import StreetVoronoiGenerator from './CityGenerator/StreetVoronoiGenerator.js'
+import CityBlockGenerator, { majorityStreetType } from './CityGenerator/CityBlockGenerator.js'
+import PlotVoronoiGenerator from './CityGenerator/PlotVoronoiGenerator.js'
+import BuildingTemplateGenerator from './CityGenerator/buildings/BuildingTemplateGenerator.js'
+import TextureTemplateGenerator from './CityGenerator/buildings/TextureTemplateGenerator.js'
+import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
 
 export default class SetupPhase {
   constructor(gameStateManager) {
@@ -669,7 +670,7 @@ export default class SetupPhase {
 
     const gen = new StreetVoronoiGenerator()
     cityData.streetGraph = gen.generate(cityData.districts, cityData.edges, cityData.edgePoints || [], epochSeed)
-    this.log.push(`Generated street graph: ${cityData.streetGraph.nodes.length} nodes, ${cityData.streetGraph.edges.length} edges`)
+    this.log.push(`Generated street graph: ${cityData.streetGraph.junctions.length} junctions`)
   }
 
   _generateBuildings() {
@@ -681,10 +682,35 @@ export default class SetupPhase {
       this.log.push('Block calculation disabled (pipelineFlags.CALC_BLOCKS)')
       return
     }
-    const result = new CityBlockGenerator().generate(cityData.districts, cityData.streetGraph)
-    cityData.blocks = result.blocks
-    cityData.plots  = result.plots
-    this.log.push(`Generated ${result.blocks.length} blocks, ${result.plots.length} plots`)
+
+    const { blocks, roadEdges } = new CityBlockGenerator().generate(cityData.districts, cityData.streetGraph)
+    cityData.blocks = blocks
+
+    if (!CALC_PLOTS) {
+      cityData.plots = []
+      this.log.push(`Generated ${blocks.length} blocks (plot calculation disabled)`)
+      return
+    }
+
+    const junctions = cityData.streetGraph?.junctions || []
+    const { plots } = new PlotVoronoiGenerator().generate(blocks, cityData.districts, junctions, roadEdges)
+    cityData.plots = plots
+
+    // City squares are paved, walkable extensions of the street network — record
+    // them on the street graph so they can be rendered in the street pass and
+    // traversed by pathfinding (across the square, not around it). Each square
+    // carries the road edges it borders, which form its connectivity to streets.
+    cityData.streetGraph.squares = blocks
+      .filter(b => b.blockType === 'square')
+      .map(b => ({
+        blockId: b.id,
+        districtId: b.districtId,
+        polygon: b.blockCorners,
+        streetType: majorityStreetType(b.streetEdges),
+        streetEdges: b.streetEdges,
+      }))
+
+    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${cityData.streetGraph.squares.length} squares`)
   }
 
   finishStreetSetup() {

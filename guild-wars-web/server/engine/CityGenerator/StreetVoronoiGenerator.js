@@ -1,7 +1,6 @@
-import DelaunayTriangulator from './DelaunayTriangulator.js'
-import Point from './Point.js'
-import { clipToPolygon, triangleCenter, generateGridSeeds } from './VoronoiUtils.js'
-import { CALC_GUTTERS } from '../pipelineFlags.js'
+import DelaunayTriangulator from '../voronoi/DelaunayTriangulator.js'
+import Point from '../voronoi/Point.js'
+import { clipToPolygon, triangleCenter, generateGridSeeds, pip, distToSegSq, distToPolygonBoundary, projectToPolygon, segIntersect } from '../voronoi/VoronoiUtils.js'
 
 const SNAP_THRESHOLD = 0.25   // world units — near-duplicate node merge
 const BOUNDARY_INTERVAL = 1.0 // segment length along city boundary edges
@@ -28,52 +27,132 @@ function betterStreetType(a, b) {
   return (STREET_PRIORITY[a] ?? 0) >= (STREET_PRIORITY[b] ?? 0) ? a : b
 }
 
-// interval: perimeter seed spacing (world units)
-// density:  interior seeds per unit area  (≈ 1/spacing²; Market≈1.2, Residential≈0.4)
-// xyRatio:  grid column/row spacing ratio  (1 = square, 2 = wide, 0.5 = tall)
-// jitter:   max seed displacement as fraction of grid spacing  (0 = rigid, 0.5 = loose)
-// metric:   Voronoi vertex style — 'euclidean' | 'chebyshev' | 'manhattan' | 'centroid'
-const DISTRICT_STREET_PARAMS = {
-  Leadership:           { interval: 0.5, density: 1.0, xyRatio: 2.0, jitter: 0.2, metric: 'manhattan' },
-  Market:               { interval: 1.0, density: 1.0, xyRatio: 4.0, jitter: 0.1, metric: 'manhattan' },
-  'Residential-Slums':  { interval: 1.5, density: 2.0, xyRatio: 1.0, jitter: 0.9, metric: 'manhattan' },
-  'Residential-Middle': { interval: 1.0, density: 2.0, xyRatio: 2.0, jitter: 0.2, metric: 'manhattan' },
-  'Residential-Noble':  { interval: 1.0, density: 1.2, xyRatio: 1.0, jitter: 0.5, metric: 'euclidean' },
-  Religious:            { interval: 0.5, density: 1.5, xyRatio: 1.0, jitter: 0.1, metric: 'centroid' },
-  Magical:              { interval: 0.6, density: 2.0, xyRatio: 1.0, jitter: 0.5, metric: 'centroid' },
-  Military:             { interval: 0.1, density: 1.0, xyRatio: 2.0, jitter: 0.1, metric: 'manhattan' },
-  Industry:             { interval: 1.2, density: 0.2, xyRatio: 2.5, jitter: 0.1, metric: 'manhattan' },
-  Entertainment:        { interval: 0.5, density: 2.0, xyRatio: 1.0, jitter: 0.9, metric: 'centroid' },
-}
+// ── DISTRICT_PARAMETERS ───────────────────────────────────────────────────────
+// Per-district tuning, looked up by assignedType. Residential is split by class
+// into -Slums / -Middle / -Noble, and Leadership by ruling body into
+// -Monarchy / -Republic / -Tyrant / -Oligarchy / -Theocracy / -Anarchist
+// (defaulting to Monarchy when unset). Unknown or null districts fall back to
+// DEFAULT_PARAMS. The fields drive two separate generation stages:
+//
+// STREET stage — StreetVoronoiGenerator.generate(); seeds the per-district street
+// micro-Voronoi (which in turn produces the gutters and blocks):
+//   street_spacing   Spacing (world units) of street seeds sampled along the district
+//              boundary. Also sets interior-seed clearance — interior seeds within
+//              street_spacing*0.5 of the boundary, or within `street_spacing` of any perimeter
+//              seed, are dropped. Smaller → denser boundary-following streets.
+//   block_density    Interior street seeds per unit area (grid spacing ≈ 1/sqrt(block_density)).
+//              Higher → more interior streets → smaller blocks.
+//   xyRatio    Interior grid column/row spacing ratio: 1 = square, >1 = wide
+//              blocks, <1 = tall blocks.
+//   jitter     Max interior-seed displacement as a fraction of grid spacing:
+//              0 = rigid grid (regular blocks), 0.5 = loose (organic blocks).
+//   metric     Voronoi cell-vertex style: 'euclidean' (circumcenter, irregular),
+//              'manhattan' / 'chebyshev' (axis-aligned, blocky), 'centroid'
+//              (smoother, more uniform).
+//
+// PLOT stage — PlotVoronoiGenerator.generate(); subdivides each block into plots:
+//   square_threshhold  Block area (world units²) below which the block is NOT subdivided
+//                 and instead becomes a single paved 'city square'. Larger → more
+//                 squares, fewer plotted blocks.
+//   plotSpacing   Spacing (world units) of plot seeds placed along the block
+//                 perimeter; also sets the per-junction dead-zone (2*plotSpacing)
+//                 and the seed-merge gap. Smaller → more, narrower plots per block.
+export const DISTRICT_PARAMETERS = {
+  'Leadership-Monarchy':  {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
+  'Leadership-Republic':  {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
+  'Leadership-Tyrant':    {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
+  'Leadership-Oligarchy': {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
+  'Leadership-Theocracy': {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
+  'Leadership-Anarchist': {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
+  Market:                 {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.3, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  'Residential-Slums':    {street_spacing: 1.5, block_density: 3.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.05, plotSpacing: 0.15, minPlotSize: 0.025 },
+  'Residential-Middle':   {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  'Residential-Noble':    {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  Religious:              {street_spacing: 0.5, block_density: 1.5, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  Magical:                {street_spacing: 0.6, block_density: 2.0, xyRatio: 1.0, metric: 'centroid' , square_threshhold: 0.25, plotSpacing: 0.15, minPlotSize: 0.025 },
+  Military:               {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.3  , minPlotSize: 0.025 },
+  Industry:               {street_spacing: 1.2, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.05, plotSpacing: 0.3 , minPlotSize: 0.025 },
+  Entertainment:          {street_spacing: 0.5, block_density: 2.0, xyRatio: 1.0, metric: 'centroid' , square_threshhold: 0.3, plotSpacing: 0.15 , maxPlotSize: 0.025 },
+}  
 
-const FALLBACK_STREET_PARAMS = { interval: 1.0, density: 0.5, xyRatio: 1.5, jitter: 0.3, metric: 'manhattan' }
 
-function getStreetParams(district) {
-  const type = district.assignedType
-  const cls  = district.residentialClass
+// Fallback for unknown / null / unassigned districts. Guarantees every field
+// is present so consumers never read undefined.
+const DEFAULT_PARAMS = { street_spacing: 1.0, block_density: 1.0, xyRatio: 1.0, jitter: 0.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.2 }
+
+export function getDistrictParams(district) {
+  const type = district?.assignedType
   let key = type
-  if (type === 'Residential') {
-    if      (cls === 'Noble')  key = 'Residential-Noble'
-    else if (cls === 'Middle') key = 'Residential-Middle'
-    else                       key = 'Residential-Slums'
-  }
-  return DISTRICT_STREET_PARAMS[key] ?? FALLBACK_STREET_PARAMS
+  // Residential and Leadership are split by sub-class — note they live in
+  // different fields (residentialClass vs LeadershipClass).
+  if (type === 'Residential') key = `Residential-${district.residentialClass ?? 'Slums'}`
+  else if (type === 'Leadership') key = `Leadership-${district.LeadershipClass ?? 'Monarchy'}`
+  return DISTRICT_PARAMETERS[key] ?? DEFAULT_PARAMS
 }
 
-// Strictly-interior segment intersection. Returns {x, y, t, s} where t is the
-// parameter along AB and s along CD, both in (eps, 1-eps); null if parallel,
-// collinear, or the intersection is at/beyond either endpoint.
-function _segIntersect(a, b, c, d) {
-  const r1x = b.x - a.x, r1y = b.y - a.y
-  const r2x = d.x - c.x, r2y = d.y - c.y
-  const denom = r1x * r2y - r1y * r2x
-  if (Math.abs(denom) < 1e-12) return null
-  const sx = c.x - a.x, sy = c.y - a.y
-  const t = (sx * r2y - sy * r2x) / denom
-  const s = (sx * r1y - sy * r1x) / denom
-  const eps = 1e-6
-  if (t < eps || t > 1 - eps || s < eps || s > 1 - eps) return null
-  return { x: a.x + t * r1x, y: a.y + t * r1y, t, s }
+// Snap interior "perimeter" junctions onto the district boundary. A junction
+// bridged to a boundary by a street-connect edge but pulled inward (within the
+// boundary-seed clearance) leaves a thin uncovered strip between the perimeter
+// street and the interior network. Merge each such junction into the boundary
+// node it connects to, so its interior streets reach the edge and the strip
+// closes. Runs before gutter miters so gutters recompute correctly. Along-edge
+// connectivity is handled by the boundary street, so the merged junction's other
+// streets radiate inward — no boundary-parallel streets are created.
+// Mutates `nodes` and `edges` in place.
+function snapPerimeterJunctionsToBoundary(nodes, edges, districts) {
+  const ON_BOUNDARY = 0.05
+  const nodeById = new Map(nodes.map(n => [n.id, n]))
+  const nearestDist = (n) => {
+    let best = Infinity, bd = null
+    for (const d of districts) {
+      const v = distToPolygonBoundary(n.x, n.y, d.polygon)
+      if (v < best) { best = v; bd = d }
+    }
+    return { d: best, district: bd }
+  }
+
+  // Collect interior→boundary merge pairs from connect edges.
+  const pairs = []
+  for (const e of edges) {
+    if (!/^street-connect/.test(e.id)) continue
+    const a = nodeById.get(e.nodeA), b = nodeById.get(e.nodeB)
+    if (!a || !b) continue
+    const da = nearestDist(a), db = nearestDist(b)
+    let inr, bnd, inrDist, district
+    if (da.d < ON_BOUNDARY && db.d >= ON_BOUNDARY) { bnd = a; inr = b; inrDist = db.d; district = da.district }
+    else if (db.d < ON_BOUNDARY && da.d >= ON_BOUNDARY) { bnd = b; inr = a; inrDist = da.d; district = db.district }
+    else continue
+    const clearance = Math.max(STREET_HALF_WIDTH * 2, (getDistrictParams(district).street_spacing ?? 1) * 0.5)
+    if (inrDist < clearance) pairs.push({ inr: inr.id, bnd: bnd.id, d: inrDist })
+  }
+  if (pairs.length === 0) return
+
+  // Merge each interior node into its nearest boundary partner (nearest first;
+  // never merge a node twice, never merge two boundary nodes together).
+  pairs.sort((p, q) => p.d - q.d)
+  const parent = new Map(nodes.map(n => [n.id, n.id]))
+  const find = (id) => { while (parent.get(id) !== id) { parent.set(id, parent.get(parent.get(id))); id = parent.get(id) } return id }
+  const merged = new Set()
+  for (const p of pairs) {
+    if (merged.has(p.inr) || find(p.inr) !== p.inr) continue
+    parent.set(p.inr, find(p.bnd))
+    merged.add(p.inr)
+  }
+
+  // Remap edges in place: redirect endpoints, drop self-loops and duplicates.
+  const seen = new Set()
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const a = find(edges[i].nodeA), b = find(edges[i].nodeB)
+    if (a === b) { edges.splice(i, 1); continue }
+    const k = a < b ? `${a}_${b}` : `${b}_${a}`
+    if (seen.has(k)) { edges.splice(i, 1); continue }
+    seen.add(k)
+    edges[i] = { ...edges[i], nodeA: a, nodeB: b }
+  }
+  // Remove merged (non-root) nodes.
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (find(nodes[i].id) !== nodes[i].id) nodes.splice(i, 1)
+  }
 }
 
 // Repeatedly find a pair of non-incident crossing edges and delete the shorter
@@ -103,7 +182,7 @@ function resolveStreetCrossings(nodes, edges) {
          || e1.nodeB === e2.nodeA || e1.nodeB === e2.nodeB) continue
         const c = nodeById.get(e2.nodeA), d = nodeById.get(e2.nodeB)
         if (!c || !d) continue
-        if (!_segIntersect(a, b, c, d)) continue
+        if (!segIntersect(a, b, c, d)) continue
         cutI = i; cutJ = j
         break outer
       }
@@ -288,177 +367,104 @@ function pruneAcuteStubs(nodes, edges, minAngleDeg = MIN_STUB_ANGLE_DEG) {
   if (pruned > 0) console.log(`pruneAcuteStubs: removed ${pruned} dead-end stubs at <${minAngleDeg}°`)
 }
 
-// Build the gutter graph: nodes are miter-corner points at every junction,
-// edges run along the sides of each road and around each junction perimeter.
-// Mirrors the geometry computed by PolylineRenderer._computeJunctionData().
-function buildGutterGraph(streetNodes, streetEdges) {
+// Build junction-centric street graph with mitered gutter corners.
+// Each junction stores its centerpoint, type, districtId, and a connection
+// per adjacent road. Each connection stores the mitered gutterLeft/gutterRight
+// corners at THIS junction's end of that road — the exact points where this
+// road's parallel offset lines intersect the adjacent roads' offset lines.
+//
+// This is a server-side port of PolylineRenderer._computeJunctionData (lines
+// 150–241). The miter geometry is stored here so CityBlockGenerator can trace
+// block faces from gutter corners without any client-side math.
+const MITER_LIMIT = STREET_HALF_WIDTH * 8  // world units; beyond this, bevel instead of spike
+
+function buildJunctions(streetNodes, streetEdges) {
   const r = STREET_HALF_WIDTH
   const nodeById = new Map(streetNodes.map(n => [n.id, n]))
 
-  const adj = new Map()
-  for (const n of streetNodes) adj.set(n.id, [])
-  for (const edge of streetEdges) {
-    adj.get(edge.nodeA)?.push({ edgeId: edge.id, otherId: edge.nodeB })
-    adj.get(edge.nodeB)?.push({ edgeId: edge.id, otherId: edge.nodeA })
+  // Build adjacency: nodeId → [{ roadId, toId, type, districtId }]
+  const adj = new Map(streetNodes.map(n => [n.id, []]))
+  for (const e of streetEdges) {
+    adj.get(e.nodeA)?.push({ roadId: e.id, toId: e.nodeB, type: e.type, districtId: e.districtId })
+    adj.get(e.nodeB)?.push({ roadId: e.id, toId: e.nodeA, type: e.type, districtId: e.districtId })
   }
 
-  let nextGId = 0
-  const gutterNodes = []
-  const gutterEdges = []
-  // edgeCorners[`${edgeId}_${nodeId}`] = { left: node, right: node }
-  const edgeCorners = new Map()
+  const junctions = []
+  const limitSq = MITER_LIMIT * MITER_LIMIT
 
-  for (const [nodeId, neighbors] of adj) {
-    const jPt = nodeById.get(nodeId)
-    if (!jPt) continue
+  for (const node of streetNodes) {
+    const neighbors = adj.get(node.id) || []
 
+    // Junction type/districtId = highest-priority adjacent edge
+    let jType = 'Mud', jDistrictId = null
+    for (const nb of neighbors) {
+      if ((STREET_PRIORITY[nb.type] ?? 0) >= (STREET_PRIORITY[jType] ?? 0)) {
+        jType = nb.type
+        jDistrictId = nb.districtId
+      }
+    }
+
+    const junction = { id: node.id, x: node.x, y: node.y, districtId: jDistrictId, type: jType, connections: [] }
+
+    // Compute unit outgoing vectors for each neighbor
     const edgeData = []
-    for (const { edgeId, otherId } of neighbors) {
-      const other = nodeById.get(otherId)
+    for (const nb of neighbors) {
+      const other = nodeById.get(nb.toId)
       if (!other) continue
-      const dx = other.x - jPt.x, dy = other.y - jPt.y
+      const dx = other.x - node.x, dy = other.y - node.y
       const len = Math.sqrt(dx * dx + dy * dy)
       if (len < 1e-10) continue
-      edgeData.push({ edgeId, ux: dx / len, uy: dy / len })
+      edgeData.push({ roadId: nb.roadId, toId: nb.toId, type: nb.type, districtId: nb.districtId, ux: dx / len, uy: dy / len })
     }
-    if (!edgeData.length) continue
 
+    // Sort by angle (matches PolylineRenderer._computeJunctionData sort)
     edgeData.sort((a, b) => Math.atan2(a.uy, a.ux) - Math.atan2(b.uy, b.ux))
     const n = edgeData.length
 
-    if (n === 1) {
-      // Dead-end cap: two perpendicular corners joined by a cap edge.
-      const { edgeId, ux, uy } = edgeData[0]
-      const left  = { id: nextGId++, x: jPt.x - uy * r, y: jPt.y + ux * r }
-      const right = { id: nextGId++, x: jPt.x + uy * r, y: jPt.y - ux * r }
-      gutterNodes.push(left, right)
-      gutterEdges.push({ nodeA: left.id, nodeB: right.id })
-      edgeCorners.set(`${edgeId}_${nodeId}`, { left, right })
-    } else {
-      // Multi-edge junction: one "slot" per consecutive edge pair (A, B).
-      // Normal case: single miter-corner node (intersection of gutter lines).
-      // Blown-out case (near-parallel roads or denom≈0): two separate nodes —
-      //   q1Node on A's gutter line, q2Node on B's gutter line — plus a short
-      //   bridge edge between them.  This keeps along-road gutter edges exactly
-      //   parallel to the road (no bending toward the junction center).
-      const slots = []  // { q1Node, q2Node }
-      for (let i = 0; i < n; i++) {
-        const A = edgeData[i], B = edgeData[(i + 1) % n]
-        const q1x = jPt.x - A.uy * r, q1y = jPt.y + A.ux * r
-        const q2x = jPt.x + B.uy * r, q2y = jPt.y - B.ux * r
-        const denom = A.ux * B.uy - A.uy * B.ux
-        let blown = false, px = 0, py = 0
-        if (Math.abs(denom) < 1e-8) {
-          blown = true
-        } else {
-          const t = ((q2x - q1x) * B.uy - (q2y - q1y) * B.ux) / denom
-          px = q1x + t * A.ux; py = q1y + t * A.uy
-          const mdx = px - jPt.x, mdy = py - jPt.y
-          // Blow threshold = half the minimum inter-junction spacing so the miter
-          // corner can never reach a neighbouring junction's perimeter.
-          if (mdx * mdx + mdy * mdy > (SNAP_THRESHOLD / 2) * (SNAP_THRESHOLD / 2)) blown = true
-        }
-        if (blown) {
-          const gnQ1 = { id: nextGId++, x: q1x, y: q1y }
-          const gnQ2 = { id: nextGId++, x: q2x, y: q2y }
-          gutterNodes.push(gnQ1, gnQ2)
-          gutterEdges.push({ nodeA: gnQ1.id, nodeB: gnQ2.id })  // bridge across the gap
-          slots.push({ q1Node: gnQ1, q2Node: gnQ2 })
-        } else {
-          const gn = { id: nextGId++, x: px, y: py }
-          gutterNodes.push(gn)
-          slots.push({ q1Node: gn, q2Node: gn })
-        }
+    // Compute miter slots for each consecutive edge pair (A, B):
+    //   q1 = A's left-offset point at this node
+    //   q2 = B's right-offset point at this node
+    //   If the A-left / B-right lines intersect within MITER_LIMIT: use that miter point.
+    //   Otherwise bevel: keep q1 and q2 separate.
+    const slots = new Array(n)
+    for (let i = 0; i < n; i++) {
+      const A = edgeData[i], B = edgeData[(i + 1) % n]
+      const q1 = { x: node.x - A.uy * r, y: node.y + A.ux * r }  // A left
+      const q2 = { x: node.x + B.uy * r, y: node.y - B.ux * r }  // B right
+      const denom = A.ux * B.uy - A.uy * B.ux
+      if (Math.abs(denom) < 1e-8) {
+        slots[i] = { q1, q2 }
+        continue
       }
-      // Perimeter: connect q2 of slot[i] to q1 of slot[(i+1)%n].
-      // For non-blown slots q1Node===q2Node so the connection is slot[i]→slot[i+1].
-      for (let i = 0; i < n; i++) {
-        const curr = slots[i], next = slots[(i + 1) % n]
-        if (curr.q2Node.id !== next.q1Node.id) {
-          gutterEdges.push({ nodeA: curr.q2Node.id, nodeB: next.q1Node.id })
-        }
-      }
-      // Edge corners: left = q1 of slot[i] (on edge[i]'s gutter line),
-      //               right = q2 of slot[(i-1+n)%n] (also on edge[i]'s gutter line).
-      for (let i = 0; i < n; i++) {
-        edgeCorners.set(`${edgeData[i].edgeId}_${nodeId}`, {
-          left:  slots[i].q1Node,
-          right: slots[(i - 1 + n) % n].q2Node,
-        })
+      const t = ((q2.x - q1.x) * B.uy - (q2.y - q1.y) * B.ux) / denom
+      const px = q1.x + t * A.ux, py = q1.y + t * A.uy
+      const mdx = px - node.x, mdy = py - node.y
+      if (mdx * mdx + mdy * mdy <= limitSq) {
+        const miter = { x: px, y: py }
+        slots[i] = { q1: miter, q2: miter }
+      } else {
+        slots[i] = { q1, q2 }
       }
     }
+
+    // Assign gutterLeft/gutterRight to each connection.
+    // trueLeft  of edge i = slots[i].q1         (left offset at this node along edge i)
+    // trueRight of edge i = slots[(i-1+n)%n].q2 (right offset, from the previous slot)
+    for (let i = 0; i < n; i++) {
+      junction.connections.push({
+        toId:        edgeData[i].toId,
+        roadId:      edgeData[i].roadId,
+        type:        edgeData[i].type,
+        districtId:  edgeData[i].districtId,
+        gutterLeft:  slots[i].q1,
+        gutterRight: slots[(i - 1 + n) % n].q2,
+      })
+    }
+
+    junctions.push(junction)
   }
 
-  // Along-road gutter edges: left side = cA.left ↔ cB.right, right side = cA.right ↔ cB.left
-  for (const edge of streetEdges) {
-    const cA = edgeCorners.get(`${edge.id}_${edge.nodeA}`)
-    const cB = edgeCorners.get(`${edge.id}_${edge.nodeB}`)
-    if (!cA || !cB) continue
-    gutterEdges.push({ nodeA: cA.left.id,  nodeB: cB.right.id })
-    gutterEdges.push({ nodeA: cA.right.id, nodeB: cB.left.id  })
-  }
-
-  // ── Post-process: remove collinear degree-2 gutter nodes ────────────────
-  // A degree-2 node whose two neighbors are collinear through it (angle between
-  // incoming directions ≈ π) is a redundant intermediate point on a straight
-  // gutter edge.  Keeping it creates collinear triples that break _traceFaces.
-  // Replace the two edges A-M and M-B with a single edge A-B and drop node M.
-  {
-    const gAdj = new Map(gutterNodes.map(n => [n.id, new Set()]))
-    for (const e of gutterEdges) {
-      gAdj.get(e.nodeA)?.add(e.nodeB)
-      gAdj.get(e.nodeB)?.add(e.nodeA)
-    }
-    const gNodeById = new Map(gutterNodes.map(n => [n.id, n]))
-    const removedNodes = new Set()
-    const COLLINEAR_ANGLE_TOL = 1e-4  // radians (≈ 0.006°)
-
-    for (const [mid, nbSet] of gAdj) {
-      if (removedNodes.has(mid)) continue
-      if (nbSet.size !== 2) continue
-      const [na, nb] = [...nbSet]
-      const mPt  = gNodeById.get(mid)
-      const aPt  = gNodeById.get(na)
-      const bPt  = gNodeById.get(nb)
-      if (!mPt || !aPt || !bPt) continue
-      const angA = Math.atan2(aPt.y - mPt.y, aPt.x - mPt.x)
-      const angB = Math.atan2(bPt.y - mPt.y, bPt.x - mPt.x)
-      let angleDiff = Math.abs(Math.abs(angA - angB) - Math.PI)
-      if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff
-      if (angleDiff > COLLINEAR_ANGLE_TOL) continue
-
-      // Collapse: drop mid, connect na ↔ nb
-      removedNodes.add(mid)
-      gAdj.get(na)?.delete(mid)
-      gAdj.get(nb)?.delete(mid)
-      gAdj.get(na)?.add(nb)
-      gAdj.get(nb)?.add(na)
-    }
-
-    if (removedNodes.size > 0) {
-      // Rebuild gutterNodes and gutterEdges from the modified adjacency
-      const keptNodes = gutterNodes.filter(n => !removedNodes.has(n.id))
-      const seenEdge  = new Set()
-      const keptEdges = []
-      for (const [na, nbSet] of gAdj) {
-        if (removedNodes.has(na)) continue
-        for (const nb of nbSet) {
-          if (removedNodes.has(nb)) continue
-          const key = na < nb ? `${na}_${nb}` : `${nb}_${na}`
-          if (!seenEdge.has(key)) {
-            seenEdge.add(key)
-            keptEdges.push({ nodeA: na, nodeB: nb })
-          }
-        }
-      }
-      gutterNodes.length = 0; gutterNodes.push(...keptNodes)
-      gutterEdges.length = 0; gutterEdges.push(...keptEdges)
-      console.log(`buildGutterGraph: collapsed ${removedNodes.size} collinear degree-2 nodes`)
-    }
-  }
-    
-
-  return { gutterNodes, gutterEdges }
+  return junctions
 }
 
 export default class StreetVoronoiGenerator {
@@ -472,25 +478,25 @@ export default class StreetVoronoiGenerator {
     // ── Per-district micro-Voronoi ───────────────────────────────────────────
     for (const district of districts) {
       const streetType = streetTypeForDistrict(district)
-      const params = getStreetParams(district)
+      const params = getDistrictParams(district)
       const metric = params.metric ?? 'euclidean'
 
-      const perimSeeds = this._samplePerimeter(district.polygon, params.interval)
-      const intSeeds   = generateGridSeeds(district.polygon, params.density, params.xyRatio ?? 1.0, params.jitter ?? 0.3, district.id ^ epochSeed)
+      const perimSeeds = this._samplePerimeter(district.polygon, params.street_spacing)
+      const intSeeds   = generateGridSeeds(district.polygon, params.block_density, params.xyRatio ?? 1.0, 0.3, district.id ^ epochSeed)
       // Two-stage interior filter:
       //   1. Drop seeds within `minClearance` of the polygon boundary line —
       //      near-boundary seeds produce streets nearly parallel to the
       //      boundary, which create degenerate junction geometry (blown-out
       //      miters, crossing gutter edges).
-      //   2. Drop seeds within `params.interval` of any perimeter seed — they
+      //   2. Drop seeds within `params.street_spacing` of any perimeter seed — they
       //      produce tiny slivers next to boundary streets.
-      const minClearance = Math.max(STREET_HALF_WIDTH * 2, params.interval * 0.5)
-      const perimDistSq = params.interval * params.interval
+      const minClearance = Math.max(STREET_HALF_WIDTH * 2, params.street_spacing * 0.5)
+      const perimDistSq = params.street_spacing * params.street_spacing
       const filteredIntSeeds = []
       const droppedByBoundary = []
       const droppedByPerim = []
       for (const s of intSeeds) {
-        if (this._distToPolygonBoundary(s.x, s.y, district.polygon) < minClearance) {
+        if (distToPolygonBoundary(s.x, s.y, district.polygon) < minClearance) {
           droppedByBoundary.push(s); continue
         }
         let tooClose = false
@@ -541,8 +547,8 @@ export default class StreetVoronoiGenerator {
 
       const getOrCreateNode = (cx, cy) => {
         let x = cx, y = cy
-        if (!this._pip(cx, cy, district.polygon)) {
-          const p = this._projectToPolygon(cx, cy, district.polygon)
+        if (!pip(cx, cy, district.polygon)) {
+          const p = projectToPolygon(cx, cy, district.polygon)
           x = p.x; y = p.y
         }
         const key = `${x.toFixed(4)},${y.toFixed(4)}`
@@ -556,7 +562,7 @@ export default class StreetVoronoiGenerator {
         if (!cA || !cB) continue
 
         const mx = (cA.x + cB.x) / 2, my = (cA.y + cB.y) / 2
-        if (!this._pip(mx, my, district.polygon)) continue
+        if (!pip(mx, my, district.polygon)) continue
 
         const nA = getOrCreateNode(cA.x, cA.y)
         const nB = getOrCreateNode(cB.x, cB.y)
@@ -602,7 +608,7 @@ export default class StreetVoronoiGenerator {
     }
 
     // ── Boundary nodes + edges from ALL city boundary edges ──────────────────
-    // Segmented at BOUNDARY_INTERVAL so they match the interior street density.
+    // Segmented at BOUNDARY_INTERVAL so they match the interior street block_density.
     // Each city edge's sampled points become first-class street graph nodes,
     // and consecutive nodes become street edges — same store, same render, same pathing.
     // All edge types are processed so that the face tracer in CityBlockGenerator
@@ -766,26 +772,23 @@ export default class StreetVoronoiGenerator {
     const allCells = districtResults.flatMap(r => r.cells || [])
     const allSeeds = districtResults.flatMap(r => r.seeds || [])
 
+    snapPerimeterJunctionsToBoundary(finalNodes, finalEdges, districts)
     resolveStreetCrossings(finalNodes, finalEdges)
     absorbCollinearNodes(finalNodes, finalEdges)
     pruneAcuteStubs(finalNodes, finalEdges)
     removeOrphanComponents(finalNodes, finalEdges)
 
-    let gutterNodes = [], gutterEdges = []
-    if (CALC_GUTTERS) {
-      ({ gutterNodes, gutterEdges } = buildGutterGraph(finalNodes, finalEdges))
-    }
+    const junctions = buildJunctions(finalNodes, finalEdges)
 
     const byType = finalEdges.reduce((acc, e) => { acc[e.type] = (acc[e.type] || 0) + 1; return acc }, {})
     const typeStr = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(', ')
-    const gutterStr = CALC_GUTTERS ? `${gutterNodes.length} gutter nodes, ${gutterEdges.length} gutter edges` : 'gutter calc DISABLED'
-    console.log(`Street graph: ${finalNodes.length} nodes, ${finalEdges.length} edges (${typeStr}), ${allCells.length} Voronoi cells, ${gutterStr}`)
-    return { nodes: finalNodes, edges: finalEdges, cells: allCells, seeds: allSeeds, gutterNodes, gutterEdges }
+    console.log(`Street graph: ${junctions.length} junctions (${typeStr}), ${allCells.length} Voronoi cells`)
+    return { junctions, cells: allCells, seeds: allSeeds }
   }
 
   // Perimeter seeds with canonical direction on each edge so shared district
   // boundaries produce identical intermediate seed positions in both districts.
-  _samplePerimeter(polygon, interval) {
+  _samplePerimeter(polygon, street_spacing) {
     const seeds = []
     const n = polygon.length
     for (let i = 0; i < n; i++) {
@@ -795,14 +798,14 @@ export default class StreetVoronoiGenerator {
 
       const dx = v2.x - v1.x, dy = v2.y - v1.y
       const len = Math.sqrt(dx * dx + dy * dy)
-      if (len < interval) continue
+      if (len < street_spacing) continue
 
       const [sa, sb] = this._canonicalOrder(v1, v2)
       const cdx = sb.x - sa.x, cdy = sb.y - sa.y
       const clen = Math.sqrt(cdx * cdx + cdy * cdy)
-      const steps = Math.floor(clen / interval)
+      const steps = Math.floor(clen / street_spacing)
       for (let k = 1; k <= steps; k++) {
-        const t = (k * interval) / clen
+        const t = (k * street_spacing) / clen
         if (t >= 1) break
         seeds.push({ x: sa.x + cdx * t, y: sa.y + cdy * t })
       }
@@ -816,48 +819,4 @@ export default class StreetVoronoiGenerator {
     return v1.y <= v2.y ? [v1, v2] : [v2, v1]
   }
 
-  _distToPolygonBoundary(px, py, polygon) {
-    let best = Infinity
-    const n = polygon.length
-    for (let i = 0, j = n - 1; i < n; j = i++) {
-      const ax = polygon[j].x, ay = polygon[j].y
-      const bx = polygon[i].x, by = polygon[i].y
-      const dx = bx - ax, dy = by - ay
-      const lenSq = dx * dx + dy * dy
-      if (lenSq === 0) continue
-      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
-      const d = Math.hypot(px - ax - t * dx, py - ay - t * dy)
-      if (d < best) best = d
-    }
-    return best
-  }
-
-  _projectToPolygon(px, py, polygon) {
-    let bestDist = Infinity, bestX = px, bestY = py
-    const n = polygon.length
-    for (let i = 0, j = n - 1; i < n; j = i++) {
-      const ax = polygon[j].x, ay = polygon[j].y
-      const bx = polygon[i].x, by = polygon[i].y
-      const dx = bx - ax, dy = by - ay
-      const lenSq = dx * dx + dy * dy
-      if (lenSq === 0) continue
-      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
-      const cx = ax + t * dx, cy = ay + t * dy
-      const d = Math.hypot(px - cx, py - cy)
-      if (d < bestDist) { bestDist = d; bestX = cx; bestY = cy }
-    }
-    return { x: bestX, y: bestY }
-  }
-
-  _pip(px, py, polygon) {
-    let inside = false
-    const n = polygon.length
-    for (let i = 0, j = n - 1; i < n; j = i++) {
-      const xi = polygon[i].x, yi = polygon[i].y
-      const xj = polygon[j].x, yj = polygon[j].y
-      if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi)
-        inside = !inside
-    }
-    return inside
-  }
 }

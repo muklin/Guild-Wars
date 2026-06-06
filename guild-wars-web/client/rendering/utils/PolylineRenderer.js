@@ -187,18 +187,6 @@ export default class PolylineRenderer {
       const n = edgeData.length
       const limitSq = this.miterLimitDist * this.miterLimitDist
 
-      // For each consecutive edge pair (A, B), compute three points:
-      //   q1 — sits on edge A's left offset line (distance r perpendicular from jPt)
-      //   q2 — sits on edge B's right offset line
-      //   capPt — used as the cap-polygon vertex for this slot
-      //
-      // When the miter intersection of A's left line and B's right line is
-      // within miterLimitDist of jPt, q1 = q2 = capPt = miter (original
-      // behavior). When the miter would fly past the limit OR the lines are
-      // parallel, q1/q2 stay on their respective offset lines (so edge strip
-      // corners stay parallel to their road), and capPt is set to the midpoint
-      // of q1 and q2 — which collapses near jPt for acute wedges, avoiding
-      // spikes in the cap polygon.
       const slots = new Array(n)
       for (let i = 0; i < n; i++) {
         const A = edgeData[i], B = edgeData[(i + 1) % n]
@@ -221,8 +209,6 @@ export default class PolylineRenderer {
         }
       }
 
-      // Edge strip corners stay on the edge's own offset line — never on the
-      // far miter spike — so strips remain parallel-sided at every junction.
       for (let i = 0; i < n; i++) {
         result.set(`${edgeData[i].edgeId}_${ptId}`, {
           trueLeft:  slots[i].q1,
@@ -273,7 +259,6 @@ export default class PolylineRenderer {
           const dx = p2.x - pt.x, dy = p2.y - pt.y, len = Math.sqrt(dx*dx + dy*dy)
           if (len < 1e-10) { corners.push(null); continue }
           const ux = dx/len, uy = dy/len
-          // Flat perpendicular endcap exactly at pt — no inset along the direction.
           corners.push({ left: {x: pt.x - uy*r, y: pt.y + ux*r}, right: {x: pt.x + uy*r, y: pt.y - ux*r} })
         }
       } else if (i === n - 1) {

@@ -1,6 +1,6 @@
-import Point from './Point.js'
-import DelaunayTriangulator from './DelaunayTriangulator.js'
-import { clipToPolygon } from './VoronoiUtils.js'
+import Point from '../voronoi/Point.js'
+import DelaunayTriangulator from '../voronoi/DelaunayTriangulator.js'
+import { clipToPolygon } from '../voronoi/VoronoiUtils.js'
 
 export default class TerrainVoronoiGenerator {
   generateRawVoronoi(regionCount, worldSize, manhattan = 0) {

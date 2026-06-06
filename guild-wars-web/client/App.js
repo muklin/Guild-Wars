@@ -1,9 +1,8 @@
 import WorldRenderer from './rendering/WorldRenderer.js'
-import InputHandler from './rendering/InputHandler.js'
+import InputHandler from './input/InputHandler.js'
 import UIManager from './ui/UIManager.js'
 import GameAPI from './api/GameAPI.js'
 import EventBus from './core/EventBus.js'
-
 export default class App {
   constructor() {
     this.renderer = null
@@ -33,7 +32,7 @@ export default class App {
     this.selectedTerrainRegionId = null
     this.pendingTerrainAction = null
     this.pendingResidentialClass = null
-    this.pendingLeadershipClass = null
+    this.pendingLeadershipClass = 'Monarchy'
   }
 
   async init() {
@@ -188,14 +187,17 @@ export default class App {
         if (response.ok) {
           this.selectedCityEdgeIds.clear()
           this.pendingCityEdgeType = null
-          if (response.cityDistrictData) this.renderer.setCityDistrictData(response.cityDistrictData)
+          if (response.cityDistrictData) {
+            this.renderer.setCityDistrictData(response.cityDistrictData)
+            this.renderer.clearDistrictLayer()
+          }
           this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
           this.renderer.renderGutters(response.cityDistrictData?.streetGraph)
           this.renderer.renderBlocks(response.cityDistrictData?.blocks)
           this.renderer.renderPlots(response.cityDistrictData?.plots, response.cityDistrictData)
-          this.renderer.drawBlockAndPlotCenters(response.cityDistrictData?.blocks, response.cityDistrictData?.plots)
+          this.renderer.drawBlockCenters(response.cityDistrictData?.blocks)
+          this.renderer.drawPlotCenters(response.cityDistrictData?.plots)
           this.renderer.drawStreetSeeds(response.cityDistrictData?.streetGraph)
-          this.renderer.clearDistrictMeshes()
         } else {
           this.uiManager.showError(response.error)
         }
@@ -303,7 +305,7 @@ export default class App {
         this.selectedDistrictId = null
         this.pendingDistrictType = null
         this.pendingResidentialClass = null
-        this.pendingLeadershipClass = null
+        this.pendingLeadershipClass = 'Monarchy'
         this.selectedCityEdgeIds.clear()
         this.pendingCityEdgeType = null
         this._finalizeTerrainDisplay()
@@ -328,14 +330,15 @@ export default class App {
         this.renderer.setMode('streets')
         if (response.cityDistrictData) {
           this.renderer.setCityDistrictData(response.cityDistrictData)
+          this.renderer.clearDistrictLayer()
         }
         this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
         this.renderer.renderGutters(response.cityDistrictData?.streetGraph)
         this.renderer.renderBlocks(response.cityDistrictData?.blocks)
         this.renderer.renderPlots(response.cityDistrictData?.plots, response.cityDistrictData)
-        this.renderer.drawBlockAndPlotCenters(response.cityDistrictData?.blocks, response.cityDistrictData?.plots)
+        this.renderer.drawBlockCenters(response.cityDistrictData?.blocks)
+        this.renderer.drawPlotCenters(response.cityDistrictData?.plots)
         this.renderer.drawStreetSeeds(response.cityDistrictData?.streetGraph)
-        this.renderer.clearDistrictMeshes()
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
@@ -566,7 +569,7 @@ export default class App {
       this.selectedDistrictId = null
       this.pendingDistrictType = null
       this.pendingResidentialClass = null
-      this.pendingLeadershipClass = null
+      this.pendingLeadershipClass = 'Monarchy'
       this._refreshDistrictPanel()
       return
     }
@@ -634,7 +637,7 @@ export default class App {
     if (this.selectedDistrictId === null) return
     this.pendingDistrictType = districtType
     this.pendingResidentialClass = null
-    this.pendingLeadershipClass = null
+    this.pendingLeadershipClass = 'Monarchy'
     this.renderer.previewDistrictType(this.selectedDistrictId, districtType)
     this._refreshDistrictPanel()
   }
@@ -664,7 +667,7 @@ export default class App {
         this.selectedDistrictId = null
         this.pendingDistrictType = null
         this.pendingResidentialClass = null
-        this.pendingLeadershipClass = null
+        this.pendingLeadershipClass = 'Monarchy'
         this._refreshDistrictPanel()
       } else {
         this.uiManager.showError(response.error)
@@ -885,13 +888,14 @@ export default class App {
           this.renderer.setCityDistrictData(cityData)
           this.renderer.setMode(setupStep === 'StreetSetup' ? 'streets' : 'city')
           if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
+            this.renderer.clearDistrictLayer()
             this.renderer.renderStreetGraph(cityData.streetGraph)
             this.renderer.renderGutters(cityData.streetGraph)
             this.renderer.renderBlocks(cityData.blocks)
             this.renderer.renderPlots(cityData.plots, cityData)
-            this.renderer.drawBlockAndPlotCenters(cityData.blocks, cityData.plots)
+            this.renderer.drawBlockCenters(cityData.blocks)
+            this.renderer.drawPlotCenters(cityData.plots)
             this.renderer.drawStreetSeeds(cityData.streetGraph)
-            this.renderer.clearDistrictMeshes()
           } else {
             this.renderer.drawDistrictCenters(cityData.districts)
           }
@@ -963,7 +967,7 @@ export default class App {
         this.selectedDistrictId = null
         this.pendingDistrictType = null
         this.pendingResidentialClass = null
-        this.pendingLeadershipClass = null
+        this.pendingLeadershipClass = 'Monarchy'
         this.selectedCityEdgeIds.clear()
         this.pendingCityEdgeType = null
         this.resourceRegistry = []

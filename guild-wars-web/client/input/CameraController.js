@@ -253,6 +253,6 @@ export default class CameraController {
       this.updateCameraPosition()
       this.enforceWorldBounds()
     }
-    //console.log(this.camera.zoom);  
+    //console.log(this.camera.zoom);
   }
 }

@@ -14,7 +14,7 @@ export default class InputHandler {
     document.addEventListener('mousemove', (e) => this.onMouseMove(e))
     document.addEventListener('keydown',  (e) => this.onkeypress(e))
   }
-  
+
   setTerrainData(data) {
     this.terrainData = data
   }
@@ -83,10 +83,13 @@ export default class InputHandler {
 
     if (this.renderer.mode === 'streets') {
       if (debug) {
-        const center = this.renderer.getBlockOrPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
+        const blockCenter = this.renderer.getBlockCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
+        const plotCenter  = blockCenter ? null : this.renderer.getPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
+        const center = blockCenter || plotCenter
         if (center) {
           this.renderer.clearHover()
           if (center.kind === 'block') {
+            this.renderer.setBlockHover(center.id)
             this.tooltipEl.innerHTML = `<div style="font-weight:bold">Block ${center.id}</div><div style="font-size:0.9em;margin-top:2px">type: ${center.blockType ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
           } else {
             this.tooltipEl.innerHTML = `<div style="font-weight:bold">Plot ${center.id}</div><div style="font-size:0.9em;margin-top:2px">block: ${center.blockId ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
@@ -94,6 +97,17 @@ export default class InputHandler {
           this.tooltipEl.style.left = e.clientX + 10 + 'px'
           this.tooltipEl.style.top  = e.clientY + 10 + 'px'
           this.tooltipEl.style.display = 'block'
+          return
+        }
+        const junction = this.renderer.getJunctionAtWorldPos(worldPos.x, worldPos.y)
+        if (junction) {
+          this.tooltipEl.innerHTML = `<div style="font-weight:bold">Junction ${junction.id}</div>`
+            + `<div style="font-size:0.9em;margin-top:2px">type: ${junction.type ?? '?'} &nbsp;|&nbsp; district: ${junction.districtId ?? '?'}</div>`
+            + `<div style="font-size:0.85em;margin-top:2px;opacity:0.85">connections: ${junction.connections.length} &nbsp;|&nbsp; (${junction.x.toFixed(3)}, ${junction.y.toFixed(3)})</div>`
+          this.tooltipEl.style.left = e.clientX + 10 + 'px'
+          this.tooltipEl.style.top  = e.clientY + 10 + 'px'
+          this.tooltipEl.style.display = 'block'
+          this.renderer.setJunctionHover(junction.id)
           return
         }
         const edge = this.renderer.getStreetEdgeAtWorldPos(worldPos.x, worldPos.y)
@@ -126,7 +140,7 @@ export default class InputHandler {
     }
 
     // Terrain mode — check region center seed points first
-    const regionCenter = this.renderer.getCenterAtWorldPos(worldPos.x, worldPos.y, 0.5)
+    const regionCenter = this.renderer.getTerrainSeedAtWorldPos(worldPos.x, worldPos.y, 0.5)
     if (regionCenter) {
       this.renderer.setRegionHover(regionCenter.regionId)
       if (debug) {
@@ -143,7 +157,7 @@ export default class InputHandler {
       return
     }
 
-    const corner = this.renderer.getCornerAtWorldPos(worldPos.x, worldPos.y, 0.5)
+    const corner = this.renderer.getTerrainCornerAtWorldPos(worldPos.x, worldPos.y, 0.5)
     if (corner) {
       this.renderer.clearHover()
       if (debug) {
