@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { DISTRICT_COLORS } from './DistrictRenderer.js'
 import { STREET_COLORS } from './StreetRenderer.js'
+import BuildingRenderer from './utils/BuildingRenderer.js'
 
 // Fill material params. PLOT matches plot fills; STREET matches the street
 // surface exactly (see StreetRenderer) so city squares blend into the streets.
@@ -16,6 +17,8 @@ export default class PlotRenderer {
     this._blockDebugMeshes = []
     this._blockSeedMeshes = []
     this._plotDebugMeshes = []
+
+    this.buildingRenderer = new BuildingRenderer()
 
     this.blockMeshes = []
     this.plotMeshes = []
@@ -177,11 +180,15 @@ export default class PlotRenderer {
       this.scene.add(lines)
       this.plotMeshes.push(lines)
     }
+
+    // Street-facing buildings, one per plot in its front half.
+    this.buildingRenderer.render(this.scene, plots)
   }
 
   clearPlotLayer() {
     for (const m of this.plotMeshes) this.scene.remove(m)
     this.plotMeshes = []
+    this.buildingRenderer.clear(this.scene)
   }
 
   // ── Debug ───────────────────────────────────────────────────────────────────

@@ -270,7 +270,6 @@ export default class App {
         this.selectedRegionId = null
         this.pendingTerrainType = null
         this._refreshTerrainPanel()
-        this._checkTerrainAutoAdvance()
       } else {
         this.uiManager.showError(response.error)
         this._refreshTerrainPanel()
@@ -284,12 +283,6 @@ export default class App {
 
   _countAssignedDistricts() {
     return (this.renderer.cityDistrictData?.districts || []).filter(d => d.assignedType).length
-  }
-
-  _checkTerrainAutoAdvance() {
-    if (this._countCustomizedTerrain() >= this.playerCount * 2) {
-      this.eventBus.emit('TERRAIN_COMPLETE')
-    }
   }
 
   async _doFinishTerrain() {
