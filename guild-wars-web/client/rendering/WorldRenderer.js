@@ -449,6 +449,10 @@ export default class WorldRenderer {
     return this.streetRenderer.drawStreetSeeds(streetGraph)
   }
 
+  getStreetSeedAtWorldPos(worldX, worldY, threshold) {
+    return this.streetRenderer.getStreetSeedAtWorldPos(worldX, worldY, threshold)
+  }
+
 
   // ── Plot / Block delegation ─────────────────────────────────────────────────
 
@@ -639,6 +643,34 @@ export default class WorldRenderer {
     this.plotRenderer.clearDebugObjects()
   }
 
+  // Set a single debug layer's visibility. Called by DebugPanel checkboxes.
+  setDebugLayer(name, on) {
+    switch (name) {
+      case 'buildings':       this.plotRenderer.buildingRenderer.setBuildingsVisible(on); break
+      case 'blockCenters':    this.plotRenderer.setBlockCentersVisible(on); break
+      case 'plotCenters':     this.plotRenderer.setPlotCentersVisible(on); break
+      case 'districtCenters': this.districtRenderer.setDistrictCentersVisible(on); break
+      case 'terrainCenters':  this.terrainRenderer.setTerrainCentersVisible(on); break
+      case 'streetSeeds':     this.streetRenderer.setStreetSeedsVisible(on); break
+      case 'terrainSeeds':    this.terrainRenderer.setTerrainSeedsVisible(on); break
+    }
+    this.markDirty()
+  }
+
+  // Returns current per-layer visibility so DebugPanel can initialise its checkboxes.
+  getDebugLayerStates() {
+    const br = this.plotRenderer.buildingRenderer
+    return {
+      buildings:       br._visible,
+      blockCenters:    this.plotRenderer._blockCentersVisible,
+      plotCenters:     this.plotRenderer._plotCentersVisible,
+      districtCenters: this.districtRenderer._districtCentersVisible,
+      terrainCenters:  this.terrainRenderer._terrainCentersVisible,
+      streetSeeds:     this.streetRenderer._streetSeedsVisible,
+      terrainSeeds:    this.terrainRenderer._terrainSeedsVisible,
+    }
+  }
+
 
   // ── Utility methods (called by App.js directly) ──────────────────────────────
 
@@ -648,5 +680,46 @@ export default class WorldRenderer {
 
   distanceToLineSegment(px, py, x1, y1, x2, y2) {
     return distanceToLineSegment(px, py, x1, y1, x2, y2)
+  }
+
+  // Render a 300×180 snapshot of the HQ building and return a JPEG data URL.
+  captureHQSnapshot(hq) {
+    if (!hq || !this.renderer || !this.scene) return null
+    try {
+      const cd = this.cityDistrictData
+      let wx = 0, wz = 0
+
+      if (hq.kind === 'landmark') {
+        const lb = cd?.landmarkBuildings?.[hq.refId]
+        if (lb) { wx = lb.x; wz = lb.z }
+      } else {
+        const plot = cd?.plots?.find(p => p.id === hq.refId)
+        if (plot?.blockCorners?.length) {
+          wx = plot.blockCorners.reduce((s, c) => s + c.x, 0) / plot.blockCorners.length
+          wz = plot.blockCorners.reduce((s, c) => s + c.y, 0) / plot.blockCorners.length
+        }
+      }
+
+      // Create a temporary perspective camera aimed at the building
+      const snapCam = new THREE.PerspectiveCamera(45, 300 / 180, 0.1, 1000)
+      snapCam.position.set(wx, 8, wz + 8)
+      snapCam.lookAt(wx, 0, wz)
+
+      // Resize renderer to snapshot dimensions, render, capture, restore
+      const origW = this.renderer.domElement.width
+      const origH = this.renderer.domElement.height
+      const origPixelRatio = this.renderer.getPixelRatio()
+      this.renderer.setPixelRatio(1)
+      this.renderer.setSize(300, 180, false)
+      this.renderer.render(this.scene, snapCam)
+      const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85)
+      this.renderer.setSize(origW / origPixelRatio, origH / origPixelRatio, false)
+      this.renderer.setPixelRatio(origPixelRatio)
+      this.markDirty()
+      return dataUrl
+    } catch (e) {
+      console.warn('captureHQSnapshot failed:', e)
+      return null
+    }
   }
 }

@@ -9,6 +9,7 @@ const BODY_HEIGHT  = CHAR_HEIGHT * 0.60 // shorter cylinder; head sits on top
 const HEAD_RADIUS  = CHAR_HEIGHT * 0.22 // dodecahedron head
 const PIVOT_Y      = GROUND_Y + BODY_HEIGHT + HEAD_RADIUS  // camera orbit pivot = head centre
 const MOVE_SPEED   = 0.17               // world units / second
+const SPRINT_MULT  = 3.5                // speed multiplier when sprint toggled
 const MOUSE_SENS   = 0.002             // radians / pixel
 const PITCH_MIN    = -20 * Math.PI / 180  // 20° below horizontal
 const PITCH_MAX    =  Math.PI / 2 - 0.01  // just under straight up
@@ -56,12 +57,16 @@ export default class WalkMode {
     // HUD overlay
     this._hud = document.createElement('div')
     this._hud.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:50;color:#fff;font:13px/1.4 monospace;text-shadow:1px 1px 3px #000;pointer-events:none;text-align:center'
-    this._hud.textContent = 'WALK MODE  —  WASD: move  |  Mouse: look  |  Shift+W: exit'
+    this._hud.textContent = 'WALK MODE  —  WASD: move  |  CapsLock: sprint toggle  |  Mouse: look  |  Shift+W: exit'
     document.body.appendChild(this._hud)
 
     // Input state
     this._keys = {}
-    this._onKeyDown = (e) => { this._keys[e.code] = true }
+    this._sprinting = false
+    this._onKeyDown = (e) => {
+      if (e.code === 'CapsLock') { this._sprinting = !this._sprinting; e.preventDefault(); return }
+      this._keys[e.code] = true
+    }
     this._onKeyUp   = (e) => { this._keys[e.code] = false }
     this._onMouseMove = (e) => {
       if (document.pointerLockElement !== renderer.domElement) return
@@ -113,7 +118,8 @@ export default class WalkMode {
   get characterPosition() { return { x: this._px, z: this._pz } }
 
   update(delta) {
-    const speed  = MOVE_SPEED * delta
+    const sprint = this._sprinting
+    const speed  = MOVE_SPEED * (sprint ? SPRINT_MULT : 1) * delta
     const fwdX   =  Math.sin(this._yaw)
     const fwdZ   =  Math.cos(this._yaw)
     const rightX =  Math.cos(this._yaw)

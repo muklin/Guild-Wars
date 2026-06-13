@@ -90,4 +90,20 @@ export default class GameAPI {
     return this.request('/setup/guild/rename', 'POST', { name })
   }
 
+  static async levelUpCharacter(charId, classChoice = null) {
+    return this.request('/setup/guild/character/levelup', 'POST', { charId, classChoice })
+  }
+
+  static async changeCharacterRole(charId, role) {
+    return this.request('/setup/guild/character/role', 'POST', { charId, role })
+  }
+
+  static async purchaseGuildTrait(traitId) {
+    return this.request('/setup/guild/trait', 'POST', { traitId })
+  }
+
+  static async purchaseHQUpgrade(upgradeId) {
+    return this.request('/setup/guild/hq-upgrade', 'POST', { upgradeId })
+  }
+
 }

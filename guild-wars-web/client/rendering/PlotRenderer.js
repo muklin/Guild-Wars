@@ -30,6 +30,10 @@ export default class PlotRenderer {
     this._blockSeedMeshes = []
     this._plotDebugMeshes = []
 
+    // Per-layer visibility flags (independent; all visible by default when debug is on)
+    this._blockCentersVisible = true
+    this._plotCentersVisible  = true
+
     this.buildingRenderer = new BuildingRenderer()
 
     this.blockMeshes = []
@@ -47,7 +51,20 @@ export default class PlotRenderer {
 
   setDebugVisible(show) {
     this.showDebug = show
-    for (const obj of this.debugObjects) obj.visible = show
+    for (const m of this._blockDebugMeshes) m.visible = show && this._blockCentersVisible
+    for (const m of this._blockSeedMeshes)  m.visible = show && this._blockCentersVisible
+    for (const m of this._plotDebugMeshes)  m.visible = show && this._plotCentersVisible
+  }
+
+  setBlockCentersVisible(on) {
+    this._blockCentersVisible = on
+    for (const m of this._blockDebugMeshes) m.visible = this.showDebug && on
+    for (const m of this._blockSeedMeshes)  m.visible = this.showDebug && on
+  }
+
+  setPlotCentersVisible(on) {
+    this._plotCentersVisible = on
+    for (const m of this._plotDebugMeshes) m.visible = this.showDebug && on
   }
 
   clearDebugObjects() {
@@ -297,7 +314,7 @@ export default class PlotRenderer {
       const mesh = new THREE.Mesh(blockGeo, blockMat)
       mesh.position.set(c.x, 0.09, c.y)
       mesh.userData = { kind: 'block', id: b.id, blockType: b.blockType, districtId: b.districtId }
-      mesh.visible = this.showDebug
+      mesh.visible = this.showDebug && this._blockCentersVisible
       this.scene.add(mesh)
       this.debugObjects.push(mesh)
       this._blockDebugMeshes.push(mesh)
@@ -305,7 +322,7 @@ export default class PlotRenderer {
       for (const s of (b.seeds || [])) {
         const sm = new THREE.Mesh(seedGeo, seedMat)
         sm.position.set(s.x, 0.092, s.y)
-        sm.visible = this.showDebug
+        sm.visible = this.showDebug && this._blockCentersVisible
         this.scene.add(sm)
         this.debugObjects.push(sm)
         this._blockSeedMeshes.push(sm)
@@ -325,6 +342,21 @@ export default class PlotRenderer {
 
   drawPlotCenters(plots) {
     this._clearDebugGroup(this._plotDebugMeshes)
+    const geo = new THREE.SphereGeometry(0.022, 6, 6)
+    const mat = new THREE.MeshBasicMaterial({ color: 0x00ff88 })
+    for (const p of (plots || [])) {
+      const poly = p.blockCorners
+      if (!poly?.length) continue
+      const cx = poly.reduce((s, v) => s + v.x, 0) / poly.length
+      const cy = poly.reduce((s, v) => s + v.y, 0) / poly.length
+      const m = new THREE.Mesh(geo, mat)
+      m.position.set(cx, 0.091, cy)
+      m.visible = this.showDebug && this._plotCentersVisible
+      m.userData = { kind: 'plot', id: p.id, blockId: p.blockId, districtId: p.districtId, blockType: p.blockType ?? 'normal', streetEdges: p.streetEdges?.length ?? 0 }
+      this.scene.add(m)
+      this.debugObjects.push(m)
+      this._plotDebugMeshes.push(m)
+    }
   }
 
   getPlotCenterAtWorldPos(worldX, worldY, threshold = 0.2) {

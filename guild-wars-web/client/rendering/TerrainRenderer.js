@@ -26,7 +26,11 @@ export default class TerrainRenderer {
     this.scene = scene
     this.showDebug = false
     this.debugObjects = []
-    this._terrainDebugMeshes = []
+    this._terrainCenterMeshes = []   // red spheres at region seed points
+    this._terrainVertexMeshes = []   // green boxes at polygon vertices
+
+    this._terrainCentersVisible = true
+    this._terrainSeedsVisible   = true
 
     this.terrainData = null
     this.worldSize = 50
@@ -52,11 +56,23 @@ export default class TerrainRenderer {
 
   setDebugVisible(show) {
     this.showDebug = show
-    for (const obj of this.debugObjects) obj.visible = show
+    for (const m of this._terrainCenterMeshes) m.visible = show && this._terrainCentersVisible
+    for (const m of this._terrainVertexMeshes) m.visible = show && this._terrainSeedsVisible
+  }
+
+  setTerrainCentersVisible(on) {
+    this._terrainCentersVisible = on
+    for (const m of this._terrainCenterMeshes) m.visible = this.showDebug && on
+  }
+
+  setTerrainSeedsVisible(on) {
+    this._terrainSeedsVisible = on
+    for (const m of this._terrainVertexMeshes) m.visible = this.showDebug && on
   }
 
   clearDebugObjects() {
-    this._clearDebugGroup(this._terrainDebugMeshes)
+    this._clearDebugGroup(this._terrainCenterMeshes)
+    this._clearDebugGroup(this._terrainVertexMeshes)
     for (const obj of this.debugObjects) this.scene.remove(obj)
     this.debugObjects = []
   }
@@ -670,17 +686,19 @@ export default class TerrainRenderer {
   // ── Debug ───────────────────────────────────────────────────────────────────
 
   drawVoronoiCenters(regions) {
-    this._clearDebugGroup(this._terrainDebugMeshes)
+    this._clearDebugGroup(this._terrainCenterMeshes)
+    this._clearDebugGroup(this._terrainVertexMeshes)
 
     const seedGeo = new THREE.SphereGeometry(0.075, 8, 8)
     const seedMat = new THREE.MeshBasicMaterial({ color: 0xff0000 })
     regions.forEach(region => {
       const seed = new THREE.Mesh(seedGeo, seedMat)
       seed.position.set(region.seedPoint.x, 0.1, region.seedPoint.y)
-      seed.visible = this.showDebug
+      seed.userData = { kind: 'terrainCenter', regionId: region.id, assignedType: region.assignedType, x: region.seedPoint.x, y: region.seedPoint.y }
+      seed.visible = this.showDebug && this._terrainCentersVisible
       this.scene.add(seed)
       this.debugObjects.push(seed)
-      this._terrainDebugMeshes.push(seed)
+      this._terrainCenterMeshes.push(seed)
     })
 
     const vertGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05)
@@ -689,10 +707,10 @@ export default class TerrainRenderer {
       region.polygon.forEach(vertex => {
         const vert = new THREE.Mesh(vertGeo, vertMat)
         vert.position.set(vertex.x, 0.1, vertex.y)
-        vert.visible = this.showDebug
+        vert.visible = this.showDebug && this._terrainSeedsVisible
         this.scene.add(vert)
         this.debugObjects.push(vert)
-        this._terrainDebugMeshes.push(vert)
+        this._terrainVertexMeshes.push(vert)
       })
     })
   }

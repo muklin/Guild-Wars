@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Hood silhouette -->
+    <path d="M100 16 Q72 18 66 38 Q62 52 68 62 Q74 68 100 70 Q126 68 132 62 Q138 52 134 38 Q128 18 100 16" stroke-width="1.8"/>
+    <!-- Shadow beneath hood (hatching) -->
+    <path d="M72 36 Q76 30 100 28 Q124 30 128 36" stroke-width="1.2" opacity="0.35"/>
+    <path d="M70 44 L74 40 M130 44 L126 40" stroke-width="1" opacity="0.3"/>
+    <path d="M68 52 L72 48 M132 52 L128 48" stroke-width="1" opacity="0.3"/>
+    <!-- The single watching eye, large -->
+    <path d="M68 68 Q100 40 132 68 Q100 96 68 68 Z" stroke-width="1.8"/>
+    <!-- Iris -->
+    <circle cx="100" cy="68" r="12" stroke-width="1.5"/>
+    <!-- Pupil -->
+    <circle cx="100" cy="68" r="5" stroke-width="1.2"/>
+    <!-- Pupil fill lines -->
+    <path d="M97 66 L103 66 M97 68 L103 68 M97 70 L103 70" stroke-width="0.7" opacity="0.5"/>
+    <!-- Eye highlight -->
+    <circle cx="95" cy="64" r="2.5" stroke-width="0.8" opacity="0.5"/>
+    <!-- Iris detail spokes -->
+    <path d="M100 56 L100 60 M112 60 L109 63 M114 68 L110 68 M112 76 L109 73 M100 80 L100 76 M88 76 L91 73 M86 68 L90 68 M88 60 L91 63" stroke-width="0.8" opacity="0.4"/>
+    <!-- Cloak body hanging down -->
+    <path d="M68 62 Q52 72 46 98 L46 116 L154 116 L154 98 Q148 72 132 62" stroke-width="1.5"/>
+    <!-- Cloak fold lines -->
+    <path d="M68 62 Q70 80 66 106 Q62 114 60 116" stroke-width="0.9" opacity="0.35"/>
+    <path d="M132 62 Q130 80 134 106 Q138 114 140 116" stroke-width="0.9" opacity="0.35"/>
+  </g>
+</svg>

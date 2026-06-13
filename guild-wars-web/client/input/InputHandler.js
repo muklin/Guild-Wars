@@ -97,16 +97,24 @@ export default class InputHandler {
 
     if (this.renderer.mode === 'streets') {
       if (debug) {
-        const blockCenter = this.renderer.getBlockCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
-        const plotCenter  = blockCenter ? null : this.renderer.getPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
-        const center = blockCenter || plotCenter
+        const blockCenter  = this.renderer.getBlockCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
+        const plotCenter   = blockCenter ? null : this.renderer.getPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
+        const streetSeed   = (!blockCenter && !plotCenter) ? this.renderer.getStreetSeedAtWorldPos(worldPos.x, worldPos.y, 0.1) : null
+        const center = blockCenter || plotCenter || streetSeed
         if (center) {
           this.renderer.clearHover()
           if (center.kind === 'block') {
             this.renderer.setBlockHover(center.id)
-            this.tooltipEl.innerHTML = `<div style="font-weight:bold">Block ${center.id}</div><div style="font-size:0.9em;margin-top:2px">type: ${center.blockType ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
-          } else {
-            this.tooltipEl.innerHTML = `<div style="font-weight:bold">Plot ${center.id}</div><div style="font-size:0.9em;margin-top:2px">block: ${center.blockId ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
+            this.tooltipEl.innerHTML = `<div style="font-weight:bold">Block ${center.id}</div>`
+              + `<div style="font-size:0.9em;margin-top:2px">type: ${center.blockType ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
+          } else if (center.kind === 'plot') {
+            this.tooltipEl.innerHTML = `<div style="font-weight:bold">Plot ${center.id}</div>`
+              + `<div style="font-size:0.9em;margin-top:2px">block: ${center.blockId ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
+              + `<div style="font-size:0.85em;opacity:0.85">blockType: ${center.blockType} &nbsp;|&nbsp; streetEdges: ${center.streetEdges}</div>`
+          } else if (center.kind === 'streetSeed') {
+            this.tooltipEl.innerHTML = `<div style="font-weight:bold">Junction ${center.id}</div>`
+              + `<div style="font-size:0.9em;margin-top:2px">type: ${center.type ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
+              + `<div style="font-size:0.85em;opacity:0.85">connections: ${center.connections} &nbsp;|&nbsp; (${center.x?.toFixed(3)}, ${center.y?.toFixed(3)})</div>`
           }
           this.tooltipEl.style.left = e.clientX + 10 + 'px'
           this.tooltipEl.style.top  = e.clientY + 10 + 'px'

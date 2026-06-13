@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Stone wall -->
+    <path d="M30 20 L30 120 L170 120 L170 20 L30 20" stroke-width="1.8"/>
+    <!-- Stone blocks horizontal lines -->
+    <path d="M30 40 L170 40" stroke-width="0.9" opacity="0.4"/>
+    <path d="M30 60 L170 60" stroke-width="0.9" opacity="0.4"/>
+    <path d="M30 80 L170 80" stroke-width="0.9" opacity="0.4"/>
+    <path d="M30 100 L170 100" stroke-width="0.9" opacity="0.4"/>
+    <!-- Stone blocks vertical joints staggered -->
+    <path d="M60 20 L60 40" stroke-width="0.9" opacity="0.4"/>
+    <path d="M100 20 L100 40" stroke-width="0.9" opacity="0.4"/>
+    <path d="M140 20 L140 40" stroke-width="0.9" opacity="0.4"/>
+    <path d="M46 40 L46 60" stroke-width="0.9" opacity="0.4"/>
+    <path d="M88 40 L88 60" stroke-width="0.9" opacity="0.4"/>
+    <path d="M130 40 L130 60" stroke-width="0.9" opacity="0.4"/>
+    <path d="M58 60 L58 80" stroke-width="0.9" opacity="0.4"/>
+    <path d="M118 60 L118 80" stroke-width="0.9" opacity="0.4"/>
+    <path d="M158 60 L158 80" stroke-width="0.9" opacity="0.4"/>
+    <path d="M42 80 L42 100" stroke-width="0.9" opacity="0.4"/>
+    <path d="M94 80 L94 100" stroke-width="0.9" opacity="0.4"/>
+    <path d="M146 80 L146 100" stroke-width="0.9" opacity="0.4"/>
+    <path d="M62 100 L62 120" stroke-width="0.9" opacity="0.4"/>
+    <path d="M112 100 L112 120" stroke-width="0.9" opacity="0.4"/>
+    <path d="M158 100 L158 120" stroke-width="0.9" opacity="0.4"/>
+    <!-- Secret door outline (ajar, with gap showing) -->
+    <path d="M78 120 L78 52 Q78 46 84 46 L122 46 Q128 46 128 52 L128 120" stroke-width="1.8"/>
+    <path d="M78 52 Q78 46 84 46 L122 46 Q128 46 128 52" stroke-width="1.8"/>
+    <!-- Door slightly ajar - perspective gap -->
+    <path d="M78 120 L74 114 L74 52 Q74 46 78 46" stroke-width="1.3" opacity="0.6"/>
+    <!-- Keyhole -->
+    <circle cx="122" cy="84" r="4" stroke-width="1.3"/>
+    <path d="M120 88 L124 88 L123 96 L121 96 Z" stroke-width="1.3"/>
+    <!-- Dashed passage beyond door -->
+    <path d="M60 84 L50 84 M44 84 L34 84" stroke-width="1.2" stroke-dasharray="3,3" opacity="0.6"/>
+    <path d="M34 80 L34 88" stroke-width="1" opacity="0.5"/>
+    <!-- Arrow indicating passage -->
+    <path d="M56 80 L50 84 L56 88" stroke-width="1.2" opacity="0.65"/>
+  </g>
+</svg>

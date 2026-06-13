@@ -25,6 +25,8 @@ export default class StreetRenderer {
     this.debugObjects = []
     this._streetSeedMeshes = []
 
+    this._streetSeedsVisible = true
+
     this._streetGraph = null
     this.streetMeshes = []
     this.gutterMeshes = []
@@ -38,7 +40,12 @@ export default class StreetRenderer {
 
   setDebugVisible(show) {
     this.showDebug = show
-    for (const obj of this.debugObjects) obj.visible = show
+    for (const m of this._streetSeedMeshes) m.visible = show && this._streetSeedsVisible
+  }
+
+  setStreetSeedsVisible(on) {
+    this._streetSeedsVisible = on
+    for (const m of this._streetSeedMeshes) m.visible = this.showDebug && on
   }
 
   clearDebugObjects() {
@@ -352,7 +359,30 @@ export default class StreetRenderer {
 
   // ── Debug ───────────────────────────────────────────────────────────────────
 
+  getStreetSeedAtWorldPos(worldX, worldY, threshold = 0.1) {
+    const rSq = threshold * threshold
+    for (const m of this._streetSeedMeshes) {
+      if (!m.visible) continue
+      const dx = worldX - m.position.x, dy = worldY - m.position.z
+      if (dx * dx + dy * dy < rSq) return m.userData
+    }
+    return null
+  }
+
   drawStreetSeeds(streetGraph) {
     this._clearDebugGroup(this._streetSeedMeshes)
+    const junctions = streetGraph?.junctions
+    if (!junctions?.length) return
+    const geo = new THREE.SphereGeometry(0.018, 6, 6)
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 })
+    for (const j of junctions) {
+      const m = new THREE.Mesh(geo, mat)
+      m.position.set(j.x, 0.093, j.y)
+      m.visible = this.showDebug && this._streetSeedsVisible
+      m.userData = { kind: 'streetSeed', id: j.id, type: j.type, districtId: j.districtId, connections: j.connections?.length ?? 0, x: j.x, y: j.y }
+      this.scene.add(m)
+      this.debugObjects.push(m)
+      this._streetSeedMeshes.push(m)
+    }
   }
 }

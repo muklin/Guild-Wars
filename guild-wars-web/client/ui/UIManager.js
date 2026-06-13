@@ -179,14 +179,17 @@ export default class UIManager {
 
     const guildBtn = document.getElementById('guild-btn')
     if (step === 'Terrain') {
+      leftPanel.style.display = ''
       if (guildBtn) guildBtn.style.display = 'none'
       this.guildPanel.hide()
       this.terrainTypePanel.render(leftPanel)
     } else if (step === 'CitySubdivision') {
+      leftPanel.style.display = ''
       if (guildBtn) guildBtn.style.display = 'none'
       this.guildPanel.hide()
       this.districtTypePanel.render(leftPanel)
     } else if (step === 'GuildCreation' || step === 'Complete') {
+      leftPanel.style.display = 'none'
       if (guildBtn) guildBtn.style.display = ''
       this.guildPanel.show()
     }
@@ -257,6 +260,7 @@ export default class UIManager {
       this._guildResources = guild.resources || {}
       this._renderResourceBar()
       this.guildPanel.setData({ guild })
+      this.factionsPanel.setGuild(guild)
     }
   }
 
@@ -308,6 +312,7 @@ export default class UIManager {
 
   updateFactions(factions) {
     this.factionsPanel.update(factions)
+    if (!factions.length) this.factionsPanel.setGuild(null)
   }
 
   updateThreats(threats) {

@@ -39,6 +39,7 @@ export default class DistrictRenderer {
     this.showDebug = false
     this.debugObjects = []
     this._districtDebugMeshes = []
+    this._districtCentersVisible = true
 
     this.cityDistrictData = null
     this.cityEdgePointsById = new Map()
@@ -58,7 +59,12 @@ export default class DistrictRenderer {
 
   setDebugVisible(show) {
     this.showDebug = show
-    for (const obj of this.debugObjects) obj.visible = show
+    for (const m of this._districtDebugMeshes) m.visible = show && this._districtCentersVisible
+  }
+
+  setDistrictCentersVisible(on) {
+    this._districtCentersVisible = on
+    for (const m of this._districtDebugMeshes) m.visible = this.showDebug && on
   }
 
   clearDebugObjects() {
@@ -540,7 +546,8 @@ export default class DistrictRenderer {
       if (!sp) continue
       const mesh = new THREE.Mesh(geo, mat)
       mesh.position.set(sp.x, 0.15, sp.y)
-      mesh.visible = this.showDebug
+      mesh.visible = this.showDebug && this._districtCentersVisible
+      mesh.userData = { kind: 'districtCenter', id: d.id, assignedType: d.assignedType, residentialClass: d.residentialClass }
       this.scene.add(mesh)
       this.debugObjects.push(mesh)
       this._districtDebugMeshes.push(mesh)

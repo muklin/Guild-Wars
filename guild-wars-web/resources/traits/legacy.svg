@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Hourglass outer frame -->
+    <path d="M68 16 L132 16 L132 20 L110 58 L110 82 L132 120 L132 124 L68 124 L68 120 L90 82 L90 58 L68 20 Z" stroke-width="1.8"/>
+    <!-- Hourglass top sand -->
+    <path d="M72 22 L128 22 L108 52 L92 52 Z" stroke-width="1" opacity="0.5"/>
+    <!-- Sand particles falling through neck -->
+    <path d="M100 54 L99 58 M100 54 L101 60 M100 54 L98 62 M100 54 L102 64" stroke-width="0.9" opacity="0.5"/>
+    <!-- Sand in bottom -->
+    <path d="M92 88 L108 88 L124 118 L76 118 Z" stroke-width="1" opacity="0.5"/>
+    <!-- Hourglass top sand hatching -->
+    <path d="M80 30 L90 38 M88 26 L100 34 M96 24 L110 32" stroke-width="0.8" opacity="0.3"/>
+    <!-- Hourglass bottom sand hatching -->
+    <path d="M84 100 L96 108 M92 96 L104 104 M100 92 L112 100 M82 108 L94 116" stroke-width="0.8" opacity="0.3"/>
+    <!-- Decorative scroll unfurling beside -->
+    <path d="M136 44 Q144 40 148 48 L148 90 Q148 98 144 100 Q140 100 138 96 L138 54 Q138 48 136 44" stroke-width="1.4"/>
+    <path d="M136 44 Q132 44 132 48 L132 90 Q132 98 136 100" stroke-width="1.2"/>
+    <!-- Scroll text lines -->
+    <path d="M134 56 L146 56" stroke-width="0.9" opacity="0.5"/>
+    <path d="M134 62 L146 62" stroke-width="0.9" opacity="0.5"/>
+    <path d="M134 68 L146 68" stroke-width="0.9" opacity="0.5"/>
+    <path d="M134 74 L146 74" stroke-width="0.9" opacity="0.5"/>
+    <path d="M134 80 L144 80" stroke-width="0.9" opacity="0.5"/>
+    <!-- Quill pen -->
+    <path d="M52 36 L62 82" stroke-width="1.3"/>
+    <path d="M52 36 Q42 24 38 18 Q48 22 56 32 Q62 40 62 82" stroke-width="1.3"/>
+    <path d="M52 36 Q46 28 44 22" stroke-width="1" opacity="0.5"/>
+    <path d="M62 72 L58 68 M62 76 L57 72" stroke-width="0.9" opacity="0.45"/>
+  </g>
+</svg>

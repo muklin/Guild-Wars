@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Tower body -->
+    <rect x="82" y="62" width="36" height="44" stroke-width="2"/>
+    <!-- Tower top platform (wider) -->
+    <rect x="74" y="50" width="52" height="14" stroke-width="1.8"/>
+    <!-- Battlements on top -->
+    <rect x="76" y="38" width="10" height="14" stroke-width="1.5"/>
+    <rect x="92" y="38" width="10" height="14" stroke-width="1.5"/>
+    <rect x="108" y="38" width="10" height="14" stroke-width="1.5"/>
+    <!-- Door arch -->
+    <path d="M91 106 L91 92 Q100 86 109 92 L109 106" stroke-width="1.5"/>
+    <!-- Window -->
+    <rect x="92" y="68" width="16" height="12" stroke-width="1.2"/>
+    <!-- Arrow slit -->
+    <line x1="100" y1="68" x2="100" y2="80" stroke-width="0.8"/>
+    <!-- Flag -->
+    <line x1="100" y1="36" x2="100" y2="26" stroke-width="1.2"/>
+    <path d="M100 26 L114 29 L100 32" stroke-width="1" fill="#f8f6f0"/>
+    <!-- Ground -->
+    <line x1="60" y1="106" x2="140" y2="106" stroke-width="1.5"/>
+    <!-- Side walls -->
+    <line x1="68" y1="86" x2="82" y2="86" stroke-width="1.2"/>
+    <line x1="118" y1="86" x2="132" y2="86" stroke-width="1.2"/>
+    <line x1="68" y1="86" x2="68" y2="106" stroke-width="1.2"/>
+    <line x1="132" y1="86" x2="132" y2="106" stroke-width="1.2"/>
+  </g>
+</svg>

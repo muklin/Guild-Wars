@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Outer magic circle -->
+    <circle cx="100" cy="72" r="52" stroke-width="1.6"/>
+    <!-- Middle circle -->
+    <circle cx="100" cy="72" r="40" stroke-width="1" opacity="0.5"/>
+    <!-- Inner circle -->
+    <circle cx="100" cy="72" r="24" stroke-width="1.4"/>
+    <!-- Pentagram / rune star -->
+    <path d="M100 48 L107 70 L130 70 L112 83 L119 106 L100 93 L81 106 L88 83 L70 70 L93 70 Z" stroke-width="1.4"/>
+    <!-- Eight directional tick marks on outer circle -->
+    <path d="M100 20 L100 26 M100 118 L100 124" stroke-width="1.2"/>
+    <path d="M148 72 L154 72 M46 72 L52 72" stroke-width="1.2"/>
+    <path d="M137 35 L133 39 M63 105 L67 109" stroke-width="1.2"/>
+    <path d="M137 109 L133 105 M63 39 L67 35" stroke-width="1.2"/>
+    <!-- Rune glyphs on outer ring -->
+    <path d="M112 24 L116 28 L112 32" stroke-width="1" opacity="0.6"/>
+    <path d="M146 60 L150 56 L146 52" stroke-width="1" opacity="0.6"/>
+    <path d="M88 24 L84 28 L88 32" stroke-width="1" opacity="0.6"/>
+    <path d="M54 60 L50 56 L54 52" stroke-width="1" opacity="0.6"/>
+    <path d="M54 88 L50 92 L54 96" stroke-width="1" opacity="0.6"/>
+    <path d="M146 88 L150 92 L146 96" stroke-width="1" opacity="0.6"/>
+    <!-- Central eye of ward -->
+    <path d="M82 72 Q100 58 118 72 Q100 86 82 72 Z" stroke-width="1.4"/>
+    <circle cx="100" cy="72" r="6" stroke-width="1.2"/>
+    <circle cx="100" cy="72" r="2" stroke-width="1" opacity="0.6"/>
+    <!-- Alert ripple emanating from bell above -->
+    <path d="M88 18 Q100 10 112 18" stroke-width="1.2" opacity="0.5" stroke-dasharray="2,2"/>
+    <path d="M84 14 Q100 4 116 14" stroke-width="1" opacity="0.3" stroke-dasharray="2,2"/>
+  </g>
+</svg>

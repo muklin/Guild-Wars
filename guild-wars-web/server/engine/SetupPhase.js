@@ -16,10 +16,10 @@ let _abilityArrays = null
 
 function _loadCharacterData() {
   if (!_nameLib) {
-    _nameLib = JSON.parse(readFileSync(join(_dir, '../../../resources/RulesConfig/characterNames.json'), 'utf8'))
+    _nameLib = JSON.parse(readFileSync(join(_dir, '../../resources/RulesConfig/characterNames.json'), 'utf8'))
   }
   if (!_abilityArrays) {
-    _abilityArrays = JSON.parse(readFileSync(join(_dir, '../../../resources/RulesConfig/abilityScoreSelection.json'), 'utf8')).Options
+    _abilityArrays = JSON.parse(readFileSync(join(_dir, '../../resources/RulesConfig/abilityScoreSelection.json'), 'utf8')).Options
   }
 }
 
@@ -536,11 +536,11 @@ export default class SetupPhase {
 
     if (isLeadership) {
       const insertIdx = this.factions.findIndex(f => f.type !== 'leadership')
-      const faction = { id: this.factions.length, health: 70, type:'leadership', name: 'Leadership', subclass: LeadershipClass || null, districtId }
+      const faction = { id: this.factions.length, health: 70, type:'leadership', name: 'Leadership', subclass: LeadershipClass || null, districtId, influence: {}, standing: {} }
       if (insertIdx === -1) this.factions.push(faction)
       else this.factions.splice(insertIdx, 0, faction)
     } else {
-      this.factions.push({ id: this.factions.length, health: 70, type:'district', name: districtType, subclass: residentialClass || null, districtId })
+      this.factions.push({ id: this.factions.length, health: 70, type:'district', name: districtType, subclass: residentialClass || null, districtId, standing: {} })
     }
 
     // Commit: freeze the street seed, lock the district, and regenerate.
@@ -614,7 +614,7 @@ export default class SetupPhase {
       if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
     }
 
-    this.factions.push({ id: this.factions.length, health: 70, type:'trade', name: tradeName, subclass: null, regionId })
+    this.factions.push({ id: this.factions.length, health: 70, type:'trade', name: tradeName, subclass: null, regionId, standing: {} })
 
     return { ok: true, tradingDestinations: this.tradingDestinations, trade, factions: this.factions, resourceRegistry: this.resourceRegistry, log: this.log }
   }
@@ -833,6 +833,7 @@ export default class SetupPhase {
   // set contribute no streets, so their shared boundaries stay deferred until they
   // are locked too. Stable per-district seeds keep locked interiors unchanged.
   generateForLocked(previewDistrictId = null, isFinal = false) {
+    const t0 = performance.now()
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.districts?.length) return
     // Generate over every TYPED district (locked or in preview). `locked` governs
@@ -847,6 +848,7 @@ export default class SetupPhase {
     }
     this._generateStreetGraph(subset, 0, isFinal)
     this._generateBuildings()
+    console.log(`[perf] generateForLocked: ${(performance.now()-t0).toFixed(1)}ms (${subset.length}/${cityData.districts.length} districts typed, final=${isFinal})`)
   }
 
   // Reseed a not-yet-locked district's interior streets, then regenerate.
@@ -926,6 +928,7 @@ export default class SetupPhase {
   // Trade routes are placeholder-only during District Setup; pass isFinal=true at
   // completion so they are clipped to the city interior and added as Mud roads.
   _generateStreetGraph(districts, epochSeed = 0, isFinal = false) {
+    const t0 = performance.now()
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.districts?.length || !districts?.length) return
 
@@ -949,10 +952,12 @@ export default class SetupPhase {
 
     const gen = new StreetVoronoiGenerator()
     cityData.streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes)
+    console.log(`[perf]   streets: ${(performance.now()-t0).toFixed(1)}ms (${districts.length} districts → ${cityData.streetGraph.junctions.length} junctions, ${cityData.streetGraph.edges?.length ?? '?'} edges)`)
     this.log.push(`Generated street graph over ${districts.length} district(s): ${cityData.streetGraph.junctions.length} junctions, ${tradeRoutes.length} trade road(s) (final=${isFinal})`)
   }
 
   _generateBuildings() {
+    const t0 = performance.now()
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.streetGraph) return
     cityData.landmarkBuildings = []
@@ -963,14 +968,19 @@ export default class SetupPhase {
       return
     }
 
+    const tBlocks = performance.now()
     const { blocks, roadEdges } = new CityBlockGenerator().generate(cityData.districts, cityData.streetGraph)
     cityData.blocks = blocks
+    console.log(`[perf]   blocks: ${(performance.now()-tBlocks).toFixed(1)}ms (${blocks.length} blocks)`)
 
     // Mark City squares, then place Landmarks on their (joined) clusters BEFORE plots,
     // so plot generation can drop the ground beneath each Landmark (ADR-0005).
+    const tLandmarks = performance.now()
     markSquareBlocks(blocks, cityData.districts)
     const { landmarkBuildings, footprints } = new LandmarkPlacer().generate(blocks, cityData.districts)
     cityData.landmarkBuildings = landmarkBuildings
+    const squareCount = blocks.filter(b => b.blockType === 'square').length
+    console.log(`[perf]   landmarks: ${(performance.now()-tLandmarks).toFixed(1)}ms (${landmarkBuildings.length} landmarks, ${squareCount} squares)`)
 
     // City squares are paved, walkable extensions of the street network — record
     // them on the street graph so they can be rendered in the street pass and
@@ -992,10 +1002,13 @@ export default class SetupPhase {
       return
     }
 
+    const tPlots = performance.now()
     const junctions = cityData.streetGraph?.junctions || []
     const { plots } = new PlotVoronoiGenerator().generate(blocks, cityData.districts, junctions, roadEdges, footprints)
     cityData.plots = plots
+    console.log(`[perf]   plots: ${(performance.now()-tPlots).toFixed(1)}ms (${plots.length} plots from ${blocks.length} blocks)`)
 
+    console.log(`[perf]   _generateBuildings total: ${(performance.now()-t0).toFixed(1)}ms`)
     this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares`)
   }
 
@@ -1058,10 +1071,15 @@ export default class SetupPhase {
       color: GUILD_COLORS[gsm.guilds.size % GUILD_COLORS.length],
       headquarters: this._resolveHeadquarters(headquarters),
       influence: {},
+      standing: {},
+      hqUpgrades: [],
+      traits: [],
       resources: { Gold: 200 },   // Rules.md: each guild starts with 200gp
       characters: generateRecruits(5),
     }
-    this._initGuildInfluence(guild)
+    this._finalizeLeadershipInfluence()
+    this._initFactionStandings()
+    this._initGuildRelations(guild)
     gsm.addGuild(guild)
     this.currentStep = 'Complete'
     this.log.push(`Created guild${guild.name ? ` "${guild.name}"` : ''}${guild.headquarters ? ` (HQ in district ${guild.headquarters.districtId})` : ''}`)
@@ -1081,14 +1099,54 @@ export default class SetupPhase {
     return { kind: hq.kind, refId: hq.refId, districtId }
   }
 
-  // Influence 50 with every faction, +20 for the faction of the HQ's district.
-  _initGuildInfluence(guild) {
-    for (const f of this.factions) guild.influence[f.id] = 50
+  _leadershipFaction() {
+    return this.factions.find(f => f.type === 'leadership') ?? null
+  }
+
+  // Populate Leadership's influence field (60 over all district/leadership factions).
+  // Safe to call multiple times — idempotent.
+  _finalizeLeadershipInfluence() {
+    const lf = this._leadershipFaction()
+    if (!lf) return
+    for (const f of this.factions) {
+      if (f.type === 'trade') continue  // Leadership has no influence over trade routes
+      lf.influence[f.id] = 60
+    }
+  }
+
+  // Populate symmetric standing between all faction pairs. Default 50. Idempotent.
+  _initFactionStandings() {
+    for (const fa of this.factions) {
+      for (const fb of this.factions) {
+        if (fa.id === fb.id) continue
+        if (fa.standing[fb.id] == null) fa.standing[fb.id] = 50
+      }
+    }
+  }
+
+  // Influence 0 with every faction, Standing 50. +30 influence (soft-capped) and +20 standing for HQ district faction.
+  _initGuildRelations(guild) {
+    const gsm = this.gameStateManager
+    for (const f of this.factions) {
+      guild.influence[f.id] = 0
+      guild.standing[f.id] = 50
+    }
     const hqDistrict = guild.headquarters?.districtId
     if (hqDistrict != null) {
-      const f = this.factions.find(x => x.type === 'district' && x.districtId === hqDistrict)
-             ?? this.factions.find(x => x.type === 'leadership' && x.districtId === hqDistrict)
-      if (f) guild.influence[f.id] = Math.min(100, 50 + 20)
+      const hqFaction = this.factions.find(x => x.type === 'district' && x.districtId === hqDistrict)
+                     ?? this.factions.find(x => x.type === 'leadership' && x.districtId === hqDistrict)
+      if (hqFaction) {
+        // Standing: flat +20, no cap issue
+        guild.standing[hqFaction.id] = Math.min(100, 50 + 20)
+        // Influence: soft cap — remaining pool split evenly with other guild claimants
+        const lf = this._leadershipFaction()
+        const leadershipBase = lf?.influence?.[hqFaction.id] ?? 60
+        const otherGuildTotal = [...gsm.guilds.values()]
+          .filter(g => g.id !== guild.id)
+          .reduce((sum, g) => sum + (g.influence[hqFaction.id] ?? 0), 0)
+        const remaining = Math.max(0, 100 - leadershipBase - otherGuildTotal)
+        guild.influence[hqFaction.id] = Math.min(30, remaining)
+      }
     }
   }
 
@@ -1175,21 +1233,21 @@ export default class SetupPhase {
 
     for (const district of districts) {
       if (district.assignedType === 'Leadership') {
-        this.factions.push({ id: this.factions.length, health: 70, type:'leadership', name: 'Leadership', subclass: district.LeadershipClass || null, districtId: district.id })
+        this.factions.push({ id: this.factions.length, health: 70, type:'leadership', name: 'Leadership', subclass: district.LeadershipClass || null, districtId: district.id, influence: {}, standing: {} })
       }
     }
     for (const region of regions) {
       if (region.terrainDistrict) {
-        this.factions.push({ id: this.factions.length, health: 70, type:'terrain', name: region.terrainDistrict, subclass: null, regionId: region.id })
+        this.factions.push({ id: this.factions.length, health: 70, type:'terrain', name: region.terrainDistrict, subclass: null, regionId: region.id, standing: {} })
       }
     }
     for (const district of districts) {
       if (district.assignedType && district.assignedType !== 'Leadership') {
-        this.factions.push({ id: this.factions.length, health: 70, type:'district', name: district.assignedType, subclass: district.residentialClass || null, districtId: district.id })
+        this.factions.push({ id: this.factions.length, health: 70, type:'district', name: district.assignedType, subclass: district.residentialClass || null, districtId: district.id, standing: {} })
       }
     }
     for (const trade of this.tradingDestinations) {
-      this.factions.push({ id: this.factions.length, health: 70, type:'trade', name: trade.name || trade.terrainType || 'Region', subclass: null, regionId: trade.regionId })
+      this.factions.push({ id: this.factions.length, health: 70, type:'trade', name: trade.name || trade.terrainType || 'Region', subclass: null, regionId: trade.regionId, standing: {} })
     }
   }
 }

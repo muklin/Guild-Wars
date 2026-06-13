@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Left hand -->
+    <path d="M44 90 Q40 88 40 82 Q40 76 46 76 Q48 72 52 72 Q54 68 58 68 Q62 66 64 70 Q66 68 70 70 Q74 72 74 78" stroke-width="1.5"/>
+    <path d="M74 78 Q78 72 80 68 Q84 66 88 70 Q90 66 94 68 Q96 72 94 76 L92 82" stroke-width="1.5"/>
+    <path d="M44 90 Q48 100 60 102 Q72 102 80 96 L92 82" stroke-width="1.5"/>
+    <!-- Left hand finger lines -->
+    <path d="M52 74 L56 86" stroke-width="0.9" opacity="0.4"/>
+    <path d="M60 70 L64 82" stroke-width="0.9" opacity="0.4"/>
+    <path d="M68 70 L72 82" stroke-width="0.9" opacity="0.4"/>
+    <!-- Right hand (mirror) -->
+    <path d="M156 90 Q160 88 160 82 Q160 76 154 76 Q152 72 148 72 Q146 68 142 68 Q138 66 136 70 Q134 68 130 70 Q126 72 126 78" stroke-width="1.5"/>
+    <path d="M126 78 Q122 72 120 68 Q116 66 112 70 Q110 66 106 68 Q104 72 106 76 L108 82" stroke-width="1.5"/>
+    <path d="M156 90 Q152 100 140 102 Q128 102 120 96 L108 82" stroke-width="1.5"/>
+    <!-- Right hand finger lines -->
+    <path d="M148 74 L144 86" stroke-width="0.9" opacity="0.4"/>
+    <path d="M140 70 L136 82" stroke-width="0.9" opacity="0.4"/>
+    <path d="M132 70 L128 82" stroke-width="0.9" opacity="0.4"/>
+    <!-- Clasped wrists joining -->
+    <path d="M80 96 Q90 104 100 104 Q110 104 120 96" stroke-width="1.5"/>
+    <!-- Scroll above -->
+    <path d="M72 46 Q72 38 80 38 L120 38 Q128 38 128 46 L128 62 Q128 70 120 70 L80 70 Q72 70 72 62 Z" stroke-width="1.5"/>
+    <path d="M72 42 Q68 42 68 46 L68 58 Q68 62 72 62" stroke-width="1.3"/>
+    <path d="M128 42 Q132 42 132 46 L132 58 Q132 62 128 62" stroke-width="1.3"/>
+    <!-- Scroll lines -->
+    <path d="M80 48 L120 48" stroke-width="1" opacity="0.5"/>
+    <path d="M80 54 L120 54" stroke-width="1" opacity="0.5"/>
+    <path d="M80 60 L108 60" stroke-width="1" opacity="0.5"/>
+    <!-- Wax seal -->
+    <circle cx="116" cy="60" r="6" stroke-width="1.2"/>
+    <path d="M114 60 L116 57 L118 60 L116 63 Z" stroke-width="1" opacity="0.6"/>
+  </g>
+</svg>

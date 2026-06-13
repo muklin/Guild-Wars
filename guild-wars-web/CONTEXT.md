@@ -101,11 +101,11 @@ _Avoid_: maintenance phase, end phase
 ### Game Entities
 
 **Guild**:
-An organisation controlled by a single player (one per Seat), with a Guild Leader and Second, a Guild Headquarters, a per-faction Influence map, and a resource stockpile. The primary competitive unit.
+An organisation controlled by a single player (one per Seat), with a Guild Leader and Second, a Guild Headquarters, a per-faction Influence map, a per-faction Standing map, and a resource stockpile. The primary competitive unit.
 _Avoid_: team, company, faction (faction has a distinct meaning)
 
 **Guild Headquarters**:
-The single Plot or Landmark a guild designates as its base. Grants +20 Influence with its district's faction.
+The single Plot or Landmark a guild designates as its base. Grants +30 Influence and +20 Standing with its district's faction.
 _Avoid_: Guildhouse, guild house, HQ
 
 **Squad**:
@@ -125,8 +125,12 @@ A city constituency — a district, a terrain resource source, a Trading Destina
 _Avoid_: guild, group, party
 
 **Influence**:
-A 0–100 numeric score representing a guild's relationship with a faction, starting at 50 (neutral). Held per guild × faction.
-_Avoid_: faction standing, standing, reputation, relationship score
+A 0–100 per-actor-per-faction score representing the degree of control an actor holds over a faction's decisions. Guilds start at 0; the Leadership faction starts at 60 over all district and leadership factions. The sum of all actors' Influence over any single faction must not exceed 100.
+_Avoid_: standing, reputation, relationship score
+
+**Standing**:
+A 0–100 symmetric per-pair mutual-regard score between any two entities (factions, guilds, threats, trade routes). Default 50 (neutral). Threats start at 30 against all other entities.
+_Avoid_: influence, diplomacy score, relationship
 
 **Faction Health**:
 A single 0–100 value on a faction (the same for all guilds), starting at 70, that linearly scales the resources that faction produces (`produced = base × Health/100`).

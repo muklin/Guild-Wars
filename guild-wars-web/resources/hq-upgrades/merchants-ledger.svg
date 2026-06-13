@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Book spine and covers -->
+    <rect x="54" y="30" width="10" height="90" stroke-width="1.8"/>
+    <rect x="64" y="30" width="82" height="90" stroke-width="2"/>
+    <!-- Page lines -->
+    <line x1="72" y1="45" x2="138" y2="45" stroke-width="0.9"/>
+    <line x1="72" y1="54" x2="138" y2="54" stroke-width="0.9"/>
+    <line x1="72" y1="63" x2="138" y2="63" stroke-width="0.9"/>
+    <line x1="72" y1="72" x2="138" y2="72" stroke-width="0.9"/>
+    <line x1="72" y1="81" x2="138" y2="81" stroke-width="0.9"/>
+    <line x1="72" y1="90" x2="138" y2="90" stroke-width="0.9"/>
+    <line x1="72" y1="99" x2="138" y2="99" stroke-width="0.9"/>
+    <!-- Column divider -->
+    <line x1="104" y1="36" x2="104" y2="114" stroke-width="1.2"/>
+    <!-- Header underline -->
+    <line x1="64" y1="40" x2="146" y2="40" stroke-width="1.3"/>
+    <!-- Column headers (short marks) -->
+    <line x1="76" y1="34" x2="98" y2="34" stroke-width="1" opacity="0.6"/>
+    <line x1="108" y1="34" x2="138" y2="34" stroke-width="1" opacity="0.6"/>
+    <!-- Numbers in columns (stylized marks) -->
+    <line x1="80" y1="50" x2="96" y2="50" stroke-width="0.8" opacity="0.5"/>
+    <line x1="110" y1="50" x2="134" y2="50" stroke-width="0.8" opacity="0.5"/>
+    <line x1="76" y1="59" x2="96" y2="59" stroke-width="0.8" opacity="0.5"/>
+    <line x1="116" y1="59" x2="134" y2="59" stroke-width="0.8" opacity="0.5"/>
+    <line x1="80" y1="68" x2="96" y2="68" stroke-width="0.8" opacity="0.5"/>
+    <line x1="110" y1="68" x2="134" y2="68" stroke-width="0.8" opacity="0.5"/>
+    <!-- Total line -->
+    <line x1="104" y1="105" x2="146" y2="105" stroke-width="1.2"/>
+    <line x1="104" y1="107" x2="146" y2="107" stroke-width="1.2"/>
+    <!-- Quill -->
+    <path d="M148 28 Q162 20 156 36 Q152 44 146 46 Q148 38 152 34 Q148 40 144 52" stroke-width="1.3"/>
+    <path d="M144 52 Q142 56 143 60 Q145 56 148 54 Q148 58 146 62" stroke-width="1" opacity="0.7"/>
+  </g>
+</svg>

@@ -91,7 +91,7 @@ const DEFAULT_BUILDING_STYLE = {
 }
 
 const DISTRICT_MODEL_WEIGHTS = {
-  'Residential-Slums':  { h7: 3, h10: 2, h11: 2, h8: 2, h9: 1, h14:3, h17:3 ,t5:1 ,t1: 1},
+  'Residential-Slums':  { h10: 2, h11: 2, h8: 2, h9: 1, h14:3, h17:3 ,t5:1 ,t1: 1},
   'Residential-Middle': { h8: 3, h9: 3,t5:1, t2:1, h2:2,h3:1,h4:1,h5:2,h6:2,h13:2},
   'Residential-Noble':  { h8: 1, h9: 1, t2:1, h3:1,h4:1,h5:1,h6:1,h13:2,m2:2,h16:2,h18:2,h19:2},
   'Market':             { m1: 3, m2: 1, h8: 1, h9: 1,t5:1, t2:1, h2:2,h3:1,h4:2,h5:2,h6:2,h13:2,h16:3,h18:3,h19:3,watchmaker:2 },
@@ -99,7 +99,7 @@ const DISTRICT_MODEL_WEIGHTS = {
   'Religious':          { m1: 3, m2: 1, h8: 1, h9: 1,t5:1, t2:1, h2:2,h3:1,h4:2,h5:2,h6:2,h13:2,h16:3,h18:3,h19:3 },
   'Magical':            { h16:3,h18:3,h19:3, alchemists: 2,t19:5, watchmaker:2, alchemists:1},
   'Military':           { h11: 2, h13: 2, h6: 2,forge:2,alchemists:1},
-  'Industry':           { t5: 3, h7: 3, h10: 2, h11: 2, alchemists:3,forge:3},
+  'Industry':           { t5: 3, h10: 2, h11: 2, alchemists:3,forge:3},
   'Entertainment':      { h8: 2, h9: 2, t5:2, h15:1},
   default:              { },
 }
@@ -158,6 +158,7 @@ export default class BuildingRenderer {
   setDirtyCallback(fn) { this._markDirty = fn }
 
   render(scene, plots, districtData) {
+    const t0 = performance.now()
     const gen = ++this._renderGen
     this.clear(scene)
     if (!plots?.length) return
@@ -183,15 +184,22 @@ export default class BuildingRenderer {
       const m = MODEL_BY_NAME.get(lb.name)
       if (m) housePlacements.push({ x: lb.x, z: lb.z, rotY: lb.rotY ?? 0, glbPath: m.glbPath, scale: MODEL_SCALE })
     }
+
+    const tDispatch = performance.now()
+    console.log(`[perf] BuildingRenderer dispatch: ${(tDispatch-t0).toFixed(1)}ms (${plots.length} plots → ${paraQueue.length} para + ${housePlacements.length} glb, ${districtData?.landmarkBuildings?.length ?? 0} landmarks)`)
+
     if (housePlacements.length) {
+      const tGlb = performance.now()
       this.featureManager.spawnBuildings(housePlacements, GROUND_Y).then(() => {
         if (this._renderGen !== gen) return
+        console.log(`[perf] BuildingRenderer GLB spawn done: ${(performance.now()-tGlb).toFixed(1)}ms (${housePlacements.length} buildings)`)
         if (!this._visible) for (const obj of this.featureManager._objects) obj.visible = false
         this._markDirty?.()
       })
     }
 
     if (paraQueue.length) {
+      const tPara = performance.now()
       this._ensureLib().then(lib => {
         if (this._renderGen !== gen) return   // superseded by a newer render call
         for (const { spec, x, z, rotY } of paraQueue) {
@@ -203,6 +211,7 @@ export default class BuildingRenderer {
           scene.add(g)
           this._paraGroups.push(g)
         }
+        console.log(`[perf] BuildingRenderer para assembly done: ${(performance.now()-tPara).toFixed(1)}ms (${paraQueue.length} buildings)`)
         this._markDirty?.()
       })
     }

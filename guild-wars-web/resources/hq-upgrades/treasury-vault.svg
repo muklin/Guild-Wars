@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Vault outer door frame -->
+    <rect x="54" y="34" width="92" height="80" rx="4" stroke-width="2.2"/>
+    <!-- Vault door inner -->
+    <rect x="64" y="44" width="72" height="60" rx="3" stroke-width="1.8"/>
+    <!-- Combination wheel -->
+    <circle cx="100" cy="72" r="22" stroke-width="1.8"/>
+    <circle cx="100" cy="72" r="8" stroke-width="1.4"/>
+    <!-- Wheel spokes -->
+    <line x1="100" y1="50" x2="100" y2="56" stroke-width="1.2"/>
+    <line x1="100" y1="88" x2="100" y2="94" stroke-width="1.2"/>
+    <line x1="78" y1="72" x2="84" y2="72" stroke-width="1.2"/>
+    <line x1="116" y1="72" x2="122" y2="72" stroke-width="1.2"/>
+    <line x1="84" y1="56" x2="88" y2="60" stroke-width="1.2"/>
+    <line x1="112" y1="84" x2="116" y2="88" stroke-width="1.2"/>
+    <line x1="84" y1="88" x2="88" y2="84" stroke-width="1.2"/>
+    <line x1="112" y1="56" x2="116" y2="60" stroke-width="1.2"/>
+    <!-- Hinge bolts left -->
+    <circle cx="72" cy="56" r="3.5" stroke-width="1.2"/>
+    <circle cx="72" cy="90" r="3.5" stroke-width="1.2"/>
+    <!-- Handle -->
+    <rect x="126" y="68" width="6" height="8" rx="2" stroke-width="1.3"/>
+    <!-- Gold coins peeking at bottom -->
+    <ellipse cx="88" cy="106" rx="8" ry="3" stroke-width="1" opacity="0.6"/>
+    <ellipse cx="100" cy="108" rx="8" ry="3" stroke-width="1" opacity="0.6"/>
+    <ellipse cx="112" cy="106" rx="8" ry="3" stroke-width="1" opacity="0.6"/>
+  </g>
+</svg>

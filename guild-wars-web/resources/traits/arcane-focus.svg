@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Orb stand base -->
+    <path d="M72 126 L128 126 L124 118 L76 118 Z" stroke-width="1.6"/>
+    <path d="M76 118 L80 112 L120 112 L124 118" stroke-width="1.5"/>
+    <!-- Pedestal column -->
+    <path d="M92 112 L92 96 Q92 92 100 90 Q108 92 108 96 L108 112" stroke-width="1.5"/>
+    <!-- Crystal orb -->
+    <circle cx="100" cy="62" r="36" stroke-width="1.8"/>
+    <!-- Orb inner sphere shimmer -->
+    <circle cx="100" cy="62" r="28" stroke-width="0.8" opacity="0.3"/>
+    <!-- Facet lines inside orb -->
+    <path d="M80 42 L100 62 L120 42" stroke-width="1" opacity="0.35"/>
+    <path d="M72 62 L100 62 L128 62" stroke-width="1" opacity="0.35"/>
+    <path d="M80 82 L100 62 L120 82" stroke-width="1" opacity="0.35"/>
+    <!-- Highlight facet -->
+    <path d="M82 46 Q88 40 96 42 Q90 50 84 50 Z" stroke-width="1" opacity="0.5"/>
+    <!-- Magical energy rays emanating -->
+    <path d="M100 26 L100 18" stroke-width="1.2" opacity="0.6"/>
+    <path d="M122 34 L130 26" stroke-width="1.2" opacity="0.6"/>
+    <path d="M78 34 L70 26" stroke-width="1.2" opacity="0.6"/>
+    <path d="M134 56 L144 52" stroke-width="1.2" opacity="0.6"/>
+    <path d="M66 56 L56 52" stroke-width="1.2" opacity="0.6"/>
+    <path d="M134 68 L144 72" stroke-width="1.2" opacity="0.5"/>
+    <path d="M66 68 L56 72" stroke-width="1.2" opacity="0.5"/>
+    <!-- Arcane symbols floating around orb -->
+    <path d="M116 28 L120 24 L124 28 L120 32 Z" stroke-width="1" opacity="0.55"/>
+    <path d="M76 28 L72 32 M72 28 L76 32" stroke-width="1" opacity="0.55"/>
+    <path d="M136 44 L140 40 M138 38 L138 46" stroke-width="1" opacity="0.55"/>
+    <path d="M60 44 L56 40 M58 38 L58 46" stroke-width="1" opacity="0.55"/>
+    <!-- Central glow core -->
+    <circle cx="100" cy="62" r="8" stroke-width="1.2" opacity="0.6"/>
+    <path d="M100 54 L100 70 M92 62 L108 62" stroke-width="1" opacity="0.5"/>
+  </g>
+</svg>

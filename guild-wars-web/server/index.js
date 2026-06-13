@@ -7,6 +7,8 @@ import GameStateManager from './engine/GameStateManager.js'
 import SetupPhase from './engine/SetupPhase.js'
 import MultiplayerManager from './engine/MultiplayerManager.js'
 import { saveGame, loadGame, listSaves, deleteSave } from './persistence.js'
+import { TRAIT_BY_ID } from '../shared/guildTraits.js'
+import { UPGRADE_BY_ID } from '../shared/hqUpgrades.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -206,6 +208,8 @@ app.post('/api/secret/reveal', async (req, res) => {
 app.post('/api/setup/init', async (req, res) => {
   try {
     if (mp.seats.size === 0) throw new Error('No players have joined — use Join Game or Play Solo first')
+    // Clear stale guild references so auto-creation in subdivision/done runs fresh.
+    for (const seat of mp.seats.values()) seat.guildId = null
     const result = setupPhase.initialize()
     await autoSave()
     res.json({
@@ -406,7 +410,9 @@ app.post('/api/setup/terrain-district', requireActiveSeat, async (req, res) => {
 // POST /api/setup/subdivision/done - Finish city subdivision → auto-create one guild per seat
 app.post('/api/setup/subdivision/done', requireActiveSeat, async (req, res) => {
   try {
+    const t0 = performance.now()
     const result = setupPhase.finishSubdivision()
+    console.log(`[perf] finishSubdivision (all districts): ${(performance.now()-t0).toFixed(1)}ms`)
     mp.onStepChanged()
 
     // Auto-create one guild per seat.
@@ -477,6 +483,118 @@ app.post('/api/setup/guild/rename', async (req, res) => {
     guild.nameLocked = true
     await autoSave()
     res.json({ ok: true, guild, guilds: Array.from(gameStateManager.guilds.values()) })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/guild/character/levelup
+app.post('/api/setup/guild/character/levelup', async (req, res) => {
+  try {
+    const { charId, classChoice } = req.body
+    const seat = seatOf(req)
+    if (!seat) return res.status(401).json({ ok: false, error: 'Unknown seat' })
+    if ((seat.tokens?.character ?? 0) < 1) return res.status(400).json({ ok: false, error: 'No Character tokens remaining' })
+    const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seat.id)
+    if (!guild) return res.status(404).json({ ok: false, error: 'No guild found' })
+    const ch = guild.characters?.find(c => c.id === charId)
+    if (!ch) return res.status(404).json({ ok: false, error: 'Character not found' })
+    if (ch.level === 0 && !classChoice?.trim()) return res.status(400).json({ ok: false, error: 'Class required for first level up' })
+    seat.tokens.character -= 1
+    ch.level += 1
+    if (ch.level === 1 && classChoice?.trim()) ch.class = classChoice.trim()
+    if (ch.role === 'recruit') ch.role = 'member'
+    await autoSave()
+    res.json({ ok: true, guild, tokens: seat.tokens })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/guild/character/role
+app.post('/api/setup/guild/character/role', async (req, res) => {
+  try {
+    const { charId, role } = req.body
+    const VALID_ROLES = ['guild-leader', 'guild-second', 'member']
+    if (!VALID_ROLES.includes(role)) return res.status(400).json({ ok: false, error: 'Invalid role' })
+    const seat = seatOf(req)
+    if (!seat) return res.status(401).json({ ok: false, error: 'Unknown seat' })
+    const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seat.id)
+    if (!guild) return res.status(404).json({ ok: false, error: 'No guild found' })
+    const ch = guild.characters?.find(c => c.id === charId)
+    if (!ch) return res.status(404).json({ ok: false, error: 'Character not found' })
+    if (ch.role === 'recruit') return res.status(400).json({ ok: false, error: 'Recruits must level up before changing role' })
+    ch.role = role
+    await autoSave()
+    res.json({ ok: true, guild })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/guild/trait - purchase a guild trait
+app.post('/api/setup/guild/trait', async (req, res) => {
+  try {
+    const { traitId } = req.body
+    if (!TRAIT_BY_ID.has(traitId)) return res.status(400).json({ ok: false, error: 'Unknown trait' })
+    const seat = seatOf(req)
+    if (!seat) return res.status(401).json({ ok: false, error: 'Unknown seat' })
+    if ((seat.tokens?.guild ?? 0) < 1) return res.status(400).json({ ok: false, error: 'No Guild tokens remaining' })
+    const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seat.id)
+    if (!guild) return res.status(404).json({ ok: false, error: 'No guild found' })
+    if (!guild.traits) guild.traits = []
+    if (guild.traits.includes(traitId)) return res.status(400).json({ ok: false, error: 'Trait already owned' })
+    const trait = TRAIT_BY_ID.get(traitId)
+    if (trait.requiresHQType?.length) {
+      const hq = guild.headquarters
+      if (!hq) return res.status(400).json({ ok: false, error: 'This trait requires a Headquarters to be set first.' })
+      const districts = gameStateManager.cityDistrictData?.districts || []
+      const hqDistrict = districts.find(d => d.id === hq.districtId)
+      const hqType = hqDistrict?.assignedType
+      if (!hqType || !trait.requiresHQType.includes(hqType)) {
+        return res.status(400).json({ ok: false, error: `Requires HQ in a ${trait.requiresHQType.join(' or ')} district.` })
+      }
+    }
+    seat.tokens.guild -= 1
+    guild.traits.push(traitId)
+    await autoSave()
+    res.json({ ok: true, guild, tokens: seat.tokens })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/guild/hq-upgrade - purchase an HQ upgrade
+app.post('/api/setup/guild/hq-upgrade', async (req, res) => {
+  try {
+    const { upgradeId } = req.body
+    if (!UPGRADE_BY_ID.has(upgradeId)) return res.status(400).json({ ok: false, error: 'Unknown upgrade' })
+    const seat = seatOf(req)
+    if (!seat) return res.status(401).json({ ok: false, error: 'Unknown seat' })
+    const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seat.id)
+    if (!guild) return res.status(404).json({ ok: false, error: 'No guild found' })
+    if (!guild.hqUpgrades) guild.hqUpgrades = []
+    if (guild.hqUpgrades.includes(upgradeId)) return res.status(400).json({ ok: false, error: 'Upgrade already owned' })
+    const upgrade = UPGRADE_BY_ID.get(upgradeId)
+    // Validate sufficient resources
+    for (const [resource, amount] of Object.entries(upgrade.cost)) {
+      const held = guild.resources?.[resource] ?? 0
+      if (held < amount) return res.status(400).json({ ok: false, error: `Not enough ${resource} (need ${amount}, have ${held})` })
+    }
+    // Deduct costs
+    for (const [resource, amount] of Object.entries(upgrade.cost)) {
+      guild.resources[resource] = (guild.resources[resource] ?? 0) - amount
+    }
+    guild.hqUpgrades.push(upgradeId)
+    // Side effect: Grand Guildhall grants +10 Standing with all factions
+    if (upgradeId === 'grand-guildhall') {
+      if (!guild.standing) guild.standing = {}
+      for (const f of setupPhase.factions) {
+        guild.standing[f.id] = Math.min(100, (guild.standing[f.id] ?? 50) + 10)
+      }
+    }
+    await autoSave()
+    res.json({ ok: true, guild })
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message })
   }

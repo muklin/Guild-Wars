@@ -7,6 +7,7 @@ import { preloadModels } from './rendering/utils/FeatureManager.js'
 import LiveSync from './net/LiveSync.js'
 import MultiplayerUI from './ui/MultiplayerUI.js'
 import config from './config.js'
+import DebugPanel from './ui/DebugPanel.js'
 export default class App {
   constructor() {
     this.renderer = null
@@ -53,6 +54,8 @@ export default class App {
       this.inputHandler = new InputHandler(this.eventBus)
       this.inputHandler.init(this.renderer)
 
+      this.debugPanel = new DebugPanel(this.renderer)
+
       this.setupEventListeners()
 
       // Networked play: a live-sync channel re-pulls state whenever the server
@@ -68,6 +71,8 @@ export default class App {
   }
 
   setupEventListeners() {
+    this.eventBus.on('DEBUG_TOGGLED', (on) => this.debugPanel.toggle(on))
+
     // --- Terrain phase ---
     this.eventBus.on('REGION_CLICKED',  (regionId) => this._handleRegionClick(regionId))
     this.eventBus.on('EDGE_CLICKED',    (edge)     => this._handleEdgeClick(edge))
@@ -187,6 +192,11 @@ export default class App {
     this.eventBus.on('HQ_PICKED', (hq) => {
       this.renderer.hqPickMode = false
       this.uiManager.guildPanel.setHeadquarters(hq)
+      // Capture building snapshot asynchronously (after a frame so the scene is rendered)
+      requestAnimationFrame(() => {
+        const dataUrl = this.renderer.captureHQSnapshot(hq)
+        if (dataUrl) this.uiManager.guildPanel.setHQSnapshot(dataUrl)
+      })
     })
     this.eventBus.on('GUILD_RENAME', async ({ name }) => {
       if (!name?.trim()) return
@@ -213,6 +223,7 @@ export default class App {
           this.uiManager.guildPanel.setData({
             guild: res.guild, factions: this.factions,
             districts: this.renderer.cityDistrictData?.districts || [],
+            tokens: this._myTokens(), playerName: this._myPlayerName(),
           })
           this.uiManager.updateGuild(res.guild)
         } else {
@@ -231,6 +242,22 @@ export default class App {
     const guilds = this.guilds || []
     const me = this.gameState?.multiplayer?.meSeatId
     return guilds.find(g => g.seatId != null && g.seatId === me) || guilds[0] || null
+  }
+
+  // The local player's current tokens from multiplayer state.
+  _myTokens() {
+    const mp = this.gameState?.multiplayer
+    if (!mp) return null
+    const seat = mp.seats?.find(s => s.id === mp.meSeatId)
+    return seat?.tokens ?? null
+  }
+
+  // The local player's display name from multiplayer state.
+  _myPlayerName() {
+    const mp = this.gameState?.multiplayer
+    if (!mp) return ''
+    const seat = mp.seats?.find(s => s.id === mp.meSeatId)
+    return seat?.name ?? ''
   }
 
 
@@ -383,6 +410,7 @@ export default class App {
         this.uiManager.guildPanel.setData({
           guild: myGuild, factions: this.factions,
           districts: response.cityDistrictData?.districts || [],
+          tokens: this._myTokens(), playerName: this._myPlayerName(),
         })
         this.uiManager.updateGuild(myGuild)
       } else {
@@ -1083,6 +1111,7 @@ export default class App {
         guild: this._myGuild(),
         factions: this.factions,
         districts: state.cityDistrictData?.districts || [],
+        tokens: this._myTokens(), playerName: this._myPlayerName(),
       })
       this.uiManager.updateGuild(this._myGuild())
     } else {

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M78 95 Q72 100 74 108 Q78 118 100 120 Q122 118 126 108 Q128 100 122 95" stroke-width="1.8"/>
+    <path d="M78 95 Q76 82 80 76 Q84 72 88 74 Q90 70 94 70 Q98 68 100 72" stroke-width="1.5"/>
+    <path d="M100 72 Q104 68 108 70 Q112 70 113 75 Q117 72 120 75 Q124 80 122 88 Q122 92 122 95" stroke-width="1.5"/>
+    <path d="M84 84 Q88 82 92 84" stroke-width="1.2"/>
+    <path d="M94 82 Q98 80 102 82" stroke-width="1.2"/>
+    <path d="M104 83 Q108 81 112 83" stroke-width="1.2"/>
+    <path d="M78 95 Q70 90 68 84 Q68 78 74 76 Q80 75 82 80" stroke-width="1.5"/>
+    <path d="M100 58 L100 44" stroke-width="1.2" opacity="0.6"/>
+    <path d="M118 64 L130 54" stroke-width="1.2" opacity="0.6"/>
+    <path d="M82 64 L70 54" stroke-width="1.2" opacity="0.6"/>
+    <path d="M126 80 L140 76" stroke-width="1.2" opacity="0.6"/>
+    <path d="M74 80 L60 76" stroke-width="1.2" opacity="0.6"/>
+    <path d="M100 42 L97 38 L102 36 L99 32" stroke-width="1" opacity="0.7"/>
+    <path d="M132 52 L136 49 L133 45" stroke-width="1" opacity="0.7"/>
+    <path d="M68 52 L64 49 L67 45" stroke-width="1" opacity="0.7"/>
+    <path d="M85 96 L90 100" stroke-width="0.8" opacity="0.35"/>
+    <path d="M90 94 L96 99" stroke-width="0.8" opacity="0.35"/>
+    <path d="M96 93 L102 98" stroke-width="0.8" opacity="0.35"/>
+    <path d="M103 93 L108 98" stroke-width="0.8" opacity="0.35"/>
+    <path d="M109 94 L114 99" stroke-width="0.8" opacity="0.35"/>
+  </g>
+</svg>

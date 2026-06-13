@@ -15,7 +15,6 @@ export const MODELS = {
     { name: 'h4',  glbPath: '/resources/h4.glb',  width: 2.366, depth: 1.996, height: 2.913 },
     { name: 'h5',  glbPath: '/resources/h5.glb',  width: 1.224, depth: 1.815, height: 1.622 },
     { name: 'h6',  glbPath: '/resources/h6.glb',  width: 1.928, depth: 1.815, height: 1.622 },
-    { name: 'h7',  glbPath: '/resources/h7.glb',  width: 1.148, depth: 1.066, height: 1.454 },
     { name: 'h8',  glbPath: '/resources/h8.glb',  width: 1.600, depth: 1.846, height: 1.991 },
     { name: 'h9',  glbPath: '/resources/h9.glb',  width: 1.590, depth: 1.642, height: 2.907 },
     { name: 'h10', glbPath: '/resources/h10.glb', width: 2.184, depth: 2.474, height: 1.937 },
@@ -70,7 +69,7 @@ export const MODEL_SCALE = 0.13
 // not just its entrance — are cleared. Omitted = (0, 0).
 export const MODEL_OFFSET = {
   h2: { x: -0.045, z: -0.791 }, h3: { x: -0.033, z: -0.789 }, h4: { x: 0.421, z: -0.789 },
-  h5: { x: -0.035, z: -0.714 }, h6: { x: 0.317, z: -0.714 }, h7: { x: -0.114, z: -0.336 },
+  h5: { x: -0.035, z: -0.714 }, h6: { x: 0.317, z: -0.714 },
   h8: { x: 0.168, z: -0.591 }, h9: { x: 0.173, z: -0.591 }, h10: { x: -0.260, z: -1.179 },
   h11: { x: -0.468, z: -0.370 }, h12: { x: 0.027, z: -0.659 }, h13: { x: 0.156, z: -0.458 },
   h14: { x: 0.595, z: -0.758 }, h15: { x: -0.258, z: -0.619 }, h16: { x: -0.003, z: -1.297 },

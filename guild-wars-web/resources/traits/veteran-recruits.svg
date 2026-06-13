@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Medal ribbon -->
+    <path d="M88 18 L88 52 L100 62 L112 52 L112 18" stroke-width="1.6"/>
+    <path d="M88 18 L112 18" stroke-width="1.4"/>
+    <!-- Ribbon fold detail -->
+    <path d="M88 18 L88 24 L94 26 L100 24 L106 26 L112 24 L112 18" stroke-width="1" opacity="0.5"/>
+    <!-- Medal circle -->
+    <circle cx="100" cy="80" r="28" stroke-width="1.8"/>
+    <circle cx="100" cy="80" r="22" stroke-width="1.1" opacity="0.5"/>
+    <!-- Medal star / eight-pointed -->
+    <path d="M100 58 L103 70 L115 66 L107 75 L118 80 L107 85 L115 94 L103 90 L100 102 L97 90 L85 94 L93 85 L82 80 L93 75 L85 66 L97 70 Z" stroke-width="1.4"/>
+    <!-- Roman numerals / I in centre -->
+    <path d="M98 76 L98 84 M100 76 L100 84 M102 76 L102 84" stroke-width="1.2" opacity="0.6"/>
+    <!-- Notch marks on outer ring -->
+    <path d="M100 52 L100 56 M100 104 L100 108" stroke-width="1" opacity="0.5"/>
+    <path d="M72 80 L76 80 M124 80 L128 80" stroke-width="1" opacity="0.5"/>
+    <!-- Battle scratches on medal surface -->
+    <path d="M90 72 L86 76" stroke-width="1" opacity="0.3"/>
+    <path d="M112 74 L108 78" stroke-width="1" opacity="0.3"/>
+    <path d="M94 86 L98 90" stroke-width="1" opacity="0.3"/>
+    <!-- Sword silhouette small, leaning -->
+    <path d="M148 22 L136 82" stroke-width="1.8"/>
+    <path d="M148 22 L150 16 L154 20 L150 24 Z" stroke-width="1.3"/>
+    <path d="M144 44 L152 48 M144 44 L136 40" stroke-width="1.8"/>
+    <path d="M138 70 L142 74" stroke-width="1.1" opacity="0.5"/>
+    <path d="M140 76 L144 80" stroke-width="1.1" opacity="0.5"/>
+    <!-- Shield small, right -->
+    <path d="M152 60 Q152 54 158 52 L168 52 Q174 54 174 60 L174 74 Q174 82 163 88 Q152 82 152 74 Z" stroke-width="1.4"/>
+    <path d="M158 60 L168 60 M163 56 L163 76" stroke-width="1" opacity="0.4"/>
+  </g>
+</svg>

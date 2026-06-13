@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Wall plaque/mount -->
+    <path d="M70 22 L130 22 L134 46 L126 46 L126 52 L74 52 L74 46 L66 46 Z" stroke-width="1.6"/>
+    <!-- Trophy cup on plaque -->
+    <path d="M88 52 L88 36 Q88 30 100 30 Q112 30 112 36 L112 52" stroke-width="1.6"/>
+    <path d="M88 52 L84 58 Q82 64 90 66 L90 70 L110 70 L110 66 Q118 64 116 58 L112 52" stroke-width="1.5"/>
+    <path d="M90 70 L86 76 L114 76 L110 70" stroke-width="1.4"/>
+    <path d="M84 76 L116 76" stroke-width="1.6"/>
+    <!-- Trophy handles -->
+    <path d="M88 38 Q80 38 80 44 Q80 50 88 50" stroke-width="1.3"/>
+    <path d="M112 38 Q120 38 120 44 Q120 50 112 50" stroke-width="1.3"/>
+    <!-- Star on cup -->
+    <path d="M100 40 L102 46 L108 46 L103 50 L105 56 L100 52 L95 56 L97 50 L92 46 L98 46 Z" stroke-width="1.1" opacity="0.7"/>
+    <!-- Crossed swords below, mounted -->
+    <path d="M54 90 L98 122" stroke-width="1.6"/>
+    <path d="M54 90 L50 86 L56 86 L56 92 Z" stroke-width="1.2"/>
+    <path d="M98 122 L100 128 L96 126 Z" stroke-width="1.2"/>
+    <path d="M146 90 L102 122" stroke-width="1.6"/>
+    <path d="M146 90 L150 86 L144 86 L144 92 Z" stroke-width="1.2"/>
+    <path d="M102 122 L100 128 L104 126 Z" stroke-width="1.2"/>
+    <!-- Sword guards -->
+    <path d="M82 104 L76 98 M82 104 L88 110" stroke-width="1.8"/>
+    <path d="M118 104 L124 98 M118 104 L112 110" stroke-width="1.8"/>
+    <!-- Wall mount bracket -->
+    <path d="M92 78 L92 84 L108 84 L108 78" stroke-width="1.2"/>
+    <path d="M96 84 L96 90 M104 84 L104 90" stroke-width="1" opacity="0.5"/>
+  </g>
+</svg>

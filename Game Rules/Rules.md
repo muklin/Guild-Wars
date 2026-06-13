@@ -148,9 +148,9 @@ Each player gives a brief description of their guild including;
   - a Garrison of troops or a Prison block
 
 - **Guild tokens** as acquired in the can be spent during setup to;
-  - swap one for a **Round Token** (see  ????)
+  - swap one for **two Round Tokens**
   - swap one for two **Character tokens**
-  - swap one to triple your Guilds coin balance
+  - swap one to triple your Guilds coin balance (only during Guild Setup)
   - hire 3 new recruits (see Rules about recruits and characters in Characters below)
   - claim a Guild Trait: (3I) Describe a trait that all (including future) members will exhibit.  This could be advantageous or even detrimental. 
   

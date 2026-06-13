@@ -241,6 +241,7 @@ export default class FeatureManager {
   // loaded once; each is seated on the ground.
   async spawnBuildings(placements, baseY = 0) {
     if (!placements?.length) return
+    const t0 = performance.now()
     const epoch = this._epoch   // capture; a clear() during loading bumps this
     const byPath = new Map()
     for (const p of placements) {
@@ -248,15 +249,19 @@ export default class FeatureManager {
       if (!byPath.has(p.glbPath)) byPath.set(p.glbPath, [])
       byPath.get(p.glbPath).push(p)
     }
+    let loadMs = 0, instantiateMs = 0, seatMs = 0
     for (const [glbPath, group] of byPath) {
       let gltf
+      const tLoad = performance.now()
       try {
         gltf = await this._loadGLTF(glbPath)
       } catch (err) {
         console.error(`FeatureManager: failed to load ${glbPath}`, err)
         continue
       }
+      loadMs += performance.now() - tLoad
       if (this._epoch !== epoch) return   // cleared while loading — don't spawn stale buildings
+      const tInst = performance.now()
       for (const p of group) {
         const scale = p.scale ?? 1
         const idx = this._objects.length
@@ -271,7 +276,11 @@ export default class FeatureManager {
           if (isFinite(wb.min.y)) wrapper.position.y = baseY - wb.min.y
         }
       }
+      const dt = performance.now() - tInst
+      instantiateMs += dt
+      console.log(`[perf]   GLB ${glbPath.split('/').pop()}: load=${loadMs.toFixed(1)}ms clone+seat=${dt.toFixed(1)}ms ×${group.length}`)
     }
+    console.log(`[perf] spawnBuildings total: ${(performance.now()-t0).toFixed(1)}ms (${placements.length} buildings, ${byPath.size} models — load=${loadMs.toFixed(1)}ms inst=${instantiateMs.toFixed(1)}ms)`)
   }
 
   // Local bounding box of the model as it is actually rendered (a clone with its

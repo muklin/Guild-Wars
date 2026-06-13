@@ -1,0 +1,168 @@
+// requiresHQType: district assignedType values that qualify.
+// Absent = available everywhere. Multiple = any one qualifies.
+export const GUILD_TRAITS = [
+  // ── Combat ──────────────────────────────────────────────────────────────────
+  {
+    id: 'iron-will',
+    title: 'Iron Will',
+    category: 'Combat',
+    image: '/resources/traits/iron-will.svg',
+    description: 'Guild members gain advantage on saving throws against fear and charm effects. The guild\'s reputation for mental fortitude spreads through the city, and hostile factions think twice before attempting to demoralise or subvert its members.',
+  },
+  {
+    id: 'guild-arms',
+    title: 'Guild Arms',
+    category: 'Combat',
+    image: '/resources/traits/guild-arms.svg',
+    requiresHQType: ['Military', 'Leadership'],
+    description: 'The guild adopts a signature weapon (chosen on purchase). All members are considered proficient with it regardless of class. Guild members wielding this weapon gain +1 to attack rolls when fighting under guild orders.',
+  },
+  {
+    id: 'fortified',
+    title: 'Fortified',
+    category: 'Combat',
+    image: '/resources/traits/fortified.svg',
+    requiresHQType: ['Military'],
+    description: 'The guild headquarters is hardened and its approaches are watched. The Headquarters receives any 3 upgrades for free.',
+  },
+  {
+    id: 'notorious',
+    title: 'Notorious',
+    category: 'Combat',
+    image: '/resources/traits/notorious.svg',
+    requiresHQType: ['Entertainment', 'Market'],
+    description: 'The guild\'s fearsome reputation precedes it. Guild members have advantage on Intimidation checks. Enemies who know the guild\'s identity succeed on a DC 12 Wisdom save, to begin attacking any guild member.',
+  },
+  // ── Economic ─────────────────────────────────────────────────────────────────
+  {
+    id: 'trade-network',
+    title: 'Trade Network',
+    category: 'Economic',
+    image: '/resources/traits/trade-network.svg',
+    requiresHQType: ['Market'],
+    description: 'The guild has cultivated a reliable network of merchants and brokers. Once per round the guild may sell any single resource at +20% value.',
+  },
+  {
+    id: 'guild-crafter',
+    title: 'Guild Crafter',
+    category: 'Economic',
+    image: '/resources/traits/guild-crafter.svg',
+    requiresHQType: ['Industry', 'Market'],
+    description: 'One skilled artisan among the guild\'s contacts agrees to work exclusively for the guild. Once per round the guild may commission one non-magical item (worth up to 50 gp) at no material cost.',
+  },
+  {
+    id: 'silver-tongue',
+    title: 'Silver Tongue',
+    category: 'Economic',
+    image: '/resources/traits/silver-tongue.svg',
+    requiresHQType: ['Market', 'Leadership'],
+    description: 'Guild members are trained negotiators. They have advantage on Persuasion checks related to commerce, contracts, and pricing. When a guild member personally brokers a trade deal, the guild earns an additional 5% of the deal\'s total value.',
+  },
+  {
+    id: 'black-market',
+    title: 'Black Market',
+    category: 'Economic',
+    image: '/resources/traits/black-market.svg',
+    requiresHQType: ['Market', 'Entertainment'],
+    description: 'The guild has quietly cultivated contacts in the city\'s shadow economy. Once per round the guild may acquire one restricted, rare, or contraband item without triggering a faction reaction. This does not bypass legal consequences if the item is discovered.',
+  },
+  // ── Faction ──────────────────────────────────────────────────────────────────
+  {
+    id: 'renowned',
+    title: 'Renowned',
+    category: 'Faction',
+    image: '/resources/traits/renowned.svg',
+    requiresHQType: ['Leadership', 'Noble'],
+    description: 'The guild\'s deeds have earned it broad recognition across the city. At the start of each round, the guild gains +5 Influence with every faction that currently has Neutral or better standing toward the guild, to a maximum of 75.',
+  },
+  {
+    id: 'diplomatic-corps',
+    title: 'Diplomatic Corps',
+    category: 'Faction',
+    image: '/resources/traits/diplomatic-corps.svg',
+    requiresHQType: ['Leadership'],
+    description: 'The guild employs skilled diplomats who are skilled at brokering ceasefires between hostile factions. When any guildmember attempt a diplomatic negotiation (DC 15 Persuasion) between any two factions who have a standing of 50 or less, they have advantage on that check and increase the influence by +20 instead of +10.',
+  },
+  {
+    id: 'spies',
+    title: 'Spies',
+    category: 'Faction',
+    image: '/resources/traits/spies.svg',
+    description: 'The guild has embedded informants in the city. Once per round the guild may ask the GM one yes/no question about any faction\'s current activities, plans, or resources. The answer is truthful but may be incomplete.',
+  },
+  // ── Headquarters ─────────────────────────────────────────────────────────────
+  {
+    id: 'hidden-passages',
+    title: 'Hidden Passages',
+    category: 'Headquarters',
+    image: '/resources/traits/hidden-passages.svg',
+    description: 'Secret tunnels connect the guild headquarters to two other locations in the city, chosen on purchase. Guild members may use these passages to enter or leave the HQ unseen, bypassing any blockade or observation on the main entrance.',
+  },
+  {
+    id: 'trophy-hall',
+    title: 'Trophy Hall',
+    category: 'Headquarters',
+    image: '/resources/traits/trophy-hall.svg',
+    requiresHQType: ['Military'],
+    description: 'The HQ displays trophies from the guild\'s past victories. For each distinct enemy type the guild has defeated in a significant encounter, members gain +1 to attack and damage rolls against that creature type in future encounters.',
+  },
+  {
+    id: 'library',
+    title: 'Library',
+    category: 'Headquarters',
+    image: '/resources/traits/library.svg',
+    requiresHQType: ['Religious', 'Magical', 'Leadership'],
+    description: 'The guild maintains a well-stocked library of lore, maps, and contracts. Guild members may reroll one Intelligence (History, Arcana, Nature, or Religion) check per month, keeping the higher result. The library also lets the guild identify one unknown item per round for free.',
+  },
+  // ── Member ───────────────────────────────────────────────────────────────────
+  {
+    id: 'veteran-recruits',
+    title: 'Veteran Recruits',
+    category: 'Member',
+    image: '/resources/traits/veteran-recruits.svg',
+    description: 'The guild\'s reputation attracts experienced individuals rather than raw talent. Any new recruit who joins the guild during or after Guild Setup begins at 1st level instead of 0th level, and enters with a class already chosen.',
+  },
+  {
+    id: 'hardy',
+    title: 'Hardy',
+    category: 'Member',
+    image: '/resources/traits/hardy.svg',
+    requiresHQType: ['Military'],
+    description: 'Life in the guild has toughened every member. All guild members gain +1 hit point per character level (applied immediately on purchase and to future level-ups). Members also stabilise automatically on a natural 20 during death saving throws.',
+  },
+  {
+    id: 'legacy',
+    title: 'Legacy',
+    category: 'Member',
+    image: '/resources/traits/legacy.svg',
+    requiresHQType: ['Leadership'],
+    description: 'The guild has a history that new members inherit. When the guild completes a major contract or achieves a narrative milestone, it earns 1 additional Round Point. The GM decides what qualifies, but the guild may argue its case.',
+  },
+  // ── Magical ──────────────────────────────────────────────────────────────────
+  {
+    id: 'ward',
+    title: 'Ward',
+    category: 'Magical',
+    image: '/resources/traits/ward.svg',
+    requiresHQType: ['Magical', 'Religious'],
+    description: 'A permanent Alarm spell protects the guild headquarters, tuned to alert only guild members. Any creature that crosses the threshold without a guild member\'s conscious permission triggers a silent mental alert to all members within one mile.',
+  },
+  {
+    id: 'arcane-focus',
+    title: 'Arcane Focus',
+    category: 'Magical',
+    image: '/resources/traits/arcane-focus.svg',
+    requiresHQType: ['Magical'],
+    description: 'A minor magical artefact is housed in the HQ that any member may attune to briefly. Once per round one guild member (need not be a spellcaster) may cast any single cantrip as if they were a 1st-level caster. The cantrip is chosen by the guild on purchase.',
+  },
+  {
+    id: 'blessing',
+    title: 'Blessing',
+    category: 'Magical',
+    image: '/resources/traits/blessing.svg',
+    requiresHQType: ['Religious'],
+    description: 'A divine or arcane patron favours the guild. At the start of each combat encounter, all guild members present receive the benefit of the Bless spell for the first three rounds of combat (no concentration required).',
+  },
+]
+
+export const TRAIT_BY_ID = new Map(GUILD_TRAITS.map(t => [t.id, t]))

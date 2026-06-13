@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Shield body -->
+    <path d="M44 22 L156 22 L156 82 Q156 112 100 126 Q44 112 44 82 Z" stroke-width="2"/>
+    <!-- Shield inner border -->
+    <path d="M54 30 L146 30 L146 80 Q146 106 100 118 Q54 106 54 80 Z" stroke-width="1.1" opacity="0.45"/>
+    <!-- Heart in centre -->
+    <path d="M100 100 Q80 84 80 70 Q80 58 90 56 Q96 54 100 62 Q104 54 110 56 Q120 58 120 70 Q120 84 100 100 Z" stroke-width="1.8"/>
+    <!-- Heart inner highlight -->
+    <path d="M90 66 Q86 70 87 76" stroke-width="1" opacity="0.45"/>
+    <!-- Battle damage / dents on shield -->
+    <path d="M58 50 L52 44" stroke-width="1.4" opacity="0.55"/>
+    <path d="M50 62 L44 58" stroke-width="1.4" opacity="0.55"/>
+    <path d="M142 50 L148 44" stroke-width="1.4" opacity="0.55"/>
+    <path d="M150 62 L156 58" stroke-width="1.4" opacity="0.55"/>
+    <!-- Shield boss (centre rivet) -->
+    <circle cx="100" cy="36" r="4" stroke-width="1.2"/>
+    <!-- Cross bar at top -->
+    <path d="M44 38 L156 38" stroke-width="1.2" opacity="0.35"/>
+    <!-- Hatching on shield edges -->
+    <path d="M50 46 L56 52" stroke-width="0.9" opacity="0.3"/>
+    <path d="M50 56 L56 62" stroke-width="0.9" opacity="0.3"/>
+    <path d="M150 46 L144 52" stroke-width="0.9" opacity="0.3"/>
+    <path d="M150 56 L144 62" stroke-width="0.9" opacity="0.3"/>
+    <!-- Pulse lines from heart -->
+    <path d="M78 86 L66 86 L70 80 L62 80" stroke-width="1.2" opacity="0.6"/>
+    <path d="M122 86 L134 86 L130 80 L138 80" stroke-width="1.2" opacity="0.6"/>
+  </g>
+</svg>

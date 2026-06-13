@@ -23,6 +23,12 @@ export default class FactionsPanel {
     this.container = null
     this.threatsSection = null
     this.factionsSection = null
+    this._guild = null
+  }
+
+  setGuild(guild) {
+    this._guild = guild
+    this._rebuildFactions()
   }
 
   render(container) {
@@ -79,9 +85,16 @@ export default class FactionsPanel {
   }
 
   update(factions = []) {
+    this._factions = factions
+    this._rebuildFactions()
+  }
+
+  _rebuildFactions() {
     if (!this.factionsSection) return
     this.factionsSection.innerHTML = ''
-    if (factions.length === 0) {
+    const factions = this._factions || []
+
+    if (!this._guild && factions.length === 0) {
       const empty = document.createElement('div')
       empty.textContent = 'No factions yet'
       empty.style.cssText = 'font-size:11px;color:#555;font-style:italic'
@@ -94,27 +107,45 @@ export default class FactionsPanel {
       ...factions.filter(f => f.type !== 'leadership')
     ]
 
+    // Render factions
     for (const faction of sorted) {
-      const colorNum = factionColorHex(faction)
-      const item = document.createElement('div')
-      item.style.cssText = `margin-bottom:5px;padding:5px 8px;background:${toCss(colorNum)};border:1px solid rgba(0,0,0,0.35);border-radius:3px;cursor:default;transition:filter 0.1s`
+      this.factionsSection.appendChild(this._factionItem(faction, factionColorHex(faction)))
+    }
 
-      const title = faction.subclass ? `${faction.name}: ${faction.subclass}` : faction.name
-      const name = document.createElement('div')
-      name.textContent = title
-      name.title = title
-      name.style.cssText = `font-size:11px;color:${contrastText(colorNum)};font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`
-      item.appendChild(name)
+    // Render guild as last entry using its own color
+    if (this._guild) {
+      const g = this._guild
+      const colorNum = parseInt((g.color || '#4c4').replace('#', ''), 16)
+      this.factionsSection.appendChild(this._factionItem(
+        { name: g.name || 'Our Guild', health: g.health ?? 100, _isGuild: true },
+        isNaN(colorNum) ? 0x44cc44 : colorNum
+      ))
+    }
+  }
 
-      // Health bar
-      const health = faction.health ?? 70
-      const healthBar = document.createElement('div')
-      healthBar.style.cssText = 'height:4px;background:rgba(0,0,0,0.3);border-radius:2px;margin-top:3px'
-      const healthFill = document.createElement('div')
-      healthFill.style.cssText = `height:100%;width:${health}%;background:#4ade80;border-radius:2px;transition:width 0.3s`
-      healthBar.appendChild(healthFill)
-      item.appendChild(healthBar)
+  _factionItem(faction, colorNum) {
+    const item = document.createElement('div')
+    item.style.cssText = `margin-bottom:5px;padding:5px 8px;background:${toCss(colorNum)};border:1px solid rgba(0,0,0,0.35);border-radius:3px;cursor:default;transition:filter 0.1s`
 
+    const title = faction.subclass ? `${faction.name}: ${faction.subclass}` : faction.name
+    const name = document.createElement('div')
+    name.textContent = title
+    name.title = title
+    name.style.cssText = `font-size:11px;color:${contrastText(colorNum)};font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`
+    item.appendChild(name)
+
+    const health = faction.health ?? 70
+    const healthBar = document.createElement('div')
+    healthBar.style.cssText = 'position:relative;height:3px;background:#0d0d0d;border:1px solid #242424;border-radius:3px;margin-top:4px;overflow:visible'
+    const healthFill = document.createElement('div')
+    healthFill.style.cssText = `position:absolute;left:0;top:0;height:100%;width:${health}%;background:#22c55e;border-radius:3px;transition:width 0.3s`
+    const healthPill = document.createElement('div')
+    healthPill.style.cssText = 'position:absolute;right:-5px;top:50%;transform:translateY(-50%);width:10px;height:4px;border-radius:2px;background:#4ade80;box-shadow:0 0 6px 3px #4ade8066'
+    healthFill.appendChild(healthPill)
+    healthBar.appendChild(healthFill)
+    item.appendChild(healthBar)
+
+    if (!faction._isGuild) {
       item.addEventListener('mouseenter', () => {
         item.style.filter = 'brightness(1.25)'
         this.eventBus?.emit('FACTION_HOVER', faction)
@@ -123,9 +154,9 @@ export default class FactionsPanel {
         item.style.filter = 'none'
         this.eventBus?.emit('FACTION_HOVER_END')
       })
-
-      this.factionsSection.appendChild(item)
     }
+
+    return item
   }
 
   _sectionLabel(text) {

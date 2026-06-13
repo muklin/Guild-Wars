@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="200" height="140">
+  <rect width="200" height="140" fill="#f8f6f0"/>
+  <g stroke="#1a1210" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="100" cy="70" r="14" stroke-width="1.8"/>
+    <circle cx="100" cy="24" r="9" stroke-width="1.5"/>
+    <circle cx="44" cy="92" r="9" stroke-width="1.5"/>
+    <circle cx="156" cy="92" r="9" stroke-width="1.5"/>
+    <path d="M100 56 L100 33" stroke-width="1.3"/>
+    <path d="M87 78 L53 88" stroke-width="1.3"/>
+    <path d="M113 78 L147 88" stroke-width="1.3"/>
+    <circle cx="62" cy="34" r="6" stroke-width="1.2" opacity="0.6"/>
+    <circle cx="138" cy="34" r="6" stroke-width="1.2" opacity="0.6"/>
+    <circle cx="28" cy="62" r="6" stroke-width="1.2" opacity="0.6"/>
+    <circle cx="172" cy="62" r="6" stroke-width="1.2" opacity="0.6"/>
+    <circle cx="56" cy="120" r="6" stroke-width="1.2" opacity="0.6"/>
+    <circle cx="144" cy="120" r="6" stroke-width="1.2" opacity="0.6"/>
+    <path d="M96 16 L66 30" stroke-width="1" opacity="0.5"/>
+    <path d="M104 16 L134 30" stroke-width="1" opacity="0.5"/>
+    <path d="M35 67 L40 87" stroke-width="1" opacity="0.5"/>
+    <path d="M165 67 L160 87" stroke-width="1" opacity="0.5"/>
+    <path d="M47 99 L53 116" stroke-width="1" opacity="0.5"/>
+    <path d="M153 99 L147 116" stroke-width="1" opacity="0.5"/>
+    <circle cx="100" cy="70" r="7" stroke-width="1" opacity="0.5"/>
+    <path d="M97 70 Q100 66 103 70 Q100 74 97 70" stroke-width="1" opacity="0.5"/>
+    <circle cx="100" cy="70" r="22" stroke-width="0.7" opacity="0.2"/>
+    <circle cx="100" cy="70" r="30" stroke-width="0.5" opacity="0.12"/>
+  </g>
+</svg>
