@@ -1,10 +1,94 @@
 import TerrainVoronoiGenerator from './CityGenerator/TerrainVoronoiGenerator.js'
 import StreetVoronoiGenerator from './CityGenerator/StreetVoronoiGenerator.js'
 import CityBlockGenerator, { majorityStreetType } from './CityGenerator/CityBlockGenerator.js'
-import PlotVoronoiGenerator from './CityGenerator/PlotVoronoiGenerator.js'
+import PlotVoronoiGenerator, { markSquareBlocks } from './CityGenerator/PlotVoronoiGenerator.js'
+import LandmarkPlacer from './CityGenerator/buildings/LandmarkPlacer.js'
 import BuildingTemplateGenerator from './CityGenerator/buildings/BuildingTemplateGenerator.js'
 import TextureTemplateGenerator from './CityGenerator/buildings/TextureTemplateGenerator.js'
 import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
+import { readFileSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+
+const _dir = dirname(fileURLToPath(import.meta.url))
+let _nameLib = null
+let _abilityArrays = null
+
+function _loadCharacterData() {
+  if (!_nameLib) {
+    _nameLib = JSON.parse(readFileSync(join(_dir, '../../../resources/RulesConfig/characterNames.json'), 'utf8'))
+  }
+  if (!_abilityArrays) {
+    _abilityArrays = JSON.parse(readFileSync(join(_dir, '../../../resources/RulesConfig/abilityScoreSelection.json'), 'utf8')).Options
+  }
+}
+
+const RACE_WEIGHTS = [
+  { race: 'human',    weight: 0.800 },
+  { race: 'elf',      weight: 0.050 },
+  { race: 'dwarf',    weight: 0.050 },
+  { race: 'halfOrc',  weight: 0.034 },
+  { race: 'halfling', weight: 0.033 },
+  { race: 'gnome',    weight: 0.033 },
+]
+
+const RACIAL_MODIFIERS = {
+  human:    { str:1, dex:1, con:1, int:1, wis:1, cha:1 },
+  elf:      { dex:2, int:1 },
+  dwarf:    { con:2, wis:1 },
+  halfOrc:  { str:2, con:1 },
+  halfling: { dex:2 },
+  gnome:    { int:2, con:1 },
+}
+
+const ABILITY_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha']
+
+function _pick(arr) { return arr[Math.floor(Math.random() * arr.length)] }
+
+function _weightedRace() {
+  const r = Math.random()
+  let cum = 0
+  for (const { race, weight } of RACE_WEIGHTS) {
+    cum += weight
+    if (r < cum) return race
+  }
+  return 'human'
+}
+
+function _shuffle(arr) {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
+function generateRecruits(n) {
+  _loadCharacterData()
+  return Array.from({ length: n }, () => {
+    const race = _weightedRace()
+    const names = _nameLib[race]
+    const name = `${_pick(names.first)} ${_pick(names.last)}`
+    const scores = _shuffle(_pick(_abilityArrays))
+    const mods = RACIAL_MODIFIERS[race] || {}
+    const abilityScores = {}
+    ABILITY_KEYS.forEach((k, i) => {
+      abilityScores[k] = Math.min(20, scores[i] + (mods[k] || 0))
+    })
+    return {
+      id: crypto.randomUUID(),
+      name,
+      race,
+      level: 0,
+      role: 'recruit',
+      abilityScores,
+    }
+  })
+}
+
+// Distinct guild colours (by creation order), used by the Influence map overlay.
+const GUILD_COLORS = ['#e6453c', '#3c7de6', '#37a85a', '#d9a528', '#9b59d9', '#e67ec2']
 
 export default class SetupPhase {
   constructor(gameStateManager) {
@@ -26,6 +110,7 @@ export default class SetupPhase {
   }
 
   initialize() {
+    this.gameStateManager.clear()
     this.log = []
     this.terrainPlacements = []
     this.edgePlacements = []
@@ -361,10 +446,12 @@ export default class SetupPhase {
     return { ok: true, log: this.log }
   }
 
-  assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null) {
+  // Apply = lock the district in (final). The type may already have been set by
+  // previewDistrictType; here we validate resources, commit them, and lock.
+  assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '') {
     const district = this.gameStateManager.cityDistrictData.districts.find(d => d.id === districtId)
     if (!district) throw new Error(`District ${districtId} not found`)
-    if (district.assignedType) throw new Error(`District ${districtId} is already assigned`)
+    if (district.locked) throw new Error(`District ${districtId} is already locked`)
     if (district.isLeadershipDistrict && districtType !== 'Leadership') throw new Error('This district is reserved for Leadership')
     if (!district.isLeadershipDistrict && districtType === 'Leadership') throw new Error('Leadership can only be assigned to the designated Leadership district')
 
@@ -384,12 +471,8 @@ export default class SetupPhase {
       }
     }
 
-    if (districtType === 'Market') {
-      producedResource = 'Gold'
-    }
-
     if (isLeadership) {
-      const existing = this.gameStateManager.cityDistrictData.districts.find(d => d.assignedType === 'Leadership')
+      const existing = this.gameStateManager.cityDistrictData.districts.find(d => d.id !== districtId && d.assignedType === 'Leadership')
       if (existing) throw new Error('City Leadership has already been defined')
       if (!VALID_RULING_BODY_CLASSES.includes(LeadershipClass)) {
         throw new Error(`Invalid Leadership class: ${LeadershipClass}`)
@@ -399,27 +482,37 @@ export default class SetupPhase {
     }
 
     const normalizedProd = producedResource?.trim().toLowerCase()
-    const DUPE_EXEMPT = new Set(['labour', 'gold'])
-    if (normalizedProd && !DUPE_EXEMPT.has(normalizedProd)) {
+    const normalizedProd2 = secondProducedResource?.trim().toLowerCase()
+    if (normalizedProd === 'gold') throw new Error('Gold is produced automatically — choose a different resource or service')
+    if (normalizedProd2 === 'gold') throw new Error('Gold is produced automatically — choose a different resource or service')
+    if (normalizedProd && normalizedProd2 && normalizedProd === normalizedProd2) throw new Error(`Cannot produce the same resource or service twice: "${producedResource}"`)
+    if (normalizedProd2 && districtType !== 'Industry') throw new Error('Only Industry districts can produce a second resource or service')
+
+    const DUPE_EXEMPT = new Set(['labour'])
+    const checkDupe = (prod, label) => {
+      if (!prod || DUPE_EXEMPT.has(prod)) return
       const conflict = this.gameStateManager.cityDistrictData.districts.find(d =>
         d.id !== districtId && d.producedResource &&
-        d.producedResource.trim().toLowerCase() === normalizedProd
+        d.producedResource.trim().toLowerCase() === prod
       )
-      if (conflict) {
-        throw new Error(`"${producedResource}" is already produced by another district`)
-      }
+      if (conflict) throw new Error(`"${label}" is already produced by another district`)
     }
+    checkDupe(normalizedProd, producedResource)
+    checkDupe(normalizedProd2, secondProducedResource)
 
     const explicitConsumed = (consumedResources || []).map(r => r.trim()).filter(Boolean)
     const isNoble = isResidential && residentialClass === 'Noble'
-    if (!isNoble && !isLeadership && !producedResource?.trim()) throw new Error('A district must produce at least one resource')
-    if (!isResidential && !isLeadership && explicitConsumed.length < 2) throw new Error('A district must consume at least 2 resources (in addition to Water and Basic Food)')
+    const hasTwoProductions = !!(normalizedProd && normalizedProd2)
+    if (!isNoble && !isLeadership && !normalizedProd) throw new Error('A district must produce at least one resource or service (in addition to Gold)')
+    if (!isResidential && !isLeadership && hasTwoProductions && explicitConsumed.length < 5) throw new Error('An Industry district producing 2 resources or services must consume at least 5')
+    if (!isResidential && !isLeadership && !hasTwoProductions && explicitConsumed.length < 2) throw new Error('A district must consume at least 2 resources or services (in addition to Water and Basic Food)')
 
     district.assignedType = districtType
     district.residentialClass = isResidential ? (residentialClass || null) : null
     district.LeadershipClass = isLeadership ? (LeadershipClass || null) : null
     district.description = description
     district.producedResource = producedResource?.trim() || null
+    district.secondProducedResource = secondProducedResource?.trim() || null
     const IMPLICIT_CONSUMED = isLeadership ? [] : ['Water', 'Basic Food']
     district.consumedResources = [
       ...explicitConsumed,
@@ -427,12 +520,15 @@ export default class SetupPhase {
     ]
 
     const displayType = isResidential ? `Residential (${residentialClass})` : districtType
-    this.districtTypePlacements.push({ districtId, districtType, residentialClass, LeadershipClass, description, producedResource: district.producedResource, consumedResources: district.consumedResources })
+    this.districtTypePlacements.push({ districtId, districtType, residentialClass, LeadershipClass, description, producedResource: district.producedResource, secondProducedResource: district.secondProducedResource, consumedResources: district.consumedResources })
     this.log.push(`Assigned ${displayType} to district ${districtId}`)
 
     const PREDEFINED_LOWER = ['gold', 'water', 'labour', 'basic food']
     if (district.producedResource && !PREDEFINED_LOWER.includes(district.producedResource.toLowerCase())) {
       this._registerResource(district.producedResource)
+    }
+    if (district.secondProducedResource && !PREDEFINED_LOWER.includes(district.secondProducedResource.toLowerCase())) {
+      this._registerResource(district.secondProducedResource)
     }
     for (const r of explicitConsumed) {
       if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
@@ -440,14 +536,40 @@ export default class SetupPhase {
 
     if (isLeadership) {
       const insertIdx = this.factions.findIndex(f => f.type !== 'leadership')
-      const faction = { id: this.factions.length, type: 'leadership', name: 'Leadership', subclass: LeadershipClass || null, districtId }
+      const faction = { id: this.factions.length, health: 70, type:'leadership', name: 'Leadership', subclass: LeadershipClass || null, districtId }
       if (insertIdx === -1) this.factions.push(faction)
       else this.factions.splice(insertIdx, 0, faction)
     } else {
-      this.factions.push({ id: this.factions.length, type: 'district', name: districtType, subclass: residentialClass || null, districtId })
+      this.factions.push({ id: this.factions.length, health: 70, type:'district', name: districtType, subclass: residentialClass || null, districtId })
     }
 
+    // Commit: freeze the street seed, lock the district, and regenerate.
+    if (district.streetSeed == null) district.streetSeed = district.id
+    district.locked = true
+    this.generateForLocked()
+
     return { ok: true, resourceRegistry: this.resourceRegistry, factions: this.factions, log: this.log }
+  }
+
+  // Provisionally set a district's type/class (no resource validation, no lock) and
+  // generate its preview streets/plots/buildings. Called when the player picks a type
+  // so streets appear immediately, before they fill in resources or click Apply.
+  previewDistrictType(districtId, districtType, residentialClass = null, LeadershipClass = null) {
+    const district = this.gameStateManager.cityDistrictData?.districts?.find(d => d.id === districtId)
+    if (!district) throw new Error(`District ${districtId} not found`)
+    if (district.locked) throw new Error(`District ${districtId} is locked`)
+    if (district.isLeadershipDistrict && districtType !== 'Leadership') throw new Error('This district is reserved for Leadership')
+    if (!district.isLeadershipDistrict && districtType === 'Leadership') throw new Error('Leadership can only be assigned to the designated Leadership district')
+
+    const isResidential = districtType === 'Residential'
+    const isLeadership = districtType === 'Leadership'
+    district.assignedType = districtType
+    district.residentialClass = isResidential ? (residentialClass || null) : null
+    district.LeadershipClass = isLeadership ? (LeadershipClass || null) : null
+    if (district.streetSeed == null) district.streetSeed = district.id
+    this.generateForLocked(districtId)
+    this.log.push(`Previewed ${districtType} on district ${districtId}`)
+    return { ok: true, log: this.log }
   }
 
   _registerResource(name) {
@@ -468,19 +590,33 @@ export default class SetupPhase {
     return { ok: true, threats: this.threats, log: this.log }
   }
 
-  addTradingDestination(regionId, description = '') {
+  addTradingDestination(regionId, description = '', name = '', buys = [], sells = []) {
     const regions = this.gameStateManager.worldTerrainData.regions
     const region = regions.find(r => r.id === regionId)
     if (!region) throw new Error(`Region ${regionId} not found`)
     if (!region.isEdge) throw new Error('Trading destinations must be placed on edge regions')
+
+    const tradeName = (name || '').trim()
+    if (!tradeName) throw new Error('A trade route name is required')
+    const clean = (arr) => [...new Set((arr || []).map(r => (r || '').trim()).filter(Boolean))].slice(0, 3)
+    const cleanBuys = clean(buys), cleanSells = clean(sells)
+    if (cleanBuys.length < 1) throw new Error('Select at least one resource to buy')
+    if (cleanSells.length < 1) throw new Error('Select at least one resource to sell')
+
     const { path: roadPath, bridges } = this._findRoadPath(regionId)
-    const trade = { id: this.tradingDestinations.length, regionId, description, terrainType: region.assignedType, roadPath, bridges }
+    const trade = { id: this.tradingDestinations.length, regionId, name: tradeName, description, terrainType: region.assignedType, roadPath, bridges, buys: cleanBuys, sells: cleanSells }
     this.tradingDestinations.push(trade)
-    this.log.push(`Added trade at region ${regionId} with road of ${roadPath.length} regions, ${bridges.length} bridge(s)`)
+    this.log.push(`Added trade '${tradeName}' at region ${regionId}: buys [${cleanBuys.join(', ')}], sells [${cleanSells.join(', ')}]`)
 
-    this.factions.push({ id: this.factions.length, type: 'trade', name: region.assignedType || 'Region', subclass: null, regionId })
+    // Register any newly-defined resources.
+    const PREDEFINED_LOWER = ['gold', 'water', 'labour', 'basic food']
+    for (const r of [...cleanBuys, ...cleanSells]) {
+      if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
+    }
 
-    return { ok: true, tradingDestinations: this.tradingDestinations, trade, factions: this.factions, log: this.log }
+    this.factions.push({ id: this.factions.length, health: 70, type:'trade', name: tradeName, subclass: null, regionId })
+
+    return { ok: true, tradingDestinations: this.tradingDestinations, trade, factions: this.factions, resourceRegistry: this.resourceRegistry, log: this.log }
   }
 
   _findRoadPath(startRegionId) {
@@ -523,6 +659,85 @@ export default class SetupPhase {
       }
     }
     return { path: [startRegionId], bridges: [] }
+  }
+
+  // Centreline waypoints of a trade road, following the same fine-cell BFS the
+  // client uses to draw the rendered (red) trade road, so the street road matches
+  // it exactly. Returns [{x,y}] (off-map destination → near the city) or null.
+  _tradeRoadWaypoints(roadPath) {
+    const wt = this.gameStateManager.worldTerrainData
+    const fineCells = wt?.fineCells || []
+    const W = wt?.worldSize ?? 50
+    if (!roadPath || roadPath.length < 2 || fineCells.length === 0) return null
+
+    const pathSet = new Set(roadPath)
+    const cityRegionId = roadPath[roadPath.length - 1]
+    const cellsByRegion = new Map()
+    for (const cell of fineCells) {
+      if (!cellsByRegion.has(cell.parentRegionId)) cellsByRegion.set(cell.parentRegionId, [])
+      cellsByRegion.get(cell.parentRegionId).push(cell)
+    }
+
+    const pathCells = []
+    for (const regionId of roadPath) for (const cell of (cellsByRegion.get(regionId) || [])) pathCells.push(cell)
+    if (pathCells.length === 0) return null
+    const cellMap = new Map(pathCells.map(c => [c.id, c]))
+
+    // Adjacency: fine cells sharing a (quantised) polygon vertex are neighbours.
+    const adj = new Map(), vertToCells = new Map()
+    for (const cell of pathCells) {
+      for (const v of (cell.polygon || [])) {
+        const key = `${Math.round(v.x * 20)},${Math.round(v.y * 20)}`
+        if (!vertToCells.has(key)) vertToCells.set(key, [])
+        vertToCells.get(key).push(cell.id)
+      }
+    }
+    for (const [, ids] of vertToCells) {
+      for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+        const a = ids[i], b = ids[j]
+        if (!adj.has(a)) adj.set(a, new Set())
+        if (!adj.has(b)) adj.set(b, new Set())
+        adj.get(a).add(b); adj.get(b).add(a)
+      }
+    }
+
+    const edgeCells = cellsByRegion.get(roadPath[0]) || []
+    if (edgeCells.length === 0) return null
+    let startCell = edgeCells[0], minBoundDist = Infinity
+    for (const cell of edgeCells) {
+      const { x, y } = cell.seedPoint
+      const d = Math.min(x, W - x, y, W - y)
+      if (d < minBoundDist) { minBoundDist = d; startCell = cell }
+    }
+
+    const cityIds = new Set((cellsByRegion.get(cityRegionId) || []).map(c => c.id))
+    const queue = [[startCell.id, [startCell.id]]]
+    const visited = new Set([startCell.id])
+    let fineCellPath = null
+    while (queue.length > 0) {
+      const [curr, currPath] = queue.shift()
+      if (cityIds.has(curr)) { fineCellPath = currPath; break }
+      for (const next of (adj.get(curr) || [])) {
+        if (visited.has(next)) continue
+        const nextCell = cellMap.get(next)
+        if (!nextCell || !pathSet.has(nextCell.parentRegionId)) continue
+        visited.add(next)
+        queue.push([next, [...currPath, next]])
+      }
+    }
+    if (!fineCellPath || fineCellPath.length < 2) return null
+
+    const waypoints = []
+    for (let i = 0; i < fineCellPath.length - 1; i++) {
+      const cell = cellMap.get(fineCellPath[i])
+      if (cell) waypoints.push({ x: cell.seedPoint.x, y: cell.seedPoint.y })
+    }
+    const cityCell = cellMap.get(fineCellPath[fineCellPath.length - 1])
+    if (cityCell && waypoints.length > 0) {
+      const last = waypoints[waypoints.length - 1]
+      waypoints.push({ x: (last.x + cityCell.seedPoint.x) / 2, y: (last.y + cityCell.seedPoint.y) / 2 })
+    }
+    return waypoints.length >= 2 ? waypoints : null
   }
 
   assignCityEdgeType(edgeId, edgeType, description = '') {
@@ -613,69 +828,134 @@ export default class SetupPhase {
     return { ok: true, log: this.log }
   }
 
-  rebuildStreets() {
-    const cityData = this.gameStateManager.cityDistrictData
-    if (!cityData) throw new Error('No city district data')
-    // Reset all user-assigned city edge types so street setup starts fresh
-    for (const edge of Object.values(cityData.edges || {})) {
-      edge.assignedType = null
-    }
-    cityData.streetGraph = null
-    cityData.plots = []
-    this.cityEdgePlacements = []
-    this._generateStreetGraph(Date.now())
-    this._generateBuildings()
-    this._rebuildFactions()
-    this.log.push('Streets rebuilt.')
-    return { ok: true, log: this.log }
-  }
-
-  finishSubdivision() {
-    this._generateStreetGraph()
-    this._generateBuildings()
-    this._rebuildFactions()
-    this.currentStep = 'StreetSetup'
-    this.log.push('City subdivision complete. Moving to street setup.')
-    return { ok: true, log: this.log }
-  }
-
-  _generateStreetGraph(epochSeed = 0) {
+  // Regenerate the committed city geometry over all LOCKED districts, plus an
+  // optional in-preview district (typed but not yet locked). Districts outside this
+  // set contribute no streets, so their shared boundaries stay deferred until they
+  // are locked too. Stable per-district seeds keep locked interiors unchanged.
+  generateForLocked(previewDistrictId = null, isFinal = false) {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.districts?.length) return
+    // Generate over every TYPED district (locked or in preview). `locked` governs
+    // immutability (no reseed/retype), not graph membership; untyped districts are
+    // absent, so their shared boundaries stay deferred until they're typed.
+    const subset = cityData.districts.filter(d => d.assignedType || d.id === previewDistrictId)
+    if (!subset.length) {
+      cityData.streetGraph = null
+      cityData.blocks = []
+      cityData.plots = []
+      return
+    }
+    this._generateStreetGraph(subset, 0, isFinal)
+    this._generateBuildings()
+  }
 
-    // Auto-assign unassigned districts as Residential (random class, seeded by district id)
+  // Reseed a not-yet-locked district's interior streets, then regenerate.
+  regenerateDistrict(districtId) {
+    const cityData = this.gameStateManager.cityDistrictData
+    const district = cityData?.districts?.find(d => d.id === districtId)
+    if (!district) throw new Error(`District ${districtId} not found`)
+    if (district.locked) throw new Error(`District ${districtId} is locked`)
+    if (!district.assignedType) throw new Error(`District ${districtId} has no type yet`)
+    let s = ((district.streetSeed ?? district.id) * 2654435761) >>> 0
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+    district.streetSeed = s >>> 0
+    this.generateForLocked(districtId)
+    this.log.push(`Regenerated streets for district ${districtId}`)
+    return { ok: true, log: this.log }
+  }
+
+  // Discard a provisional (previewed, not-yet-locked) district — clear its type/seed
+  // so it returns to a blank district polygon, and regenerate without it. Locked
+  // districts are final and never reverted.
+  revertDistrict(districtId) {
+    const cityData = this.gameStateManager.cityDistrictData
+    const district = cityData?.districts?.find(d => d.id === districtId)
+    if (!district) throw new Error(`District ${districtId} not found`)
+    if (district.locked) return { ok: true, log: this.log }
+    district.assignedType = null
+    district.residentialClass = null
+    district.LeadershipClass = null
+    district.producedResource = null
+    district.secondProducedResource = null
+    district.consumedResources = []
+    district.streetSeed = null
+    district.description = ''
+    this.generateForLocked()
+    this.log.push(`Reverted district ${districtId} to blank`)
+    return { ok: true, log: this.log }
+  }
+
+  // Advancing to Guild Creation: auto-assign + lock any still-untyped districts
+  // (seeded Residential), then finalize the whole-city geometry.
+  finishSubdivision() {
+    const cityData = this.gameStateManager.cityDistrictData
     const RESIDENTIAL_CLASSES = ['Slums', 'Middle', 'Noble']
-    for (const district of cityData.districts) {
-      if (!district.assignedType && !district.isLeadershipDistrict) {
+    for (const district of (cityData?.districts || [])) {
+      if (!district.assignedType && district.isLeadershipDistrict) {
+        // The Leadership district defaults to a Monarchy if left untyped.
+        district.assignedType = 'Leadership'
+        district.LeadershipClass = 'Monarchy'
+        district.producedResource = null
+        district.secondProducedResource = null
+        district.consumedResources = []
+        district.description = ''
+        this.log.push(`Auto-assigned Leadership (Monarchy) to district ${district.id}`)
+      } else if (!district.assignedType && !district.isLeadershipDistrict) {
         let s = (district.id * 2654435761) >>> 0
         s ^= s << 13; s ^= s >>> 17; s ^= s << 5
         const cls = RESIDENTIAL_CLASSES[(s >>> 0) % RESIDENTIAL_CLASSES.length]
         district.assignedType = 'Residential'
         district.residentialClass = cls
         district.producedResource = cls !== 'Noble' ? 'Labour' : null
+        district.secondProducedResource = null
         district.consumedResources = ['Water', 'Basic Food']
         district.description = ''
         this.log.push(`Auto-assigned Residential (${cls}) to district ${district.id}`)
       }
-      // Market districts always produce Gold (duplicates permitted)
-      if (district.assignedType === 'Market') {
-        district.producedResource = 'Gold'
+      if (district.streetSeed == null) district.streetSeed = district.id
+      district.locked = true
+    }
+    this.generateForLocked()
+    this._rebuildFactions()
+    this.currentStep = 'GuildCreation'
+    this.log.push('City subdivision complete. Moving to guild creation.')
+    return { ok: true, log: this.log }
+  }
+
+  // Generate the street graph over `districts` (a subset of the city's districts).
+  // Trade routes are placeholder-only during District Setup; pass isFinal=true at
+  // completion so they are clipped to the city interior and added as Mud roads.
+  _generateStreetGraph(districts, epochSeed = 0, isFinal = false) {
+    const cityData = this.gameStateManager.cityDistrictData
+    if (!cityData?.districts?.length || !districts?.length) return
+
+    // Market districts always produce Gold (normalisation; harmless if already set).
+    for (const d of districts) {
+      if (d.assignedType === 'Market') d.producedResource = 'Gold'
+    }
+
+    // NOTE: city edges are intentionally left unassigned here. The generator already
+    // treats a null edge type as the default (betterStreetType) boundary road, and
+    // mutating edge.assignedType would mark every district edge as "assigned" —
+    // making it non-selectable and breaking edge editing throughout District Setup.
+
+    const tradeRoutes = []
+    if (isFinal) {
+      for (const trade of this.tradingDestinations || []) {
+        const wp = this._tradeRoadWaypoints(trade.roadPath || [])
+        if (wp) tradeRoutes.push(wp)
       }
     }
 
-    // Auto-assign all undefined district boundary edges to Mud road
-    for (const edge of Object.values(cityData.edges || {})) {
-      if (!edge.assignedType) edge.assignedType = 'Mud'
-    }
-
     const gen = new StreetVoronoiGenerator()
-    cityData.streetGraph = gen.generate(cityData.districts, cityData.edges, cityData.edgePoints || [], epochSeed)
-    this.log.push(`Generated street graph: ${cityData.streetGraph.junctions.length} junctions`)
+    cityData.streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes)
+    this.log.push(`Generated street graph over ${districts.length} district(s): ${cityData.streetGraph.junctions.length} junctions, ${tradeRoutes.length} trade road(s) (final=${isFinal})`)
   }
 
   _generateBuildings() {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.streetGraph) return
+    cityData.landmarkBuildings = []
     if (!CALC_BLOCKS) {
       cityData.blocks = []
       cityData.plots  = []
@@ -686,15 +966,11 @@ export default class SetupPhase {
     const { blocks, roadEdges } = new CityBlockGenerator().generate(cityData.districts, cityData.streetGraph)
     cityData.blocks = blocks
 
-    if (!CALC_PLOTS) {
-      cityData.plots = []
-      this.log.push(`Generated ${blocks.length} blocks (plot calculation disabled)`)
-      return
-    }
-
-    const junctions = cityData.streetGraph?.junctions || []
-    const { plots } = new PlotVoronoiGenerator().generate(blocks, cityData.districts, junctions, roadEdges)
-    cityData.plots = plots
+    // Mark City squares, then place Landmarks on their (joined) clusters BEFORE plots,
+    // so plot generation can drop the ground beneath each Landmark (ADR-0005).
+    markSquareBlocks(blocks, cityData.districts)
+    const { landmarkBuildings, footprints } = new LandmarkPlacer().generate(blocks, cityData.districts)
+    cityData.landmarkBuildings = landmarkBuildings
 
     // City squares are paved, walkable extensions of the street network — record
     // them on the street graph so they can be rendered in the street pass and
@@ -710,13 +986,17 @@ export default class SetupPhase {
         streetEdges: b.streetEdges,
       }))
 
-    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${cityData.streetGraph.squares.length} squares`)
-  }
+    if (!CALC_PLOTS) {
+      cityData.plots = []
+      this.log.push(`Generated ${blocks.length} blocks, ${landmarkBuildings.length} landmarks (plot calculation disabled)`)
+      return
+    }
 
-  finishStreetSetup() {
-    this.currentStep = 'GuildCreation'
-    this.log.push('Street setup complete. Moving to guild design.')
-    return { ok: true, log: this.log }
+    const junctions = cityData.streetGraph?.junctions || []
+    const { plots } = new PlotVoronoiGenerator().generate(blocks, cityData.districts, junctions, roadEdges, footprints)
+    cityData.plots = plots
+
+    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares`)
   }
 
   assignTerrainDistrict(regionId, districtType, description = '', producedResource = '', consumedResources = []) {
@@ -754,7 +1034,7 @@ export default class SetupPhase {
       if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
     }
 
-    this.factions.push({ id: this.factions.length, type: 'terrain', name: districtType, subclass: null, regionId })
+    this.factions.push({ id: this.factions.length, health: 70, type:'terrain', name: districtType, subclass: null, regionId })
 
     this.log.push(`Assigned ${districtType} district to ${region.assignedType} region ${regionId}`)
     return { ok: true, resourceRegistry: this.resourceRegistry, factions: this.factions, log: this.log }
@@ -764,14 +1044,56 @@ export default class SetupPhase {
     return this.assignDistrictType(districtId, districtClass)
   }
 
-  createPlayerGuild(guildName, leaderName, leaderClass, secondName, secondClass) {
-    if (!guildName || !leaderName) throw new Error('Guild name and leader name are required')
-    this.log.push(`Created guild: ${guildName}`)
-    this.log.push(`  Leader: ${leaderName} (${leaderClass})`)
-    this.log.push(`  Second: ${secondName} (${secondClass})`)
+  // Build the player's Guild: starting Gold, a colour, a Headquarters (optional at creation),
+  // an Influence map (50 with every faction, +20 for the HQ district's faction), and 5
+  // auto-generated recruits. Ties the Guild to the acting Seat when one is given.
+  createPlayerGuild({ name, headquarters = null, seatId = null }) {
+    const gsm = this.gameStateManager
+    const id = `guild-${gsm.guilds.size + 1}`
+    const guild = {
+      id,
+      seatId,
+      name: name?.trim() || '',
+      nameLocked: false,
+      color: GUILD_COLORS[gsm.guilds.size % GUILD_COLORS.length],
+      headquarters: this._resolveHeadquarters(headquarters),
+      influence: {},
+      resources: { Gold: 200 },   // Rules.md: each guild starts with 200gp
+      characters: generateRecruits(5),
+    }
+    this._initGuildInfluence(guild)
+    gsm.addGuild(guild)
     this.currentStep = 'Complete'
-    return { ok: true, log: this.log }
+    this.log.push(`Created guild${guild.name ? ` "${guild.name}"` : ''}${guild.headquarters ? ` (HQ in district ${guild.headquarters.districtId})` : ''}`)
+    return { ok: true, guild, log: this.log }
   }
+
+  // Resolve an HQ choice { kind:'plot'|'landmark', refId } to { kind, refId, districtId }.
+  _resolveHeadquarters(hq) {
+    if (!hq || hq.refId == null) return null
+    const cd = this.gameStateManager.cityDistrictData || {}
+    let districtId = null
+    if (hq.kind === 'plot') {
+      districtId = (cd.plots || []).find(p => p.id === hq.refId)?.districtId ?? null
+    } else if (hq.kind === 'landmark') {
+      districtId = (cd.landmarkBuildings || [])[hq.refId]?.districtId ?? null
+    }
+    return { kind: hq.kind, refId: hq.refId, districtId }
+  }
+
+  // Influence 50 with every faction, +20 for the faction of the HQ's district.
+  _initGuildInfluence(guild) {
+    for (const f of this.factions) guild.influence[f.id] = 50
+    const hqDistrict = guild.headquarters?.districtId
+    if (hqDistrict != null) {
+      const f = this.factions.find(x => x.type === 'district' && x.districtId === hqDistrict)
+             ?? this.factions.find(x => x.type === 'leadership' && x.districtId === hqDistrict)
+      if (f) guild.influence[f.id] = Math.min(100, 50 + 20)
+    }
+  }
+
+  // Linear faction production scaling. `base` is TBD until per-turn Upkeep exists.
+  static producedAmount(base, health) { return base * (health / 100) }
 
   getLog() { return this.log }
 
@@ -807,7 +1129,8 @@ export default class SetupPhase {
   }
 
   deserialize(data) {
-    if (data.currentStep) this.currentStep = data.currentStep
+    // Street Setup was folded into City Subdivision; old saves map to Guild Creation.
+    if (data.currentStep) this.currentStep = data.currentStep === 'StreetSetup' ? 'GuildCreation' : data.currentStep
     if (data.terrainPlacements) this.terrainPlacements = data.terrainPlacements
     if (data.edgePlacements) this.edgePlacements = data.edgePlacements
     if (data.districtTypePlacements) this.districtTypePlacements = data.districtTypePlacements
@@ -815,12 +1138,34 @@ export default class SetupPhase {
     if (data.districtClassAssignments) {
       this.districtClassAssignments = new Map(data.districtClassAssignments)
     }
-    // resourceRegistry is session-only; do not restore from save
     if (data.threats) this.threats = data.threats
     if (data.tradingDestinations) this.tradingDestinations = data.tradingDestinations
-    // Rebuild factions from source-of-truth region/district/trade data so older saves
-    // without faction tracking are automatically reconciled on load.
+    // Rebuild derived lists from source-of-truth data so older saves are reconciled on load.
     this._rebuildFactions()
+    this._rebuildRegistry()
+  }
+
+  _rebuildRegistry() {
+    const PREDEFINED_LOWER = ['gold', 'water', 'labour', 'basic food', 'security']
+    this.resourceRegistry = []
+    const reg = (name) => {
+      if (name && !PREDEFINED_LOWER.includes(name.toLowerCase()) && !this.resourceRegistry.includes(name)) {
+        this.resourceRegistry.push(name)
+      }
+    }
+    const districts = this.gameStateManager.cityDistrictData?.districts || []
+    for (const d of districts) {
+      if (d.producedResource) reg(d.producedResource)
+      for (const r of (d.consumedResources || [])) reg(r)
+    }
+    const regions = this.gameStateManager.worldTerrainData?.regions || []
+    for (const region of regions) {
+      if (region.terrainDistrictProducedResource) reg(region.terrainDistrictProducedResource)
+      for (const r of (region.terrainDistrictConsumedResources || [])) reg(r)
+    }
+    for (const trade of this.tradingDestinations) {
+      for (const r of [...(trade.buys || []), ...(trade.sells || [])]) reg(r)
+    }
   }
 
   _rebuildFactions() {
@@ -830,21 +1175,21 @@ export default class SetupPhase {
 
     for (const district of districts) {
       if (district.assignedType === 'Leadership') {
-        this.factions.push({ id: this.factions.length, type: 'leadership', name: 'Leadership', subclass: district.LeadershipClass || null, districtId: district.id })
+        this.factions.push({ id: this.factions.length, health: 70, type:'leadership', name: 'Leadership', subclass: district.LeadershipClass || null, districtId: district.id })
       }
     }
     for (const region of regions) {
       if (region.terrainDistrict) {
-        this.factions.push({ id: this.factions.length, type: 'terrain', name: region.terrainDistrict, subclass: null, regionId: region.id })
+        this.factions.push({ id: this.factions.length, health: 70, type:'terrain', name: region.terrainDistrict, subclass: null, regionId: region.id })
       }
     }
     for (const district of districts) {
       if (district.assignedType && district.assignedType !== 'Leadership') {
-        this.factions.push({ id: this.factions.length, type: 'district', name: district.assignedType, subclass: district.residentialClass || null, districtId: district.id })
+        this.factions.push({ id: this.factions.length, health: 70, type:'district', name: district.assignedType, subclass: district.residentialClass || null, districtId: district.id })
       }
     }
     for (const trade of this.tradingDestinations) {
-      this.factions.push({ id: this.factions.length, type: 'trade', name: trade.terrainType || 'Region', subclass: null, regionId: trade.regionId })
+      this.factions.push({ id: this.factions.length, health: 70, type:'trade', name: trade.name || trade.terrainType || 'Region', subclass: null, regionId: trade.regionId })
     }
   }
 }

@@ -32,7 +32,9 @@ export function findStreetFacingEdges(vertices, roadEdges) {
     const va = vertices[i], vb = vertices[(i + 1) % n]
     const mx = (va.x + vb.x) / 2, my = (va.y + vb.y) / 2
     for (const re of roadEdges) {
-      if (distToSegSq(mx, my, re.ax, re.ay, re.bx, re.by) < tolSq) {
+      if (distToSegSq(mx,    my,    re.ax, re.ay, re.bx, re.by) < tolSq ||
+          distToSegSq(va.x,  va.y,  re.ax, re.ay, re.bx, re.by) < tolSq ||
+          distToSegSq(vb.x,  vb.y,  re.ax, re.ay, re.bx, re.by) < tolSq) {
         result.push({ index: i, roadId: re.roadId, type: re.type })
         break
       }
@@ -56,6 +58,7 @@ export default class CityBlockGenerator {
     for (const j of junctions) {
       for (const conn of j.connections) {
         if (conn.toId <= j.id) continue
+        if (String(conn.roadId).startsWith('trade')) continue   // trade roads aren't block-bounding
         const key = `${j.id}_${conn.toId}`
         if (!seenRoads.has(key)) { seenRoads.add(key); streetEdges.push({ nodeA: j.id, nodeB: conn.toId }) }
       }
@@ -173,8 +176,10 @@ export default class CityBlockGenerator {
     }
 
     for (const j of junctions) {
-      const conns = j.connections
+      // Trade roads must not contribute gutters — no blocks/plots from them.
+      const conns = j.connections.filter(c => !String(c.roadId).startsWith('trade'))
       const n = conns.length
+      if (n === 0) continue
 
       for (const conn of conns) {
         if (conn.toId <= j.id) continue

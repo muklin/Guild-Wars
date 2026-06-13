@@ -2,13 +2,25 @@ import { computeVoronoiCellsHalfPlane, clipToPolygon, intersectPolygons, polygon
 import { STREET_HALF_WIDTH } from './StreetVoronoiGenerator.js'
 import { findStreetFacingEdges } from './CityBlockGenerator.js'
 import { getDistrictParams } from './StreetVoronoiGenerator.js'
+import { polysOverlap } from './buildings/LandmarkPlacer.js'
 
+// Mark every block below its district's square_threshhold as a City square. Run as a
+// pre-pass (before Landmark placement) so squares are known when Landmarks are placed
+// on their clusters — ADR-0005.
+export function markSquareBlocks(blocks, districts) {
+  const districtById = new Map((districts || []).map(d => [d.id, d]))
+  for (const block of blocks || []) {
+    const params = getDistrictParams(districtById.get(block.districtId))
+    if (block.area < params.square_threshhold) block.blockType = 'square'
+  }
+}
 
 export default class PlotVoronoiGenerator {
-  // Subdivides blocks into plots using boundary-seeded Voronoi.
-  // Mutates each block to add `blockType` and `seeds`.
+  // Subdivides non-square blocks into plots using boundary-seeded Voronoi.
+  // Squares are expected to be pre-marked by markSquareBlocks. Mutates each block to add
+  // `blockType` and `seeds`. Plots overlapping a Landmark footprint are dropped.
   // Returns { plots }.
-  generate(blocks, districts, junctions, roadEdges) {
+  generate(blocks, districts, junctions, roadEdges, landmarkFootprints = []) {
     const districtById = new Map((districts || []).map(d => [d.id, d]))
     const plots = []
     let plotId = 0
@@ -32,6 +44,14 @@ export default class PlotVoronoiGenerator {
     for (const block of blocks) {
       const { blockCorners, area, districtId } = block
 
+      // Squares are pre-marked (markSquareBlocks) before Landmark placement; emit the
+      // paved square plot and move on.
+      if (block.blockType === 'square') {
+        block.seeds = []
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, blockType: 'square' })
+        continue
+      }
+
       // Blocks too complex to subdivide safely become a single whole-block plot.
       if (blockCorners.length > MAX_BLOCK_VERTS) {
         block.blockType = 'single'
@@ -42,14 +62,6 @@ export default class PlotVoronoiGenerator {
 
       const district = districtById.get(districtId)
       const params   = getDistrictParams(district)
-
-      // Blocks too small to subdivide become a single 'square' plot (city square / tiny block).
-      if (area < params.square_threshhold) {
-        block.blockType = 'square'
-        block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, blockType: 'square' })
-        continue
-      }
 
       const minPlotSize = params.minPlotSize ?? 0
       // A block too small to hold even one minimum-size plot stays a single whole-block plot.
@@ -112,12 +124,22 @@ export default class PlotVoronoiGenerator {
       }
     }
 
+    // Drop the ground under Landmarks: any non-square plot overlapping a Landmark
+    // footprint is removed wholesale (ADR-0005). Squares (the paved plaza the Landmark
+    // sits on) are kept.
+    let kept = plots
+    if (landmarkFootprints.length) {
+      kept = plots.filter(p =>
+        p.blockType === 'square' || !landmarkFootprints.some(f => polysOverlap(p.blockCorners, f.polygon))
+      )
+    }
+
     const sq = blocks.filter(b => b.blockType === 'square').length
     const si = blocks.filter(b => b.blockType === 'single').length
     const sd = blocks.filter(b => b.blockType === 'subdivided').length
-    console.log(`PlotVoronoiGenerator: ${blocks.length} blocks (${sq} square, ${si} single, ${sd} subdivided), ${plots.length} plots`)
+    console.log(`PlotVoronoiGenerator: ${blocks.length} blocks (${sq} square, ${si} single, ${sd} subdivided), ${kept.length} plots (${plots.length - kept.length} dropped under Landmarks)`)
 
-    return { plots }
+    return { plots: kept }
   }
 
   // True if any edge of `poly` properly crosses segment (c,d) — interior

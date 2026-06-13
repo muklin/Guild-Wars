@@ -23,6 +23,9 @@ export default class PolylineRenderer {
     // Beyond this, the corner is beveled (two boundary points) instead of
     // mitered to a single far-flung spike vertex. Default Infinity = no limit.
     this.miterLimitDist = options.miterLimitDist ?? Infinity
+    // A colour that dominates junction fills when any adjacent edge has it (e.g.
+    // a River, so its ends/junctions stay blue rather than the majority colour).
+    this.priorityColor = options.priorityColor ?? null
 
     this._edgeMeshes     = new Map()  // edgeId → mesh
     this._junctionMeshes = new Map()  // ptId → mesh
@@ -134,13 +137,16 @@ export default class PolylineRenderer {
 
   _junctionColor(edgeIds) {
     const counts = new Map()
+    let hasPriority = false
     for (const edgeId of edgeIds) {
       const mesh = this._edgeMeshes.get(edgeId)
       if (!mesh) continue
       const c = mesh.material.color.getHex()
       if (c === 0xffffff) return 0xffffff  // any selected edge → white
+      if (this.priorityColor != null && c === this.priorityColor) hasPriority = true
       counts.set(c, (counts.get(c) || 0) + 1)
     }
+    if (hasPriority) return this.priorityColor  // e.g. River dominates the junction
     if (!counts.size) return 0x888888
     let best = null, bestCount = 0
     for (const [c, n] of counts) if (n > bestCount) { best = c; bestCount = n }

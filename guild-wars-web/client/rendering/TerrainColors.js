@@ -23,8 +23,8 @@ export default {
   Docks:    0x2a7a9e,
 
   // Street surface types (micro-Voronoi layer)
-  Mud:   0x6b4c2a,
-  Brick: 0x9e3a22,
+  Mud:       0x6B4C2A,   
+  Brick:     0x6B291C,
   Stone: 0x888fa0,
 
 

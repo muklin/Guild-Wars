@@ -222,7 +222,7 @@ export default class TerrainRenderer {
 
   renderEdges(edges) {
     if (!this.terrainPolylines) {
-      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.5, stripY: 0.06 })
+      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.5, stripY: 0.06, priorityColor: TERRAIN_COLORS.River })
     }
     console.log(`Rendering ${Object.keys(edges).length} edges`)
     this.terrainPolylines.render(
@@ -334,18 +334,32 @@ export default class TerrainRenderer {
     if (mesh?.material?.emissiveIntensity !== undefined) mesh.material.emissiveIntensity = 0.9
   }
 
+  // Faction-hover highlight of an off-map region. Uses its OWN state (not
+  // hoveredRegionId) so map-hover clearing never wipes it — only clearFactionRegion().
   highlightFactionRegion(regionId) {
-    this.hoveredRegionId = regionId
-    const baseColor = this._regionBaseColor(regionId)
-    const lightened = new THREE.Color(baseColor).lerp(new THREE.Color(0xffffff), 0.35).getHex()
+    this.clearFactionRegion()
+    this._factionRegionId = regionId
+    const lightened = new THREE.Color(this._regionBaseColor(regionId)).lerp(new THREE.Color(0xffffff), 0.35).getHex()
+    this._paintRegion(regionId, lightened, 0.45)
+  }
+
+  clearFactionRegion() {
+    if (this._factionRegionId == null) return
+    const id = this._factionRegionId
+    const base = (this.selectedRegionId === id) ? 0xffffff : this._regionBaseColor(id)
+    this._paintRegion(id, base, 0.2)
+    this._factionRegionId = null
+  }
+
+  _paintRegion(regionId, hex, ei) {
     const cellIds = this.regionFineCells.get(regionId) || []
     for (const cellId of cellIds) {
       const mesh = this.fineCellMeshes.get(cellId)
-      if (mesh?.material) { mesh.material.color.setHex(lightened); mesh.material.emissive?.setHex(lightened); mesh.material.emissiveIntensity = 0.45 }
+      if (mesh?.material) { mesh.material.color.setHex(hex); mesh.material.emissive?.setHex(hex); mesh.material.emissiveIntensity = ei }
     }
     if (cellIds.length === 0) {
       const rm = this.regionMeshes.get(regionId)
-      if (rm?.material) { rm.material.color.setHex(lightened); rm.material.emissive?.setHex(lightened); rm.material.emissiveIntensity = 0.45 }
+      if (rm?.material) { rm.material.color.setHex(hex); rm.material.emissive?.setHex(hex); rm.material.emissiveIntensity = ei }
     }
   }
 
@@ -473,10 +487,18 @@ export default class TerrainRenderer {
 
     if (!fineCellPath || fineCellPath.length < 2) return null
 
+    // A waypoint is "wet" when its fine cell belongs to a Sea/Lake region — no road
+    // is drawn over water (bridges span the crossing instead).
+    const isWater = (cell) => {
+      const r = cell && regionMap.get(cell.parentRegionId)
+      return !!r && (r.assignedType === 'Sea' || r.assignedType === 'Lake')
+    }
+
     const waypoints = []
+    const waterFlags = []
     for (let i = 0; i < fineCellPath.length - 1; i++) {
       const cell = cellMap.get(fineCellPath[i])
-      if (cell) waypoints.push({ x: cell.seedPoint.x, y: cell.seedPoint.y })
+      if (cell) { waypoints.push({ x: cell.seedPoint.x, y: cell.seedPoint.y }); waterFlags.push(isWater(cell)) }
     }
     const cityCell = cellMap.get(fineCellPath[fineCellPath.length - 1])
     if (cityCell && waypoints.length > 0) {
@@ -485,6 +507,7 @@ export default class TerrainRenderer {
         x: (last.x + cityCell.seedPoint.x) / 2,
         y: (last.y + cityCell.seedPoint.y) / 2
       })
+      waterFlags.push(isWater(cityCell))
     }
 
     if (waypoints.length < 2) return null
@@ -497,13 +520,14 @@ export default class TerrainRenderer {
     const t = Math.min(...candidates.filter(b => b > 1e-9))
     if (isFinite(t)) waypoints[0] = { x: w0.x + t * dx, y: w0.y + t * dy }
 
-    return { mesh: this._buildRoadStripMesh(waypoints), fineCellPath, cellMap }
+    return { mesh: this._buildRoadStripMesh(waypoints, waterFlags), fineCellPath, cellMap }
   }
 
-  _buildRoadStripMesh(waypoints) {
+  _buildRoadStripMesh(waypoints, waterFlags = []) {
     const thickness = 0.15
     const allVerts = [], allIdx = []
     for (let i = 0; i < waypoints.length - 1; i++) {
+      if (waterFlags[i] || waterFlags[i + 1]) continue   // no road over Sea/Lake cells
       const p1 = waypoints[i], p2 = waypoints[i + 1]
       const dx = p2.x - p1.x, dy = p2.y - p1.y
       const len = Math.sqrt(dx * dx + dy * dy)
@@ -524,6 +548,14 @@ export default class TerrainRenderer {
     const color = 0xc8a050
     const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.8, metalness: 0, emissive: color, emissiveIntensity: 0.3 })
     return new THREE.Mesh(geometry, mat)
+  }
+
+  // Remove just the fine-cell trade-road ribbon (the setup-phase preview). In the
+  // city phase the trade road is a real street-graph member rendered by
+  // StreetRenderer, so the ribbon is cleared to avoid double-rendering the path.
+  clearTradeRoadRibbon() {
+    this.roadMeshes.forEach(m => this.scene.remove(m))
+    this.roadMeshes = []
   }
 
   clearMarkers() {

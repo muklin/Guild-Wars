@@ -176,6 +176,84 @@ export default class DistrictTypePanel {
       return
     }
 
+    // ── Trade form ──
+    if (pendingAction === 'Trade') {
+      const TRADE_RESOURCES = ['Gold', 'Labour', 'Security', 'Water', 'Basic Food',
+        ...resourceRegistry.filter(r => !['gold', 'labour', 'security', 'water', 'basic food'].includes(r.toLowerCase()))]
+
+      const nameLabel = document.createElement('div')
+      nameLabel.textContent = 'Trade Route Name'
+      nameLabel.style.cssText = 'font-size:10px;color:#777;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px'
+      container.appendChild(nameLabel)
+
+      const nameInput = document.createElement('input')
+      nameInput.id = 'terrain-trade-name'
+      nameInput.type = 'text'
+      nameInput.placeholder = 'Name this trade route...'
+      nameInput.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #998800;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:6px'
+      container.appendChild(nameInput)
+
+      // Buys / Sells: up to 3 each, ≥1 each. New resources can be typed in.
+      const makeGroup = (kind, listId) => {
+        const datalist = document.createElement('datalist')
+        datalist.id = listId
+        container.appendChild(datalist)
+        const rebuild = () => {
+          const selected = [0, 1, 2].map(i => document.getElementById(`terrain-trade-${kind}-${i}`)?.value?.trim().toLowerCase()).filter(Boolean)
+          datalist.innerHTML = ''
+          for (const r of TRADE_RESOURCES) {
+            if (selected.includes(r.toLowerCase())) continue
+            const opt = document.createElement('option'); opt.value = r; datalist.appendChild(opt)
+          }
+        }
+        container.appendChild(this._fieldLabel(kind === 'buys' ? 'Buys (Resources or Services In)' : 'Sells (Resources or Services Out)'))
+        for (let i = 0; i < 3; i++) {
+          const inp = document.createElement('input')
+          inp.id = `terrain-trade-${kind}-${i}`
+          inp.type = 'text'
+          inp.placeholder = `Resource or Service ${i + 1}...`
+          inp.setAttribute('list', listId)
+          inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #998800;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:3px'
+          inp.addEventListener('change', () => { inp.blur(); rebuild() })
+          container.appendChild(inp)
+        }
+        rebuild()
+      }
+      makeGroup('buys', 'terrain-trade-buys-list')
+      makeGroup('sells', 'terrain-trade-sells-list')
+
+      container.appendChild(this._fieldLabel('Description'))
+      const textarea = document.createElement('textarea')
+      textarea.id = 'terrain-trade-description'
+      textarea.placeholder = 'Optional notes...'
+      textarea.style.cssText = 'width:100%;height:40px;background:#1a1a1a;color:#fff;border:1px solid #998800;border-radius:3px;padding:4px;font-size:11px;resize:none;box-sizing:border-box;margin-bottom:6px'
+      container.appendChild(textarea)
+
+      const warn = document.createElement('div')
+      warn.style.cssText = 'font-size:10px;color:#ff6666;margin-bottom:4px;display:none'
+      container.appendChild(warn)
+
+      const applyBtn = document.createElement('button')
+      applyBtn.textContent = 'Apply Trade Route'
+      applyBtn.style.cssText = 'width:100%;padding:7px;background:#6b5a1a;color:#fff;border:1px solid #998800;border-radius:3px;cursor:pointer;font-weight:bold;font-size:12px'
+      applyBtn.addEventListener('click', () => {
+        const name = document.getElementById('terrain-trade-name')?.value?.trim() || ''
+        const buys = [0, 1, 2].map(i => document.getElementById(`terrain-trade-buys-${i}`)?.value?.trim() || '').filter(Boolean)
+        const sells = [0, 1, 2].map(i => document.getElementById(`terrain-trade-sells-${i}`)?.value?.trim() || '').filter(Boolean)
+        if (!name) { warn.textContent = 'A name is required.'; warn.style.display = 'block'; return }
+        if (buys.length < 1) { warn.textContent = 'Select at least one resource or service to buy.'; warn.style.display = 'block'; return }
+        if (sells.length < 1) { warn.textContent = 'Select at least one resource or service to sell.'; warn.style.display = 'block'; return }
+        warn.style.display = 'none'
+        applyBtn.disabled = true
+        applyBtn.textContent = 'Applying...'
+        applyBtn.style.opacity = '0.6'
+        applyBtn.style.cursor = 'default'
+        this.eventBus.emit('TERRAIN_TRADE_APPLY', { name, description: textarea.value.trim(), buys, sells })
+      })
+      container.appendChild(applyBtn)
+      return
+    }
+
     // ── District form (Agriculture / Forestry / Mining / Fishing) ──
     const districtType = pendingAction
 
@@ -184,7 +262,7 @@ export default class DistrictTypePanel {
     typeRow.style.cssText = 'font-size:12px;color:#ccc;font-weight:bold;margin-bottom:8px'
     container.appendChild(typeRow)
 
-    // Datalist for consumed resources only (produced uses a plain text input)
+    // Datalist for consumed resources or services only (produced uses a plain text input)
     const DROPDOWN_PREDEFINED = ['Gold', 'Labour', 'Security']
     const EXCLUDED_LOWER = ['water', 'basic food']
     const predefinedLower = DROPDOWN_PREDEFINED.map(r => r.toLowerCase())
@@ -210,25 +288,25 @@ export default class DistrictTypePanel {
     }
     rebuildConsDatalist()
 
-    container.appendChild(this._fieldLabel('Consumed Resources'))
+    container.appendChild(this._fieldLabel('Consumed Resources or Services'))
     for (let i = 0; i < 3; i++) {
       const inp = document.createElement('input')
       inp.id = `terrain-district-consumed-${i}`
       inp.type = 'text'
-      inp.placeholder = `Resource ${i + 1}...`
+      inp.placeholder = `Resource or Service ${i + 1}...`
       inp.setAttribute('list', 'terrain-resource-cons-list')
       inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:3px'
       inp.addEventListener('change', () => { inp.blur(); rebuildConsDatalist() })
       container.appendChild(inp)
     }
     
-    container.appendChild(this._fieldLabel('Produced Resource'))
+    container.appendChild(this._fieldLabel('Produced Resource or Service'))
     const prodWrap = document.createElement('div')
     prodWrap.style.cssText = 'margin-bottom:5px'
     const prodInput = document.createElement('input')
     prodInput.id = 'terrain-district-produced-resource'
     prodInput.type = 'text'
-    prodInput.placeholder = 'Produced resource...'
+    prodInput.placeholder = 'Resource or service...'
     prodInput.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box'
     const dupWarn = document.createElement('div')
     dupWarn.style.cssText = 'font-size:10px;color:#ff6666;margin-top:1px;display:none'
@@ -264,8 +342,8 @@ export default class DistrictTypePanel {
     applyBtn.addEventListener('click', () => {
       const produced = document.getElementById('terrain-district-produced-resource')?.value?.trim() || ''
       const consumed = [0, 1, 2].map(i => document.getElementById(`terrain-district-consumed-${i}`)?.value?.trim() || '').filter(Boolean)
-      if (!produced) { validWarn.textContent = 'Must define at least one produced resource.'; validWarn.style.display = 'block'; return }
-      if (consumed.length < 2) { validWarn.textContent = 'Must define at least 2 consumed resources.'; validWarn.style.display = 'block'; return }
+      if (!produced) { validWarn.textContent = 'Must define at least one produced resource or service.'; validWarn.style.display = 'block'; return }
+      if (consumed.length < 2) { validWarn.textContent = 'Must define at least 2 consumed resources or services.'; validWarn.style.display = 'block'; return }
       if (usedProducedResources.includes(produced.toLowerCase())) return
       validWarn.style.display = 'none'
       applyBtn.disabled = true
@@ -281,6 +359,16 @@ export default class DistrictTypePanel {
       })
     })
     container.appendChild(applyBtn)
+  }
+
+  // A "Regenerate streets" button — reshuffles the district's street layout without
+  // touching the resources/description form. Shown once a type (and class) is chosen.
+  _regenerateStreetsButton() {
+    const btn = document.createElement('button')
+    btn.textContent = '↻ Regenerate streets'
+    btn.style.cssText = 'width:100%;padding:6px;background:#5a3a1a;color:#ffb84d;border:1px solid #8a5a2a;border-radius:3px;cursor:pointer;font-size:11px;margin-bottom:6px'
+    btn.addEventListener('click', () => this.eventBus.emit('DISTRICT_REGENERATE'))
+    return btn
   }
 
   _buildDistrictContent(container, { pendingType, residentialClass = null, LeadershipClass = null, resourceRegistry = [], usedProducedResources = [] }) {
@@ -308,6 +396,8 @@ export default class DistrictTypePanel {
       descInput.placeholder = 'Optional notes...'
       descInput.style.cssText = 'width:100%;height:40px;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:11px;resize:none;box-sizing:border-box;margin-bottom:4px'
       container.appendChild(descInput)
+
+      container.appendChild(this._regenerateStreetsButton())
 
       const clsColor = TerrainColors.get(LeadershipClass)
       const applyHex = '#' + clsColor.toString(16).padStart(6, '0')
@@ -368,42 +458,60 @@ export default class DistrictTypePanel {
       if (!residentialClass) return
     }
 
-    // ── Resource form ──
+    // ── Resource or Service form ──
     const isResidential = pendingType === 'Residential'
     const isNoble = isResidential && residentialClass === 'Noble'
     const lockedLabour = isResidential && !isNoble
+    const isIndustry = pendingType === 'Industry'
+    const consumeCount = isIndustry ? 5 : 3
 
-    const DROPDOWN_PREDEFINED = ['Gold', 'Labour', 'Security']
+    const CONSUME_PREDEFINED = ['Gold', 'Labour', 'Security']
+    const PRODUCE_PREDEFINED = ['Labour', 'Security']  // Gold is auto-produced — not selectable
     const EXCLUDED_LOWER = ['water', 'basic food']
-    const predefinedLower = DROPDOWN_PREDEFINED.map(r => r.toLowerCase())
-    const allDropdownResources = [
-      ...DROPDOWN_PREDEFINED,
-      ...resourceRegistry.filter(r => !predefinedLower.includes(r.toLowerCase()) && !EXCLUDED_LOWER.includes(r.toLowerCase()))
+    const consumePredefinedLower = CONSUME_PREDEFINED.map(r => r.toLowerCase())
+    const producePredefinedLower = PRODUCE_PREDEFINED.map(r => r.toLowerCase())
+    const allConsumeResources = [
+      ...CONSUME_PREDEFINED,
+      ...resourceRegistry.filter(r => !consumePredefinedLower.includes(r.toLowerCase()) && !EXCLUDED_LOWER.includes(r.toLowerCase()))
+    ]
+    const allProduceResources = [
+      ...PRODUCE_PREDEFINED,
+      ...resourceRegistry.filter(r => !producePredefinedLower.includes(r.toLowerCase()) && !EXCLUDED_LOWER.includes(r.toLowerCase()) && r.toLowerCase() !== 'gold')
     ]
 
     const consDatalist = document.createElement('datalist')
     consDatalist.id = 'resource-cons-list'
     container.appendChild(consDatalist)
 
+    const prodDatalist = document.createElement('datalist')
+    prodDatalist.id = 'resource-prod-list'
+    for (const r of allProduceResources) {
+      if (usedProducedResources.includes(r.toLowerCase())) continue
+      const opt = document.createElement('option'); opt.value = r; prodDatalist.appendChild(opt)
+    }
+    container.appendChild(prodDatalist)
+
     const rebuildConsDatalist = () => {
-      const produced = isResidential ? '' : (document.getElementById('district-produced-resource')?.value?.trim().toLowerCase() || '')
-      const selected = [0, 1, 2].map(i => document.getElementById(`district-consumed-${i}`)?.value?.trim().toLowerCase()).filter(Boolean)
+      const prod1 = isResidential ? '' : (document.getElementById('district-produced-resource')?.value?.trim().toLowerCase() || '')
+      const prod2 = isIndustry ? (document.getElementById('district-produced-resource-2')?.value?.trim().toLowerCase() || '') : ''
+      const selected = Array.from({ length: consumeCount }, (_, i) => document.getElementById(`district-consumed-${i}`)?.value?.trim().toLowerCase()).filter(Boolean)
       consDatalist.innerHTML = ''
-      for (const r of allDropdownResources) {
+      for (const r of allConsumeResources) {
         const lower = r.toLowerCase()
-        if (lower === produced && produced !== 'labour') continue
+        if (prod1 && lower === prod1 && prod1 !== 'labour') continue
+        if (prod2 && lower === prod2 && prod2 !== 'labour') continue
         if (selected.includes(lower)) continue
         const opt = document.createElement('option'); opt.value = r; consDatalist.appendChild(opt)
       }
     }
     rebuildConsDatalist()
 
-    container.appendChild(this._fieldLabel('Consumed Resources'))
-    for (let i = 0; i < 3; i++) {
+    container.appendChild(this._fieldLabel(`Consumed Resources or Services${isIndustry ? ' (up to 5)' : ''}`))
+    for (let i = 0; i < consumeCount; i++) {
       const inp = document.createElement('input')
       inp.id = `district-consumed-${i}`
       inp.type = 'text'
-      inp.placeholder = `Resource ${i + 1}...`
+      inp.placeholder = `Resource or Service ${i + 1}...`
       inp.setAttribute('list', 'resource-cons-list')
       inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:3px'
       inp.addEventListener('change', () => { inp.blur(); rebuildConsDatalist() })
@@ -411,27 +519,37 @@ export default class DistrictTypePanel {
     }
     
     if (!isResidential) {
-      
-      container.appendChild(this._fieldLabel('Produced Resource'))
-      const prodWrap = document.createElement('div')
-      prodWrap.style.cssText = 'margin-bottom:5px'
-      const prodInput = document.createElement('input')
-      prodInput.id = 'district-produced-resource'
-      prodInput.type = 'text'
-      prodInput.placeholder = 'Produced resource...'
-      prodInput.setAttribute('list', 'resource-prod-list')
-      prodInput.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box'
-      const dupWarn = document.createElement('div')
-      dupWarn.style.cssText = 'font-size:10px;color:#ff6666;margin-top:1px;display:none'
-      dupWarn.textContent = 'Already produced by another district'
-      prodInput.addEventListener('input', () => {
-        dupWarn.style.display = (prodInput.value.trim().toLowerCase() && usedProducedResources.includes(prodInput.value.trim().toLowerCase())) ? 'block' : 'none'
-        rebuildConsDatalist()
-      })
-      prodInput.addEventListener('change', () => prodInput.blur())
-      prodWrap.appendChild(prodInput)
-      prodWrap.appendChild(dupWarn)
-      container.appendChild(prodWrap)
+      container.appendChild(this._fieldLabel(isIndustry ? 'Produced Resources or Services (up to 2)' : 'Produced Resource or Service'))
+
+      const makeProdInput = (id) => {
+        const wrap = document.createElement('div')
+        wrap.style.cssText = 'margin-bottom:5px'
+        const inp = document.createElement('input')
+        inp.id = id
+        inp.type = 'text'
+        inp.placeholder = 'Resource or service...'
+        inp.setAttribute('list', 'resource-prod-list')
+        inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box'
+        const dupWarn = document.createElement('div')
+        dupWarn.style.cssText = 'font-size:10px;color:#ff6666;margin-top:1px;display:none'
+        dupWarn.textContent = 'Already produced by another district'
+        inp.addEventListener('input', () => {
+          dupWarn.style.display = (inp.value.trim().toLowerCase() && usedProducedResources.includes(inp.value.trim().toLowerCase())) ? 'block' : 'none'
+          rebuildConsDatalist()
+        })
+        inp.addEventListener('change', () => inp.blur())
+        wrap.appendChild(inp)
+        wrap.appendChild(dupWarn)
+        return wrap
+      }
+
+      container.appendChild(makeProdInput('district-produced-resource'))
+      if (isIndustry) container.appendChild(makeProdInput('district-produced-resource-2'))
+
+      const goldNote = document.createElement('div')
+      goldNote.textContent = 'Note: always produces Gold (automatic)'
+      goldNote.style.cssText = 'font-size:10px;color:#aa8800;font-style:italic;margin-bottom:3px'
+      container.appendChild(goldNote)
     }
 
     const implicitNote = document.createElement('div')
@@ -454,15 +572,28 @@ export default class DistrictTypePanel {
     validWarn.style.cssText = 'font-size:10px;color:#ff6666;margin-bottom:4px;display:none'
     container.appendChild(validWarn)
 
+    container.appendChild(this._regenerateStreetsButton())
+
     const applyBtn = document.createElement('button')
     applyBtn.textContent = `Apply: ${label}`
     applyBtn.style.cssText = `width:100%;padding:7px;background:${hex};color:#fff;border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px`
     applyBtn.addEventListener('click', () => {
       const produced = isResidential ? '' : (document.getElementById('district-produced-resource')?.value?.trim() || '')
-      const consumed = [0, 1, 2].map(i => document.getElementById(`district-consumed-${i}`)?.value?.trim() || '').filter(Boolean)
-      if (!isResidential && !produced) { validWarn.textContent = 'Must define at least one produced resource.'; validWarn.style.display = 'block'; return }
-      if (!isResidential && consumed.length < 2) { validWarn.textContent = 'Must define at least 2 consumed resources.'; validWarn.style.display = 'block'; return }
-      if (!isResidential && usedProducedResources.includes(produced.toLowerCase())) return
+      const produced2 = isIndustry ? (document.getElementById('district-produced-resource-2')?.value?.trim() || '') : ''
+      const consumed = Array.from({ length: consumeCount }, (_, i) => document.getElementById(`district-consumed-${i}`)?.value?.trim() || '').filter(Boolean)
+      if (!isResidential && !isNoble && !produced) { validWarn.textContent = 'Must define a produced resource or service (in addition to Gold).'; validWarn.style.display = 'block'; return }
+      if (produced.toLowerCase() === 'gold') { validWarn.textContent = 'Gold is produced automatically — choose a different resource or service.'; validWarn.style.display = 'block'; return }
+      if (produced2.toLowerCase() === 'gold') { validWarn.textContent = 'Gold is produced automatically — choose a different resource or service.'; validWarn.style.display = 'block'; return }
+      if (produced && produced2 && produced.toLowerCase() === produced2.toLowerCase()) { validWarn.textContent = 'Cannot produce the same resource or service twice.'; validWarn.style.display = 'block'; return }
+      if (!isResidential && produced && usedProducedResources.includes(produced.toLowerCase())) return
+      if (!isResidential && produced2 && usedProducedResources.includes(produced2.toLowerCase())) return
+      const minConsumed = (isIndustry && produced2) ? 5 : (!isResidential ? 2 : 0)
+      if (minConsumed && consumed.length < minConsumed) {
+        validWarn.textContent = produced2
+          ? 'Must consume 5 Resources or Services when producing 2.'
+          : 'Must consume at least 2 Resources or Services.'
+        validWarn.style.display = 'block'; return
+      }
       validWarn.style.display = 'none'
       applyBtn.disabled = true
       applyBtn.textContent = 'Applying...'
@@ -471,6 +602,7 @@ export default class DistrictTypePanel {
       this.eventBus.emit('DISTRICT_APPLY', {
         description: document.getElementById('district-description')?.value?.trim() || '',
         producedResource: produced,
+        secondProducedResource: produced2,
         consumedResources: consumed,
         residentialClass: isResidential ? residentialClass : null
       })

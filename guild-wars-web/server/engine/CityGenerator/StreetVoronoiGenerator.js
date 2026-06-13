@@ -58,21 +58,21 @@ function betterStreetType(a, b) {
 //                 perimeter; also sets the per-junction dead-zone (2*plotSpacing)
 //                 and the seed-merge gap. Smaller → more, narrower plots per block.
 export const DISTRICT_PARAMETERS = {
-  'Leadership-Monarchy':  {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
-  'Leadership-Republic':  {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
-  'Leadership-Tyrant':    {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
-  'Leadership-Oligarchy': {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
-  'Leadership-Theocracy': {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
-  'Leadership-Anarchist': {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.2, plotSpacing: 0.25 , minPlotSize: 0.025 },
+  'Leadership-Monarchy':  {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.3, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  'Leadership-Republic':  {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.3, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  'Leadership-Tyrant':    {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.4, plotSpacing: 0.3  , minPlotSize: 0.04 },
+  'Leadership-Oligarchy': {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.3, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  'Leadership-Theocracy': {street_spacing: 0.5, block_density: 1.5, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.5, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  'Leadership-Anarchist': {street_spacing: 0.5, block_density: 3.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.05, plotSpacing: 0.15, minPlotSize: 0.025 },
   Market:                 {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.3, plotSpacing: 0.2  , minPlotSize: 0.025 },
-  'Residential-Slums':    {street_spacing: 1.5, block_density: 3.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.05, plotSpacing: 0.15, minPlotSize: 0.025 },
+  'Residential-Slums':    {street_spacing: 0.5, block_density: 3.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.05, plotSpacing: 0.15, minPlotSize: 0.025 },
   'Residential-Middle':   {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.2  , minPlotSize: 0.025 },
-  'Residential-Noble':    {street_spacing: 1.0, block_density: 2.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.2  , minPlotSize: 0.025 },
-  Religious:              {street_spacing: 0.5, block_density: 1.5, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.2  , minPlotSize: 0.025 },
+  'Residential-Noble':    {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.3, plotSpacing: 0.5  , minPlotSize: 0.07 },
+  Religious:              {street_spacing: 0.5, block_density: 1.5, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.5, plotSpacing: 0.2  , minPlotSize: 0.025 },
   Magical:                {street_spacing: 0.6, block_density: 2.0, xyRatio: 1.0, metric: 'centroid' , square_threshhold: 0.25, plotSpacing: 0.15, minPlotSize: 0.025 },
-  Military:               {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.1, plotSpacing: 0.3  , minPlotSize: 0.025 },
-  Industry:               {street_spacing: 1.2, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.05, plotSpacing: 0.3 , minPlotSize: 0.025 },
-  Entertainment:          {street_spacing: 0.5, block_density: 2.0, xyRatio: 1.0, metric: 'centroid' , square_threshhold: 0.3, plotSpacing: 0.15 , maxPlotSize: 0.025 },
+  Military:               {street_spacing: 0.5, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.4, plotSpacing: 0.3  , minPlotSize: 0.04 },
+  Industry:               {street_spacing: 1.2, block_density: 1.0, xyRatio: 1.0, metric: 'manhattan', square_threshhold: 0.05, plotSpacing: 0.3 , minPlotSize: 0.04 },
+  Entertainment:          {street_spacing: 0.5, block_density: 2.0, xyRatio: 1.0, metric: 'centroid' , square_threshhold: 0.5, plotSpacing: 0.15 , minPlotSize: 0.04 },
 }  
 
 
@@ -216,6 +216,10 @@ function absorbCollinearNodes(nodes, edges, margin = COLLINEAR_NODE_MARGIN) {
   let chained = 0
 
   for (const e of edges) {
+    // Boundary edges trace the city perimeter and must stay pinned to it. With a
+    // wide margin they would otherwise absorb a near-boundary interior node and
+    // re-route a→n→b, bulging the boundary street inward (junctions "float inside").
+    if (String(e.id).startsWith('street-boundary')) { newEdges.push(e); continue }
     const a = nodeById.get(e.nodeA), b = nodeById.get(e.nodeB)
     if (!a || !b) { newEdges.push(e); continue }
     const dx = b.x - a.x, dy = b.y - a.y
@@ -367,6 +371,64 @@ function pruneAcuteStubs(nodes, edges, minAngleDeg = MIN_STUB_ANGLE_DEG) {
   if (pruned > 0) console.log(`pruneAcuteStubs: removed ${pruned} dead-end stubs at <${minAngleDeg}°`)
 }
 
+// Append trade-route roads onto the finished street graph. Each route is a list
+// of centreline waypoints in destination→city order (the same fine-cell path the
+// client draws). One node is created per waypoint and consecutive nodes are
+// joined by Mud edges whose ids start with `trade-` so CityBlockGenerator excludes
+// them from blocks/plots. The city end is linked to the nearest existing junction
+// (merged onto it when they coincide) so the road joins the network.
+// Mutates `nodes` and `edges` in place.
+function addTradeRoads(nodes, edges, tradeRoutes, districts = []) {
+  if (!tradeRoutes?.length) return
+  let nextId = nodes.reduce((m, n) => Math.max(m, n.id), -1) + 1
+  const existing = nodes.slice()   // graph nodes present before any trade road
+  const MERGE_DIST = 0.3
+  let added = 0
+
+  // Only allow waypoints inside the city (inside any district polygon).
+  // Routes run destination→city, so external waypoints are at the start.
+  const districtPolys = districts.map(d => d.polygon || d.boundary || [])
+  const inCity = (p) => !districtPolys.length || districtPolys.some(poly => pip(p.x, p.y, poly))
+
+  for (let ri = 0; ri < tradeRoutes.length; ri++) {
+    const route = tradeRoutes[ri]
+    if (!route || route.length < 2) continue
+
+    // Clip: keep only the city-interior portion plus the boundary entry point (last wp).
+    const boundary = route[route.length - 1]
+    const interior = route.slice(0, -1).filter(wp => inCity(wp))
+    const clipped = [...interior, boundary]
+
+    // Nearest existing junction to the city end (last clipped waypoint).
+    const cityPt = clipped[clipped.length - 1]
+    let link = null, bestSq = Infinity
+    for (const n of existing) {
+      const d = (n.x - cityPt.x) ** 2 + (n.y - cityPt.y) ** 2
+      if (d < bestSq) { bestSq = d; link = n }
+    }
+    const mergeEnd = link && bestSq <= MERGE_DIST * MERGE_DIST
+
+    // One node per clipped waypoint; terminate on the existing junction if it coincides.
+    const wpNodes = []
+    const count = mergeEnd ? clipped.length - 1 : clipped.length
+    for (let i = 0; i < count; i++) {
+      const node = { id: nextId++, x: clipped[i].x, y: clipped[i].y }
+      nodes.push(node)
+      wpNodes.push(node)
+    }
+    if (mergeEnd) wpNodes.push(link)
+
+    for (let i = 0; i < wpNodes.length - 1; i++) {
+      edges.push({ id: `trade-${ri}-${i}`, nodeA: wpNodes[i].id, nodeB: wpNodes[i + 1].id, type: 'Mud' })
+    }
+    if (!mergeEnd && link) {
+      edges.push({ id: `trade-${ri}-link`, nodeA: wpNodes[wpNodes.length - 1].id, nodeB: link.id, type: 'Mud' })
+    }
+    added++
+  }
+  if (added > 0) console.log(`addTradeRoads: appended ${added} trade road(s) to the street graph`)
+}
+
 // Build junction-centric street graph with mitered gutter corners.
 // Each junction stores its centerpoint, type, districtId, and a connection
 // per adjacent road. Each connection stores the mitered gutterLeft/gutterRight
@@ -469,11 +531,15 @@ function buildJunctions(streetNodes, streetEdges) {
 
 export default class StreetVoronoiGenerator {
 
-  generate(districts, cityEdges, edgePoints, epochSeed = 0) {
+  // `districts` may be a subset of the city's districts (e.g. only the locked ones
+  // during per-district City Subdivision). City edges touching no district in the
+  // subset are skipped, so boundaries to not-yet-generated districts are deferred.
+  generate(districts, cityEdges, edgePoints, epochSeed = 0, tradeRoutes = []) {
     const districtResults = []
     let nextNodeId = 0
     const edgePointById = new Map((edgePoints || []).map(p => [p.id, p]))
     const districtById = new Map(districts.map(d => [d.id, d]))
+    const districtIdSet = new Set(districts.map(d => d.id))
 
     // ── Per-district micro-Voronoi ───────────────────────────────────────────
     for (const district of districts) {
@@ -482,7 +548,9 @@ export default class StreetVoronoiGenerator {
       const metric = params.metric ?? 'euclidean'
 
       const perimSeeds = this._samplePerimeter(district.polygon, params.street_spacing)
-      const intSeeds   = generateGridSeeds(district.polygon, params.block_density, params.xyRatio ?? 1.0, 0.3, district.id ^ epochSeed)
+      // Per-district street seed (frozen at lock); falls back to the legacy global form.
+      const districtSeed = district.streetSeed ?? (district.id ^ epochSeed)
+      const intSeeds   = generateGridSeeds(district.polygon, params.block_density, params.xyRatio ?? 1.0, 0.3, districtSeed)
       // Two-stage interior filter:
       //   1. Drop seeds within `minClearance` of the polygon boundary line —
       //      near-boundary seeds produce streets nearly parallel to the
@@ -619,6 +687,8 @@ export default class StreetVoronoiGenerator {
     const boundaryNodesByEdge = new Map()  // edgeId → [node, ...]  (all nodes incl. interp.)
 
     for (const [edgeId, cityEdge] of Object.entries(cityEdges)) {
+      // Skip boundaries touching no generated district — defer them until a side joins.
+      if (!districtIdSet.has(cityEdge.districtA) && !districtIdSet.has(cityEdge.districtB)) continue
       const pts = (cityEdge.pointIds || []).map(id => edgePointById.get(id)).filter(Boolean)
       if (pts.length < 2) continue
 
@@ -649,13 +719,16 @@ export default class StreetVoronoiGenerator {
         }
       }
 
-      // Edge type: Mud boundaries take the better adjacent street type;
-      // non-Mud boundaries (Wall, MainRoad, Canal, Docks) keep their city edge type.
+      // Edge type: Mud boundaries take the better adjacent street type. Walls sit
+      // on a Stone road (the 3D wall is drawn separately, so the base is walkable).
+      // Other non-Mud boundaries (MainRoad, Canal, Docks) keep their city edge type.
       let boundaryType
       if (!cityEdge.assignedType || cityEdge.assignedType === 'Mud') {
         const typeA = streetTypeForDistrict(districtById.get(cityEdge.districtA))
         const typeB = streetTypeForDistrict(districtById.get(cityEdge.districtB))
         boundaryType = betterStreetType(typeA, typeB)
+      } else if (cityEdge.assignedType === 'Wall' || cityEdge.assignedType === 'MainRoad') {
+        boundaryType = 'Stone'
       } else {
         boundaryType = cityEdge.assignedType
       }
@@ -777,6 +850,10 @@ export default class StreetVoronoiGenerator {
     absorbCollinearNodes(finalNodes, finalEdges)
     pruneAcuteStubs(finalNodes, finalEdges)
     removeOrphanComponents(finalNodes, finalEdges)
+
+    // Trade roads are appended after cleanup so the long external run isn't pruned
+    // as a stub/orphan; they link into the finished graph at the nearest junction.
+    addTradeRoads(finalNodes, finalEdges, tradeRoutes, districts)
 
     const junctions = buildJunctions(finalNodes, finalEdges)
 

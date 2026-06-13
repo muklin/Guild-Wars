@@ -4,6 +4,36 @@ A collaborative city-building and guild-competition game. The web app manages se
 
 ## Language
 
+### Multiplayer & Turns
+
+**Player**:
+A human participant in a game. A player controls exactly one Guild.
+_Avoid_: user, client
+
+**Seat**:
+A player's claimed place in a game — a name plus a server-issued Seat key. Created by joining a host's server; one game has a fixed set of seats.
+_Avoid_: account, session, slot
+
+**Seat key**:
+The per-seat credential a client attaches to every request so the server knows which player is acting. Deliberately *not* called a "token".
+_Avoid_: token (reserved for the game Token economy), session id, auth token
+
+**Initiative**:
+The server-fixed turn order, set by an in-app d20 roll per seat, that drives whose turn it is during the Setup sub-phases.
+_Avoid_: turn order, play order
+
+**Reversed Initiative**:
+Initiative walked back-to-front. District Setup proceeds in Reversed Initiative; Terrain Setup and Guild Creation proceed in forward Initiative.
+_Avoid_: reverse order
+
+**Token**:
+A per-player game counter spent during play — one of Veto, Guild, Character, or Round Token. Distinct from a Seat key (which is the auth credential).
+_Avoid_: seat key, credential
+
+**Lobby**:
+The pre-Setup state where seats gather and Initiative is rolled before Terrain Setup begins.
+_Avoid_: waiting room, staging
+
 ### World & Terrain
 
 **Terrain**:
@@ -20,9 +50,10 @@ _Avoid_: border, boundary
 
 **River** (edge type):
 An edge marked as a river channel. A valid River selection must satisfy all four rules:
-1. No two River edges may run alongside each other (share an adjacent region) unless they share an endpoint — rivers may converge but not run in parallel.
-2. A River edge may not run alongside a Lake or a Sea region (neither adjacent region may be a Lake or a Sea).
-3. Every free endpoint of a River path must terminate at one of: an existing River, a Sea region, a Lake region, or the physical map boundary.
+1. A river may not be adjacent to a Lake or a Sea region.  
+  1a. When a River is "Applied" alongside an adjacent Lake or a Sea region, the adjacent edge reverts to being undefined.
+  1b. When a Lake or Sea is defined adjacent to an existing River, the adjacent edge reverts to being undefined.
+2. Every free endpoint of a River path must terminate at one of: an existing River, a Sea region, a Lake region, or the physical map boundary.
 _Avoid_: stream, waterway
 
 **District**:
@@ -40,7 +71,7 @@ _Avoid_: government district, ruling district
 ### Phases
 
 **Setup Phase**:
-The collaborative pre-game phase covering Terrain Setup, City Subdivision, Street Setup, and Guild Creation, in that order.
+The pre-game phase covering Terrain Setup, City Subdivision, and Guild Creation, in that order. Shared but **turn-ordered by Initiative** — players act in turn, not freely in parallel.
 _Avoid_: initialization, game creation
 
 **Terrain Setup**:
@@ -48,15 +79,11 @@ The first Setup sub-phase — players assign terrain types to regions and edge t
 _Avoid_: world generation, map creation
 
 **City Subdivision**:
-The second Setup sub-phase — the city region is divided into named districts with assigned types and boundaries.
-_Avoid_: district creation, city planning
-
-**Street Setup**:
-The third Setup sub-phase — streets, blocks, and plots are generated within each district.
-_Avoid_: street generation
+The second Setup sub-phase — the city region is divided into named districts. Assigning a district its type immediately generates that district's streets, blocks, plots, and buildings; the player may regenerate (reseed) it, then lock it in.
+_Avoid_: district creation, city planning, street setup
 
 **Guild Creation**:
-The fourth and final Setup sub-phase — players define guilds, recruit characters, and allocate starting resources.
+The third and final Setup sub-phase — players define guilds, recruit characters, and allocate starting resources.
 _Avoid_: guild setup, character creation
 
 **Upkeep Phase**:
@@ -74,8 +101,12 @@ _Avoid_: maintenance phase, end phase
 ### Game Entities
 
 **Guild**:
-An organisation controlled by a single player, composed of characters, resources, and controlled districts. The primary competitive unit.
+An organisation controlled by a single player (one per Seat), with a Guild Leader and Second, a Guild Headquarters, a per-faction Influence map, and a resource stockpile. The primary competitive unit.
 _Avoid_: team, company, faction (faction has a distinct meaning)
+
+**Guild Headquarters**:
+The single Plot or Landmark a guild designates as its base. Grants +20 Influence with its district's faction.
+_Avoid_: Guildhouse, guild house, HQ
 
 **Squad**:
 A named sub-group of guild members that executes one action per round. A guild plans exactly one action per squad.
@@ -90,12 +121,16 @@ A 1st-level character who serves as deputy to the Guild Leader.
 _Avoid_: second-in-command, deputy
 
 **Faction**:
-A city constituency — a district, a terrain resource source, a Trading Destination, or the Leadership — with which guilds build standing. Not the same as a Guild.
+A city constituency — a district, a terrain resource source, a Trading Destination, or the Leadership — with which guilds build Influence. Not the same as a Guild.
 _Avoid_: guild, group, party
 
-**Faction Standing**:
-A 0–100 numeric score representing a guild's relationship with a faction, starting at 50 (neutral).
-_Avoid_: influence, relationship score, reputation
+**Influence**:
+A 0–100 numeric score representing a guild's relationship with a faction, starting at 50 (neutral). Held per guild × faction.
+_Avoid_: faction standing, standing, reputation, relationship score
+
+**Faction Health**:
+A single 0–100 value on a faction (the same for all guilds), starting at 70, that linearly scales the resources that faction produces (`produced = base × Health/100`).
+_Avoid_: vitality, condition
 
 **Threat**:
 A danger marker (dragon, plague, invasion, etc.) placed on a map-edge region that guilds can earn points by addressing.
@@ -109,14 +144,18 @@ _Avoid_: trade partner, external market
 The NPC figure heading the Leadership District, whose Succession Method shapes city politics and certain victory conditions.
 _Avoid_: ruler, king, mayor, city governor
 
-### Resources
+### Resources & Services
 
 **Resource**:
-A commodity (Gold, Labour, Food, Water, etc.) produced and consumed by districts each round.
+A commodity (Gold, Basic Food, etc.) produced and consumed by districts each round. Has units; can be stockpiled by Guilds.
 _Avoid_: commodity, good, currency (currency is Gold only)
 
+**Service**:
+A non-physical output (Security, Labour, etc.) produced and consumed by districts each round. Mechanically identical to a Resource — has units, can be stockpiled by Guilds. Distinct in flavour only.
+_Avoid_: resource (when precision matters; in rules text use "Resource or Service" to cover both)
+
 **Gold**:
-The primary currency resource, produced by Market districts and some Trading Destinations.
+The primary currency resource, automatically produced by every non-Residential district each round. Not selectable as an explicit "Produced Resource or Service" in setup — it is always implicit.
 _Avoid_: money, coin, currency
 
 **Labour**:
@@ -138,6 +177,14 @@ _Avoid_: event card (ambiguous with Situation Card), bonus card
 **Street graph**:
 The network of nodes and edges representing road centerlines within a city. Generated per-district by `StreetVoronoiGenerator`.
 _Avoid_: road network, road graph
+
+**Street seed**:
+The per-district seed driving a district's interior street layout. Defaults from the district id, reshuffled by Regenerate while the district is in preview, and frozen when the district is locked.
+_Avoid_: random seed, epoch seed
+
+**District lock**:
+The act of committing a district during City Subdivision, freezing its type and Street seed (and therefore its interior streets). A locked district is final — it cannot be re-typed or regenerated — though its shared City Edges keep finalizing as neighboring districts are locked.
+_Avoid_: confirm, accept, finalize
 
 **Street node**:
 A point in the street graph. Nodes with degree ≥ 3 are **junctions**; nodes with degree 2 are **bends**.
@@ -178,8 +225,12 @@ A contiguous polygon of land bounded by gutters, derived by tracing planar faces
 _Avoid_: parcel, lot, face
 
 **City square**:
-A block whose area falls below the district's `square_threshhold` threshold, or one that cannot fit any plots. Rendered as a paved surface in the district's street colour rather than subdivided.
-_Avoid_: plaza (plaza is a design intent, not a generation category)
+A block whose area falls below the district's `square_threshhold` threshold, or one that cannot fit any plots. Rendered as a paved surface in the district's street colour rather than subdivided. Adjacent squares in a district join into a Square cluster.
+_Avoid_: plaza
+
+**Square cluster**:
+A maximal group of same-district City squares joined across shared street segments (each join spans a full street between two junctions, not a single shared junction), rendered as one continuous paved plaza and hosting the district's Landmarks.
+_Avoid_: plaza, joined squares
 
 **Plot**:
 A single land parcel within a block — a unit of property ownership where buildings are built. Generated by a plot Voronoi seeded inside the plot and along the block's street edges.
@@ -199,3 +250,39 @@ _Avoid_: wall, barrier, rampart
 **Building**:
 A structure generated within a plot. A plot can contain one or more building footprints.
 _Avoid_: structure, object
+
+**Landmark**:
+A district-specific feature building (per `DISTRICT_MODEL_SQUARE`) placed on a district's Square clusters before plots are generated; plot ground under a Landmark footprint is dropped. Distinct from an ordinary plot Building.
+_Avoid_: square feature-building, specialist building
+
+**Hall**:
+A generic large building model (the GLB formerly named `guildhall`). A rendering asset only — not tied to the Guild concept or a Guild Headquarters.
+_Avoid_: guildhall
+
+**Parametric Building**:
+A Building assembled at runtime from kit parts per a Building Spec, rather than a single fixed GLB model (h1–h19) or a Landmark.
+_Avoid_: generated building, modular building
+
+**Building part**:
+A small reusable mesh that fills one named kit slot (e.g. `post`, `panel-stone`, `window`), authored to a shared bay grid.
+_Avoid_: component, piece
+
+**Part kit**:
+The canonical set of named part slots (and their grid) a Parametric Building is built from.
+_Avoid_: part set, library
+
+**Theme**:
+A swappable set of part GLBs plus one texture atlas filling the kit slots (`default` = procedural placeholders); future per-district styles or alternate settings are themes.
+_Avoid_: skin, style-pack
+
+**Bay**:
+The wall module between two posts on one floor — the unit of wall layout. Rigid features (window/door) sit fixed-size and centred in a bay; flex infill panels X-scale to fill it.
+_Avoid_: panel slot, module
+
+**Building Spec**:
+The compact deterministic descriptor (seed, footprint, floors, per-floor wall material, roof, chimneys, suppressedFaces) a Parametric Building is assembled from. The footprint is a wing list (`{type:'wings', wings:[…]}`) of axis-aligned rectangles; the server emits the spec; the client assembles deterministically (no `Math.random`).
+_Avoid_: blueprint, recipe
+
+**Suppressed face**:
+A building face where wall panels, interior posts, and roof trim are omitted because the face abuts a neighbour building of equal or greater height. Corner posts shared with perpendicular faces are retained. Encoded in the Building Spec as `suppressedFaces`, pre-computed by the server.
+_Avoid_: hidden face, invisible wall, party wall

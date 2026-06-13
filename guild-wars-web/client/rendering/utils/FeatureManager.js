@@ -2,6 +2,11 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { pointInPolygon } from './renderUtils.js'
+import { assetUrl } from '../../config.js'
+import { MODELS } from '../../../shared/buildingCatalogue.js'
+
+// Re-exported from the shared catalogue (ADR-0005) so existing importers are unchanged.
+export { MODELS }
 
 const FEATURES = {
   fields: {
@@ -62,26 +67,62 @@ const FEATURES = {
     scaleVariation: 0,
     minScale: 1,
     noAnimation: true
+  },
+  building: {
+    glbPath: '/resources/h2.glb',
+    fitFootprint: 0.95,    // model is scaled so its footprint ≈ this × the plot building footprint
+    rotationOffset: 0,     // added to the street-facing rotation if the model's front isn't +Z
+    noAnimation: true,
+  },
+  wallTower: {
+    glbPath: '/resources/wallTower.glb',
+    footprint: 0.22,       // world-unit diameter the model is scaled to
+    rotationOffset: 0,     // added to the per-tower facing if the model's front isn't +Z
+    noAnimation: true,
   }
+}
+
+// ── Shared, app-wide GLB cache ────────────────────────────────────────────────
+// One loader and one cache for the whole app: every GLB is fetched and parsed
+// exactly once, and all FeatureManager instances reuse the same parsed gltf.
+// (SkeletonUtils.clone shares geometries and materials by reference, so per-
+// instance memory is just the node hierarchy — geometry/textures are not copied.)
+const _sharedLoader = new GLTFLoader()
+const _sharedGltfCache = new Map()   // path → Promise<gltf>
+
+function loadGLTFShared(path) {
+  if (!_sharedGltfCache.has(path)) {
+    // Cache key stays the original '/resources/...' path; assetUrl() resolves it
+    // against assetBase (local bundle in Electron, same-origin in dev) at fetch time.
+    _sharedGltfCache.set(path, new Promise((resolve, reject) => {
+      _sharedLoader.load(assetUrl(path), resolve, undefined, reject)
+    }))
+  }
+  return _sharedGltfCache.get(path)
+}
+
+// Preload every building/feature GLB up front (at startup) so the first render
+// has no load latency. Safe to call repeatedly — cached paths are not refetched.
+export function preloadModels() {
+  const paths = new Set()
+  for (const arr of Object.values(MODELS)) for (const m of arr) if (m.glbPath) paths.add(m.glbPath)
+  for (const cfg of Object.values(FEATURES)) if (cfg.glbPath) paths.add(cfg.glbPath)
+  return Promise.all([...paths].map(p =>
+    loadGLTFShared(p).catch(err => console.error(`preloadModels: failed to load ${p}`, err))
+  ))
 }
 
 export default class FeatureManager {
   constructor(scene) {
     this.scene = scene
-    this.loader = new GLTFLoader()
-    this._gltfCache = new Map()
     this._objects = []
     this._mixers = []
     this._billboardWrappers = []
+    this._epoch = 0   // bumped on clear() so in-flight async spawns can self-cancel
   }
 
   _loadGLTF(path) {
-    if (!this._gltfCache.has(path)) {
-      this._gltfCache.set(path, new Promise((resolve, reject) => {
-        this.loader.load(path, resolve, undefined, reject)
-      }))
-    }
-    return this._gltfCache.get(path)
+    return loadGLTFShared(path)
   }
 
   _mkRng(seed) {
@@ -194,6 +235,84 @@ export default class FeatureManager {
     }
   }
 
+  // Spawn building models. Each placement is { x, z, rotY, glbPath, scale }:
+  // rotY faces the street, glbPath selects the model, scale is precomputed from
+  // the model's stored footprint. Placements are grouped by model so each GLB is
+  // loaded once; each is seated on the ground.
+  async spawnBuildings(placements, baseY = 0) {
+    if (!placements?.length) return
+    const epoch = this._epoch   // capture; a clear() during loading bumps this
+    const byPath = new Map()
+    for (const p of placements) {
+      if (!p.glbPath) continue
+      if (!byPath.has(p.glbPath)) byPath.set(p.glbPath, [])
+      byPath.get(p.glbPath).push(p)
+    }
+    for (const [glbPath, group] of byPath) {
+      let gltf
+      try {
+        gltf = await this._loadGLTF(glbPath)
+      } catch (err) {
+        console.error(`FeatureManager: failed to load ${glbPath}`, err)
+        continue
+      }
+      if (this._epoch !== epoch) return   // cleared while loading — don't spawn stale buildings
+      for (const p of group) {
+        const scale = p.scale ?? 1
+        const idx = this._objects.length
+        this._spawnOne(gltf, p.x, p.z, scale, p.rotY ?? 0, 0, 0, false, false, true)
+        const wrapper = this._objects[idx]
+        if (wrapper) {
+          // Seat the base on the ground by measuring the actual spawned wrapper
+          // in world space (its real clone, scale and rotation), then lifting it
+          // so the lowest vertex sits at y = baseY. Robust regardless of model origin.
+          wrapper.updateMatrixWorld(true)
+          const wb = new THREE.Box3().setFromObject(wrapper)
+          if (isFinite(wb.min.y)) wrapper.position.y = baseY - wb.min.y
+        }
+      }
+    }
+  }
+
+  // Local bounding box of the model as it is actually rendered (a clone with its
+  // root position cleared, matching _spawnOne). Returns { minY, size }.
+  _measureModel(gltf) {
+    const m = gltf.scene.clone(true)
+    m.position.set(0, 0, 0)
+    m.updateMatrixWorld(true)
+    const box = new THREE.Box3().setFromObject(m)
+    const size = new THREE.Vector3(); box.getSize(size)
+    return { minY: box.min.y, size }
+  }
+
+  // Spawn a wall tower at each { x, y } position (y is the world Z), scaled to a
+  // fixed footprint and seated with its base at `baseY`.
+  async spawnTowers(positions, baseY = 0) {
+    if (!positions?.length) return
+    const epoch = this._epoch   // capture; a clear() during loading bumps this
+    const cfg = FEATURES.wallTower
+    let gltf
+    try {
+      gltf = await this._loadGLTF(cfg.glbPath)
+    } catch (err) {
+      console.error(`FeatureManager: failed to load ${cfg.glbPath}`, err)
+      return
+    }
+    if (this._epoch !== epoch) return   // cleared while loading — don't spawn stale towers
+
+    const { minY, size } = this._measureModel(gltf)
+    const scale = (cfg.footprint ?? 0.2) / (Math.max(size.x, size.z) || 1)
+    const rotOff = cfg.rotationOffset ?? 0
+
+    for (const p of positions) {
+      const idx = this._objects.length
+      this._spawnOne(gltf, p.x, p.y, scale, (p.rotY ?? 0) + rotOff, 0, 0, false, false, true)
+      // Seat the model's base at baseY (the wall foot).
+      const wrapper = this._objects[idx]
+      if (wrapper) wrapper.position.y = baseY - minY * scale
+    }
+  }
+
   update(delta, camera) {
     for (const mixer of this._mixers) mixer.update(delta)
     if (camera && this._billboardWrappers.length > 0) {
@@ -203,6 +322,7 @@ export default class FeatureManager {
   }
 
   clear() {
+    this._epoch++   // invalidate any async spawn (e.g. spawnBuildings) still loading
     for (const obj of this._objects) this.scene.remove(obj)
     this._objects = []
     this._mixers = []

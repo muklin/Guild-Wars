@@ -1,15 +1,20 @@
 import TerrainTypePanel from './TerrainTypePanel.js'
 import DistrictTypePanel from './DistrictTypePanel.js'
 import FactionsPanel from './FactionsPanel.js'
+import GuildPanel from './GuildPanel.js'
 import GameAPI from '../api/GameAPI.js'
 
 const STAGES = [
   { step: 'Terrain',         label: 'Terrain Setup',       event: 'TERRAIN_COMPLETE' },
   { step: 'CitySubdivision', label: 'City District Setup', event: 'SUBDIVISION_COMPLETE' },
-  { step: 'StreetSetup',     label: 'Street Setup',        event: 'STREET_SETUP_COMPLETE' },
   { step: 'GuildCreation',   label: 'Guild Design',        event: null }
 ]
-const STEP_ORDER = ['Terrain', 'CitySubdivision', 'StreetSetup', 'GuildCreation', 'Complete']
+const STEP_ORDER = ['Terrain', 'CitySubdivision', 'GuildCreation', 'Complete']
+
+// Resources that cannot be stockpiled — hidden from the resource bar.
+const HIDDEN_RESOURCES = new Set(['Basic Food', 'Labour'])
+// Always shown even before districts produce them.
+const DEFAULT_RESOURCES = ['Gold', 'Security']
 
 export default class UIManager {
   constructor(eventBus, renderer) {
@@ -20,6 +25,9 @@ export default class UIManager {
     this.terrainTypePanel = new TerrainTypePanel(eventBus)
     this.districtTypePanel = new DistrictTypePanel(eventBus)
     this.factionsPanel = new FactionsPanel(eventBus)
+    this.guildPanel = new GuildPanel(eventBus)
+    this._resourceRegistry = []
+    this._guildResources = {}
   }
 
   init() {
@@ -33,21 +41,37 @@ export default class UIManager {
     uiContainer.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10'
     document.body.appendChild(uiContainer)
     this.createTopBar(uiContainer)
+    this.createResourceBar(uiContainer)
     this.createLeftPanels(uiContainer)
     this.createRightPanel(uiContainer)
     this.createCenterPanels(uiContainer)
     this.createErrorPopup(uiContainer)
+    // GuildPanel appends itself to document.body when first shown
+    this.guildPanel.render()
+  }
+
+  setWalkMode(on) {
+    const el = document.getElementById('ui-container')
+    if (el) el.style.display = on ? 'none' : ''
   }
 
   createTopBar(container) {
     const topBar = document.createElement('div')
     topBar.id = 'top-bar'
-    topBar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:80px;background:rgba(0,0,0,0.85);border-bottom:2px solid #444;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;align-items:stretch'
+    topBar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:80px;background:#000;border-bottom:2px solid #444;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;align-items:stretch'
 
     const lifecycle = document.createElement('div')
     lifecycle.id = 'lifecycle-bar'
     lifecycle.style.cssText = 'flex:1;display:flex;align-items:stretch'
     topBar.appendChild(lifecycle)
+
+    // Guild button (replaces Influence button)
+    const guildBtn = document.createElement('button')
+    guildBtn.id = 'guild-btn'
+    guildBtn.textContent = 'Guild'
+    guildBtn.style.cssText = 'margin:10px 0;padding:8px 14px;background:#2a3a55;color:#fff;border:1px solid #4a6a99;border-radius:3px;cursor:pointer;font-size:13px;white-space:nowrap;align-self:center;display:none'
+    guildBtn.addEventListener('click', () => this.guildPanel.toggle())
+    topBar.appendChild(guildBtn)
 
     const newGameBtn = document.createElement('button')
     newGameBtn.textContent = 'New Game'
@@ -59,17 +83,26 @@ export default class UIManager {
     })
     topBar.appendChild(newGameBtn)
 
-    // Prevent clicks on the top bar from propagating to the terrain canvas.
     topBar.addEventListener('click',     (e) => e.stopPropagation())
     topBar.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(topBar)
   }
 
+  createResourceBar(container) {
+    const bar = document.createElement('div')
+    bar.id = 'resource-bar'
+    bar.style.cssText = 'position:fixed;top:80px;left:0;right:0;height:32px;background:#111;border-bottom:1px solid #333;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;align-items:center;padding:0 12px;gap:0;overflow-x:auto'
+    bar.addEventListener('click',     (e) => e.stopPropagation())
+    bar.addEventListener('mousedown', (e) => e.stopPropagation())
+    container.appendChild(bar)
+    this._resourceBar = bar
+    this._renderResourceBar()
+  }
+
   createLeftPanels(container) {
     const leftPanel = document.createElement('div')
     leftPanel.id = 'left-panel'
-    leftPanel.style.cssText = 'position:fixed;left:0;top:80px;width:200px;height:calc(100% - 80px);background:rgba(0,0,0,0.7);border-right:2px solid #444;padding:10px;color:#fff;z-index:20;pointer-events:auto'
-    // Prevent clicks on the panel from propagating to the terrain canvas.
+    leftPanel.style.cssText = 'position:fixed;left:0;top:112px;width:200px;height:calc(100% - 112px);background:#000;border-right:2px solid #444;padding:10px;color:#fff;z-index:20;pointer-events:auto'
     leftPanel.addEventListener('click',     (e) => e.stopPropagation())
     leftPanel.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(leftPanel)
@@ -79,7 +112,7 @@ export default class UIManager {
   createRightPanel(container) {
     const rightPanel = document.createElement('div')
     rightPanel.id = 'right-panel'
-    rightPanel.style.cssText = 'position:fixed;right:0;top:80px;width:200px;height:calc(100% - 80px);background:rgba(0,0,0,0.7);border-left:2px solid #444;color:#fff;z-index:20;pointer-events:auto;box-sizing:border-box;overflow:hidden'
+    rightPanel.style.cssText = 'position:fixed;right:0;top:112px;width:200px;height:calc(100% - 112px);background:#000;border-left:2px solid #444;color:#fff;z-index:20;pointer-events:auto;box-sizing:border-box;overflow:hidden'
     rightPanel.addEventListener('click',     (e) => e.stopPropagation())
     rightPanel.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(rightPanel)
@@ -90,7 +123,7 @@ export default class UIManager {
   createCenterPanels(container) {
     const centerPanel = document.createElement('div')
     centerPanel.id = 'center-panel'
-    centerPanel.style.cssText = 'position:fixed;left:200px;right:200px;top:80px;z-index:10'
+    centerPanel.style.cssText = 'position:fixed;left:200px;right:200px;top:112px;z-index:10'
     container.appendChild(centerPanel)
     this.panels.set('center', centerPanel)
   }
@@ -144,10 +177,18 @@ export default class UIManager {
     const leftPanel = this.panels.get('left')
     leftPanel.innerHTML = ''
 
+    const guildBtn = document.getElementById('guild-btn')
     if (step === 'Terrain') {
+      if (guildBtn) guildBtn.style.display = 'none'
+      this.guildPanel.hide()
       this.terrainTypePanel.render(leftPanel)
     } else if (step === 'CitySubdivision') {
+      if (guildBtn) guildBtn.style.display = 'none'
+      this.guildPanel.hide()
       this.districtTypePanel.render(leftPanel)
+    } else if (step === 'GuildCreation' || step === 'Complete') {
+      if (guildBtn) guildBtn.style.display = ''
+      this.guildPanel.show()
     }
   }
 
@@ -155,7 +196,6 @@ export default class UIManager {
     const bar = document.getElementById('lifecycle-bar')
     if (!bar) return
     bar.innerHTML = ''
-    this._rebuildStreetsBtn = null
 
     const currentIndex = STEP_ORDER.indexOf(activeStep)
 
@@ -180,18 +220,60 @@ export default class UIManager {
         cell.appendChild(doneBtn)
       }
 
-      if (isActive && stage.step === 'StreetSetup') {
-        const rebuildBtn = document.createElement('button')
-        rebuildBtn.textContent = '↺ Rebuild Streets'
-        rebuildBtn.style.cssText = 'margin-top:4px;padding:2px 8px;background:#5a3a1a;color:#ffb84d;border:1px solid #8a5a2a;border-radius:3px;cursor:pointer;font-size:10px;display:none'
-        rebuildBtn.addEventListener('click', () => this.eventBus.emit('REBUILD_STREETS'))
-        cell.appendChild(rebuildBtn)
-        this._rebuildStreetsBtn = rebuildBtn
-      }
-
       bar.appendChild(cell)
     })
   }
+
+  // ── Resource bar ──────────────────────────────────────────────────────────
+
+  _renderResourceBar() {
+    const bar = this._resourceBar
+    if (!bar) return
+    bar.innerHTML = ''
+
+    const combined = [
+      ...DEFAULT_RESOURCES,
+      ...this._resourceRegistry.filter(r => !HIDDEN_RESOURCES.has(r) && !DEFAULT_RESOURCES.includes(r)),
+    ]
+
+    const showQty = this.currentStep === 'GuildCreation' || this.currentStep === 'Complete'
+    for (const name of combined) {
+      const qty = this._guildResources[name] ?? 0
+      const chip = document.createElement('div')
+      chip.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 10px;height:100%;border-right:1px solid #222;white-space:nowrap;font-size:11px'
+      chip.innerHTML = `<span style="color:#aaa">${name}</span>`
+        + (showQty ? `<span style="color:#fc8;font-weight:bold">${qty}</span>` : '')
+      bar.appendChild(chip)
+    }
+  }
+
+  updateResources(resources) {
+    this._resourceRegistry = resources || []
+    this._renderResourceBar()
+  }
+
+  updateGuild(guild) {
+    if (guild) {
+      this._guildResources = guild.resources || {}
+      this._renderResourceBar()
+      this.guildPanel.setData({ guild })
+    }
+  }
+
+  // ── Event listeners ────────────────────────────────────────────────────────
+
+  setupEventListeners() {
+    document.addEventListener('keydown', (e) => {
+      // Skip if focus is in a text input / textarea
+      const tag = document.activeElement?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      if (e.key === 'g' || e.key === 'G') {
+        this.guildPanel.toggle()
+      }
+    })
+  }
+
+  // ── Delegated updates ─────────────────────────────────────────────────────
 
   showError(message) {
     document.getElementById('error-message').textContent = message
@@ -228,17 +310,7 @@ export default class UIManager {
     this.factionsPanel.update(factions)
   }
 
-  updateResources(resources) {
-    this.factionsPanel.updateResources(resources)
-  }
-
   updateThreats(threats) {
     this.factionsPanel.updateThreats(threats)
-  }
-
-  setupEventListeners() {
-    this.eventBus.on('DEBUG_TOGGLED', (isDebug) => {
-      if (this._rebuildStreetsBtn) this._rebuildStreetsBtn.style.display = isDebug ? 'block' : 'none'
-    })
   }
 }

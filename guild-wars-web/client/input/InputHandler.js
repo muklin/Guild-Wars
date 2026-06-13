@@ -56,12 +56,26 @@ export default class InputHandler {
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
 
     if (this.renderer.mode === 'city') {
-      const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
-      if (cityEdge) { this.eventBus.emit('CITY_EDGE_CLICKED', cityEdge); return }
+      // Headquarters picking takes priority: a plot, else the nearest Landmark.
+      if (this.renderer.hqPickMode) {
+        const plot = this.renderer.getPlotAtWorldPos(worldPos.x, worldPos.y)
+        if (plot) { this.eventBus.emit('HQ_PICKED', { kind: 'plot', ...plot }); return }
+        const landmark = this.renderer.getLandmarkAtWorldPos(worldPos.x, worldPos.y)
+        if (landmark) { this.eventBus.emit('HQ_PICKED', { kind: 'landmark', ...landmark }); return }
+        return
+      }
+      // In Guild Setup the city is final: terrain regions and district (city) edges are
+      // no longer selectable — only Headquarters picking above remains.
+      if (!this.renderer.guildSetupActive) {
+        const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
+        if (cityEdge) { this.eventBus.emit('CITY_EDGE_CLICKED', cityEdge); return }
+      }
       const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
       if (district) { this.eventBus.emit('DISTRICT_CLICKED', district.id); return }
-      const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-      if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
+      if (!this.renderer.guildSetupActive) {
+        const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+        if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
+      }
       return
     }
 
@@ -129,12 +143,17 @@ export default class InputHandler {
     }
 
     if (this.renderer.mode === 'city') {
-      const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
-      if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); return }
+      const guildSetup = this.renderer.guildSetupActive
+      if (!guildSetup) {
+        const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
+        if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); return }
+      }
       const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
       if (district) { this.renderer.setDistrictHover(district.id); return }
-      const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-      if (region) { this.renderer.setRegionHover(region.id); return }
+      if (!guildSetup) {
+        const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+        if (region) { this.renderer.setRegionHover(region.id); return }
+      }
       this.renderer.clearHover()
       return
     }
@@ -201,6 +220,16 @@ export default class InputHandler {
     if (e.code === 'KeyD' && e.shiftKey) {
       this.renderer.toggleDebugVisualization()
       this.eventBus.emit('DEBUG_TOGGLED', this.renderer.showDebug)
+      e.preventDefault()
+      return
+    }
+    if (e.code === 'KeyW' && e.shiftKey) {
+      this.eventBus.emit('WALK_MODE_TOGGLED')
+      e.preventDefault()
+      return
+    }
+    if (e.code === 'KeyB' && e.shiftKey) {
+      this.renderer.toggleBuildings()
       e.preventDefault()
       return
     }

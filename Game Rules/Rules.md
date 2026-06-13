@@ -122,7 +122,7 @@ District Setup continues (following Reversed Initiative) until all Players pass,
 # Resources
 
 ## Members Resources
-While each member controls one Guild, some resources are specific to the player, and not useable by their guild.  This includes 
+While each member controls one Guild, some resources are specific to the player, and not useable by their guild. 
 
 ## Guilds Resources
 Faction Standings

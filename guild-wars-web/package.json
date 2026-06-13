@@ -6,11 +6,16 @@
     "dev": "concurrently \"npm run server\" \"vite\"",
     "server": "node --watch server/index.js",
     "build": "vite build",
+    "build:parts": "node tools/buildPartKit.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
     "concurrently": "^8.2.2",
     "express": "^4.18.2",
-    "three": "^0.165.0"
+    "three": "^0.165.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "vite": "^8.0.10"
   }
 }

@@ -1,13 +1,21 @@
 import * as THREE from 'three'
 
 export const STREET_COLORS = {
-  Mud:       0x6b4c2a,
-  Brick:     0x9e3a22,
-  Stone:     0x888fa0,
+  Mud:       0x6B4C2A,   // brown dirt road
+  Brick:     0x6B291C,   // warm clay-terracotta
+  Stone:     0x888fa0,   // blue-gray flagstone
   unassigned: 0xb8a680,
   get(type) {
     return this[type] ?? null
   }
+}
+
+const WIDTH_FACTOR = { Stone: 2.0, Mud: 0.8, Brick: 1.0, MainRoad: 2.0 }
+
+function scaledGutter(ptL, ptR, f) {
+  const cx = (ptL.x + ptR.x) / 2, cy = (ptL.y + ptR.y) / 2
+  const hx = (ptR.x - ptL.x) / 2, hy = (ptR.y - ptL.y) / 2
+  return { left: { x: cx - hx * f, y: cy - hy * f }, right: { x: cx + hx * f, y: cy + hy * f } }
 }
 
 export default class StreetRenderer {
@@ -20,6 +28,7 @@ export default class StreetRenderer {
     this._streetGraph = null
     this.streetMeshes = []
     this.gutterMeshes = []
+    this._districtHighlight = []   // streets lightened on faction hover
 
     this.hoveredStreetEdgeKey = null
     this._streetHoverMesh = null
@@ -89,7 +98,8 @@ export default class StreetRenderer {
         const conn2 = j2.connections.find(c => c.toId === j.id)
         if (!conn2) continue
 
-        const color = STREET_COLORS.get(conn.type) || fallback
+        const type = conn.type
+        const color = STREET_COLORS.get(type) || fallback
         const { gutterLeft: aL, gutterRight: aR } = conn
         const { gutterLeft: bL, gutterRight: bR } = conn2
         const verts = new Float32Array([
@@ -104,7 +114,7 @@ export default class StreetRenderer {
         geom.computeVertexNormals()
         const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5 })
         const mesh = new THREE.Mesh(geom, mat)
-        mesh.userData = { roadId: conn.roadId }
+        mesh.userData = { roadId: conn.roadId, districtId: conn.districtId }
         this.scene.add(mesh)
         this.streetMeshes.push(mesh)
       }
@@ -146,9 +156,35 @@ export default class StreetRenderer {
       const color = STREET_COLORS.get(j.type) || fallback
       const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5 })
       const mesh = new THREE.Mesh(geom, mat)
+      mesh.userData = { districtId: j.districtId }
       this.scene.add(mesh)
       this.streetMeshes.push(mesh)
     }
+  }
+
+  // Lighten the streets (and junction caps) of one district — used to highlight a
+  // faction's district on hover. Restores on clearDistrictHighlight().
+  highlightDistrictStreets(districtId) {
+    this.clearDistrictHighlight()
+    if (districtId === undefined || districtId === null) return
+    const white = new THREE.Color(0xffffff)
+    for (const m of this.streetMeshes) {
+      if (m.userData?.districtId !== districtId) continue
+      const mat = m.material
+      this._districtHighlight.push({ mat, color: mat.color.getHex(), emissive: mat.emissive?.getHex(), ei: mat.emissiveIntensity })
+      mat.color.lerp(white, 0.5)
+      mat.emissive?.lerp(white, 0.5)
+      mat.emissiveIntensity = 0.85
+    }
+  }
+
+  clearDistrictHighlight() {
+    for (const h of this._districtHighlight) {
+      h.mat.color.setHex(h.color)
+      if (h.emissive !== undefined && h.mat.emissive) h.mat.emissive.setHex(h.emissive)
+      h.mat.emissiveIntensity = h.ei
+    }
+    this._districtHighlight = []
   }
 
   clearStreetLayer() {

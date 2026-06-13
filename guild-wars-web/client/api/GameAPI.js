@@ -1,18 +1,28 @@
+import config from '../config.js'
+
 export default class GameAPI {
   static async request(endpoint, method = 'GET', body = null) {
     try {
-      const options = { method }
+      const headers = {}
+      if (config.seatKey) headers['X-Seat-Key'] = config.seatKey
+      const options = { method, headers }
       if (body) {
-        options.headers = { 'Content-Type': 'application/json' }
+        headers['Content-Type'] = 'application/json'
         options.body = JSON.stringify(body)
       }
-      const response = await fetch(`/api${endpoint}`, options)
+      const response = await fetch(`${config.apiBase}/api${endpoint}`, options)
       const data = await response.json()
       return data
     } catch (error) {
       console.error(`API request failed: ${endpoint}`, error)
       throw error
     }
+  }
+
+  // Join a game at the configured server, claiming a seat under `name`.
+  // Returns the join payload ({ seatKey, seatId, state }); caller persists the key.
+  static async join(name) {
+    return this.request('/join', 'POST', { name })
   }
 
   static async getState() {
@@ -39,12 +49,12 @@ export default class GameAPI {
     return this.request('/setup/threat', 'POST', { regionId, description, name })
   }
 
-  static async addTrade(regionId, description = '') {
-    return this.request('/setup/trade', 'POST', { regionId, description })
+  static async addTrade(regionId, description = '', name = '', buys = [], sells = []) {
+    return this.request('/setup/trade', 'POST', { regionId, description, name, buys, sells })
   }
 
-  static async assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null) {
-    return this.request('/setup/city/assign', 'POST', { districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass })
+  static async assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '') {
+    return this.request('/setup/city/assign', 'POST', { districtId, districtType, description, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass })
   }
 
   static async assignTerrainDistrict(regionId, districtType, description = '', producedResource = '', consumedResources = []) {
@@ -55,16 +65,29 @@ export default class GameAPI {
     return this.request('/setup/city/edge', 'POST', { edgeId, edgeType, description })
   }
 
+  static async previewDistrictType(districtId, districtType, residentialClass = null, LeadershipClass = null) {
+    return this.request('/setup/city/preview', 'POST', { districtId, districtType, residentialClass, LeadershipClass })
+  }
+
+  static async regenerateDistrict(districtId) {
+    return this.request('/setup/city/regenerate', 'POST', { districtId })
+  }
+
+  static async revertDistrict(districtId) {
+    return this.request('/setup/city/revert', 'POST', { districtId })
+  }
+
   static async finishSubdivision() {
     return this.request('/setup/subdivision/done', 'POST')
   }
 
-  static async finishStreetSetup() {
-    return this.request('/setup/streetsetup/done', 'POST')
+  // Create the player's guild. headquarters = { kind:'plot'|'landmark', refId } | null.
+  static async createGuild({ guildName, headquarters }) {
+    return this.request('/setup/guild', 'POST', { guildName, headquarters })
   }
 
-  static async rebuildStreets() {
-    return this.request('/setup/streets/rebuild', 'POST')
+  static async renameGuild(name) {
+    return this.request('/setup/guild/rename', 'POST', { name })
   }
 
 }

@@ -1,0 +1,152 @@
+{
+  "human": {
+    "first": [
+      "Aldric","Bren","Calder","Davan","Edwyn","Faolan","Gared","Harwin","Idris","Jowan",
+      "Kael","Leofric","Maren","Neven","Oswin","Perin","Quill","Rolan","Sevin","Talbot",
+      "Uric","Vance","Westan","Xander","Yoren","Zared","Arlen","Bram","Conal","Derin",
+      "Emric","Finn","Gareth","Hadwen","Ivan","Joss","Kelvin","Lorn","Merric","Nolan",
+      "Orin","Penn","Rand","Seren","Theron","Ulric","Vorn","Wren","Corvin","Davin",
+      "Elara","Mira","Sava","Tara","Willa","Lysa","Nora","Cass","Dena","Faye",
+      "Greta","Hilde","Isla","Jana","Kira","Lena","Myla","Nessa","Orla","Petra",
+      "Aldwin","Balric","Cedric","Dorin","Eldric","Fenn","Gorin","Hadric","Ilwyn","Jorin",
+      "Kiran","Loric","Maddox","Noric","Owyn","Paric","Quinlan","Ravin","Sevrin","Taric",
+      "Varic","Wendell","Yorin","Zoric","Aldous","Beryn","Draven","Faron","Gavan","Heron",
+      "Joran","Kovan","Lanric","Mordred","Norvin","Otwin","Percival","Quinton","Rorin","Stevan",
+      "Torin","Varric","Walin","Edwin","Kaspar","Mervin","Perrin","Walric","Torvin","Lorric",
+      "Olric","Terric","Zanric","Aldren","Byrin","Cowin","Doric","Eron","Faric","Gowin",
+      "Haric","Ilric","Jovin","Carric","Norric","Aldbert","Brannoc","Cormac","Declan","Edric",
+      "Ferris","Godwin","Hartley","Ingram","Jethro","Kenrick","Lucan","Maxton","Norbert","Osric",
+      "Paxton","Radwin","Selwyn","Terwin","Aldric","Valwin","Westin","Yoric","Zoric","Aela",
+      "Brina","Calla","Dara","Elia","Fara","Gwyn","Hana","Iola","Jara","Kela",
+      "Lyra","Maia","Nala","Olea","Pira","Rena","Sara","Thea","Una","Vara",
+      "Wyna","Yara","Zara","Adela","Bela","Cora","Delia","Eryn","Fern","Gwenna",
+      "Hanna","Ilara","Jenna","Kessa","Lylla","Morna","Nella","Odra","Pella","Rilla",
+      "Sera","Thora","Ursa","Vela","Wenda","Yella","Zena","Aldra","Bera","Cela",
+      "Dela","Edra","Frela","Hela","Inra","Jela","Kora","Lira","Morla","Nara"
+    ],
+    "last": [
+      "Ashworth","Blackwell","Carver","Dunmore","Eastwick","Farrow","Greywood","Hartwell",
+      "Ironside","Jarvish","Kendrick","Langford","Morrow","Northgate","Oldham","Parrow",
+      "Quickwood","Redfield","Stonecroft","Tanner","Underwood","Varrow","Westfall","Yardley",
+      "Crowley","Duskwood","Everwood","Foxley","Greymantle","Holloway","Ironton","Jameson",
+      "Aldgate","Blackmoor","Copperfield","Dawnfield","Elmhurst","Fernwood","Goldfield","Harnwood",
+      "Ironwood","Janeway","Kestwick","Longwood","Millhaven","Northwood","Oakhaven","Pewterfield",
+      "Ravenwood","Silverbrook","Thornwood","Valorfield","Windmill","Yorwick","Aldmoor","Brentwood",
+      "Coldfield","Darkwood","Elmwood","Fairwood","Greyfield","Highfield","Ironsgate","Jestwick",
+      "Kirkwood","Longfield","Moorfield","Northbrook","Oswick","Pinewood","Riverwood","Stonefield",
+      "Thornfield","Urwick","Valefield","Westwood","Yewwood","Zanwick","Aldwick","Burnwood",
+      "Coppergate","Darkfield","Foxwood","Greenfield","Highwood","Irongate","Larkwood","Mistwood",
+      "Newfield","Oakfield","Pinewick","Saltwick","Stonegate","Whiteford","Windfield","Aldstone"
+    ]
+  },
+  "elf": {
+    "first": [
+      "Aelindra","Berethil","Caladwen","Daerith","Eirien","Falathar","Galindel","Halatir",
+      "Ithilwen","Jarodel","Kalandriel","Lalathen","Mirindel","Naraleth","Olindra","Palariel",
+      "Quelindra","Ralathen","Sarindel","Thalindra","Ulindra","Valathen","Wandriel","Xalindra",
+      "Yalindra","Zalathen","Aerindel","Belathen","Celindra","Dalathen",
+      "Elarith","Falariel","Galadreth","Halarith","Ilindra","Jalarith",
+      "Kelandrel","Lalarith","Mindrel","Nalarith","Oladreth",
+      "Aerandil","Berendil","Carandel","Darithel","Elindris","Farandil","Galatiel","Haladriel",
+      "Ithindril","Jaradel","Kaelindra","Larandel","Mirathel","Naradil","Olathrin","Paladrel",
+      "Quelathrin","Raladris","Sarathel","Thaladris","Uladril","Valadris","Wandelin","Xaladris",
+      "Yaladril","Zaladrin","Aelathrin","Belathrin","Celathrin","Daladris",
+      "Elathen","Falindris","Galathrin","Halindra","Ilathrin","Jaladrith",
+      "Kaladris","Laladris","Mirathrin","Naladris","Oladrin"
+    ],
+    "last": [
+      "Aelindor","Brightleaf","Crystalveil","Dawnwhisper","Eveningstar","Forestsong","Goldenleaf",
+      "Highwind","Ivorybow","Jadeleaf","Kindlefire","Leafsong","Moonwhisper","Nightbloom",
+      "Oakheart","Petalfall","Quicksilver","Riversong","Silverleaf","Twilightmere",
+      "Underdawn","Veilbreeze","Windwalker","Yarrowmere","Zephyrleaf",
+      "Amberveil","Briarwood","Cedarfall","Duskpetal","Elmsong","Frostbloom","Glimmerleaf",
+      "Hazelthorn","Icybrook","Jadewing","Kestrelfall","Larchwood","Mistpetal","Nightfall",
+      "Oakenshade","Pineblossom","Quietbrook","Roseveil","Starwhisper","Thornbloom",
+      "Umbrafall","Violetsong","Willowmere","Yarrowthorn","Zestbloom"
+    ]
+  },
+  "dwarf": {
+    "first": [
+      "Baldrek","Bofrin","Dolgrin","Durbek","Eberk","Fargrim","Gardain","Harbek",
+      "Ilikan","Jodek","Kildrak","Lobrik","Mordek","Norgrin","Orokrin","Rangrim",
+      "Saldrek","Tordek","Ulfgar","Veit","Wulfgar","Baerin","Dain","Durgin",
+      "Ebrin","Flint","Gurdis","Helja","Kathra","Mardred","Riswynn","Torbera",
+      "Vistra","Dagnal","Diesa","Finellen",
+      "Aldrak","Borik","Cargan","Dorrik","Egrak","Forgrin","Grimdar","Horrik",
+      "Irik","Jorgrin","Korgrin","Largrim","Morgrek","Nargrin","Orkrin","Porgrin",
+      "Rorgrin","Sorgrin","Thorgrin","Urgrin","Vorgrin","Worgrin","Yorgrin","Zorgrin",
+      "Brordak","Corgrin","Dorgrin","Eldrak","Foldrak","Groldrak","Holdrak","Ilrak",
+      "Joldrak","Koldrak","Loldrak","Moldrak"
+    ],
+    "last": [
+      "Anvilmark","Battlehammer","Copperforge","Deepstone","Emberthorn","Firehammer",
+      "Goldmantle","Ironbeard","Kragstone","Longvein","Minedeep","Norgrimm",
+      "Oakenshield","Proudhammer","Rockborn","Steelforge","Thunderaxe",
+      "Undinvault","Vaultborn","Warhammer","Youngstone","Zimzod",
+      "Anvilstone","Blackrock","Copperstone","Deepvein","Embervault","Forgehammer",
+      "Goldvein","Ironrock","Kragvault","Longstone","Mineborn","Norgranite",
+      "Oakenstone","Proudrock","Rockmantle","Steelbeard","Thundervault","Undinhammer",
+      "Vaulthammer","Warrock","Youngvein","Zimthorn"
+    ]
+  },
+  "halfOrc": {
+    "first": [
+      "Argran","Bragg","Cragga","Dench","Ekber","Feng","Gnarsh","Hroth","Igrun","Jolak",
+      "Karg","Luruk","Morak","Narak","Ogruk","Prakh","Rakh","Skrag","Thokk","Urzak",
+      "Vrak","Worg","Yark","Zrak","Ark","Brugh","Crag","Drog","Elk","Frug",
+      "Grakh","Hrath","Irug","Jorak","Krakh","Lurg","Murg","Nurg","Orakh","Prugh",
+      "Rorg","Srak","Turg","Urgak","Vorg","Wrak","Yurg","Zarg","Brak","Cruk",
+      "Drakh","Erug","Grok","Hruk","Irak","Kruk","Lrak","Mrak","Nrak","Orak"
+    ],
+    "last": [
+      "Blacktooth","Bonecrusher","Darkfang","Earthshaker","Fleshrender","Grimborn",
+      "Ironjaw","Jawbreaker","Knucklebone","Longfang","Mauler","Nighthowl",
+      "Orcborn","Paincleave","Quickfist","Rockjaw","Skullcleave","Throatcutter",
+      "Urhide","Warborn","Xblood",
+      "Blackclaw","Bonegrind","Darkfist","Earthstamp","Fleshgrip","Grimfang",
+      "Ironskull","Jawcrack","Knotbone","Longclaw","Maulborn","Nightfang",
+      "Orcfist","Painborn","Quickbite","Rockfist","Skullborn","Throatbite",
+      "Urclaw","Warclaw","Xfang"
+    ]
+  },
+  "halfling": {
+    "first": [
+      "Andry","Bree","Corwin","Dina","Eldon","Faran","Garret","Halia","Irwin","Jasper",
+      "Kithri","Lyle","Milo","Nibs","Osborn","Perrin","Qelline","Rosco","Sadie","Tym",
+      "Una","Vani","Welby","Yenna","Zina","Alton","Beau","Cade","Darvin","Eadlin",
+      "Ferdie","Gwin","Harlin","Idwell","Jolly","Kip","Larkin","Merry","Nob","Odo",
+      "Pip","Rory","Sedge","Tilly","Unwin","Verna","Willis","Xella","Yarno","Zinwell",
+      "Aldwell","Birdie","Cory","Delly","Elwin","Gerry","Holly","Issy","Jilly","Kel"
+    ],
+    "last": [
+      "Applebottom","Bumblethorn","Cherryfoot","Dalewhistle","Elderbrook","Fernpebble",
+      "Goodbarrel","Hillstone","Ironfoot","Jollybottom","Kettlebrook","Lightfoot",
+      "Merryweather","Nettlebottom","Pondleap","Quickfoot","Riverbend","Shadowfoot",
+      "Thornberry","Underhill","Warmwater","Yardfree",
+      "Applewood","Barleytop","Cloverfoot","Daisybrook","Elderberry","Fiddlestick",
+      "Goldenfoot","Haymow","Ivybrook","Jinglepurse","Kettlecorn","Luckfoot",
+      "Meadowbrook","Nettlefoot","Pebbletoe","Quietbrook","Rosebottom","Sweetfoot",
+      "Toadstool","Underfell","Willowfoot","Yarrowbottom"
+    ]
+  },
+  "gnome": {
+    "first": [
+      "Alston","Boddynock","Brocc","Burgell","Dimble","Ellywick","Erky","Fonkin","Frug","Gerbo",
+      "Gimble","Glim","Jebeddo","Kellen","Namfoodle","Orryn","Roondar","Seebo","Sindri","Warryn",
+      "Wrenn","Zook","Alvyn","Bamph","Codger","Dex","Elfwick","Filch","Glib","Hector",
+      "Ixnay","Jinker","Kibble","Locket","Mimble","Nibwick","Ozzle","Pebble","Quibble","Riddle",
+      "Snick","Twick","Umble","Vimble","Wibble","Yibble","Zibble","Anwick","Bimble","Cimble",
+      "Dimwick","Emwick","Fizwick","Gimwick","Himwick","Imwick","Jimwick","Kimwick","Limwick","Mimwick"
+    ],
+    "last": [
+      "Bafflestone","Copperwhistle","Dinkledorf","Fizzlewick","Geargrind","Hoobledorf",
+      "Inkwidget","Jinglewick","Kettlebottle","Locketwinder","Mirthstone","Noodlewick",
+      "Pebblestone","Quicktinkle","Rocketwick","Springtop","Tinkerson","Undervault",
+      "Wobblewidget","Zipplewick","Zotwick",
+      "Bubblewick","Clickspring","Doodlewick","Fiddlewick","Gigglewick","Hookspring",
+      "Inkspring","Jigglewick","Kettlewick","Lockspring","Mirthwick","Noodlespring",
+      "Pebblewick","Quickspring","Ratchetwick","Springwick","Tinklewick","Underwick",
+      "Wobblespring","Zigzagwick","Zotspring"
+    ]
+  }
+}

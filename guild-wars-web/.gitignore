@@ -4,3 +4,6 @@ dist/
 *.log
 .env
 .env.local
+
+# Runtime game save (auto-written by the server on every mutation)
+server/saves/autosave.json

@@ -3,6 +3,10 @@ import InputHandler from './input/InputHandler.js'
 import UIManager from './ui/UIManager.js'
 import GameAPI from './api/GameAPI.js'
 import EventBus from './core/EventBus.js'
+import { preloadModels } from './rendering/utils/FeatureManager.js'
+import LiveSync from './net/LiveSync.js'
+import MultiplayerUI from './ui/MultiplayerUI.js'
+import config from './config.js'
 export default class App {
   constructor() {
     this.renderer = null
@@ -27,6 +31,7 @@ export default class App {
     this.threats = []
     this.tradingDestinations = []
     this.factions = []
+    this.guilds = []
     this.playerCount = 1
     this.currentPhase = null
     this.selectedTerrainRegionId = null
@@ -37,6 +42,8 @@ export default class App {
 
   async init() {
     try {
+      preloadModels()   // warm the shared GLB cache in the background so first render is instant
+
       this.renderer = new WorldRenderer()
       this.renderer.init()
 
@@ -47,7 +54,13 @@ export default class App {
       this.inputHandler.init(this.renderer)
 
       this.setupEventListeners()
-      await this.loadState()
+
+      // Networked play: a live-sync channel re-pulls state whenever the server
+      // broadcasts, and the connect screen lets the player Join or Play Solo.
+      this.liveSync = new LiveSync(() => this.refreshFromServer())
+      this.liveSync.connect()
+      this.multiplayerUI = new MultiplayerUI(this)
+      this.multiplayerUI.mount()
     } catch (error) {
       console.error('Failed to initialize app:', error)
       this.uiManager?.showError('Failed to initialize game')
@@ -97,60 +110,48 @@ export default class App {
     this.eventBus.on('DISTRICT_TYPE_PREVIEW',       (t)    => this._handleDistrictPreview(t))
     this.eventBus.on('DISTRICT_RESIDENTIAL_CLASS',  ({ residentialClass }) => {
       this.pendingResidentialClass = residentialClass
-      if (this.selectedDistrictId !== null) {
-        this.renderer.previewDistrictType(this.selectedDistrictId, residentialClass)
-      }
+      if (this.selectedDistrictId !== null) this.renderer.previewDistrictType(this.selectedDistrictId, residentialClass)
       this._refreshDistrictPanel()
+      this._previewDistrictStreets()
     })
 
     this.eventBus.on('DISTRICT_RULING_BODY_CLASS', ({ LeadershipClass }) => {
       this.pendingLeadershipClass = LeadershipClass
-      if (this.selectedDistrictId !== null) {
-        this.renderer.previewDistrictType(this.selectedDistrictId, LeadershipClass)
-      }
+      if (this.selectedDistrictId !== null) this.renderer.previewDistrictType(this.selectedDistrictId, LeadershipClass)
       this._refreshDistrictPanel()
+      this._previewDistrictStreets()
     })
     this.eventBus.on('DISTRICT_APPLY',              (data) => this._handleDistrictApply(data))
+    this.eventBus.on('DISTRICT_REGENERATE',         ()     => this._handleDistrictRegenerate())
     this.eventBus.on('CITY_EDGE_TYPE_PREVIEW',(t)    => this._handleCityEdgePreview(t))
     this.eventBus.on('CITY_EDGE_APPLY',       (data) => this._handleCityEdgeApply(data))
 
-    this.eventBus.on('STREET_SETUP_COMPLETE', async () => {
-      try {
-        const response = await GameAPI.finishStreetSetup()
-        if (response.ok) {
-          this.currentPhase = 'GuildCreation'
-          this.uiManager.showSetupPhase('GuildCreation')
-        } else {
-          this.uiManager.showError(response.error)
-        }
-      } catch (error) { this.uiManager.showError(error.message) }
-    })
-
-    this.eventBus.on('TERRAIN_ACTION_SELECT', async ({ action }) => {
-      if (action === 'Trade') {
-        const regionId = this.selectedTerrainRegionId
-        if (!regionId) return
-        try {
-          const response = await GameAPI.addTrade(regionId, '')
-          if (response.ok) {
-            this.tradingDestinations = response.tradingDestinations
-            if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
-            this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData)
-            this.renderer.deselectRegion(regionId)
-            this.selectedTerrainRegionId = null
-            this.pendingTerrainAction = null
-            this._refreshDistrictPanel()
-          } else { this.uiManager.showError(response.error) }
-        } catch (error) { this.uiManager.showError(error.message) }
-      } else {
-        this.pendingTerrainAction = action
-        this._refreshDistrictPanel()
-      }
+    this.eventBus.on('TERRAIN_ACTION_SELECT', ({ action }) => {
+      this.pendingTerrainAction = action
+      this._refreshDistrictPanel()
     })
 
     this.eventBus.on('TERRAIN_ACTION_BACK', () => {
       this.pendingTerrainAction = null
       this._refreshDistrictPanel()
+    })
+
+    this.eventBus.on('TERRAIN_TRADE_APPLY', async ({ name, description, buys, sells }) => {
+      const regionId = this.selectedTerrainRegionId
+      if (!regionId) return
+      try {
+        const response = await GameAPI.addTrade(regionId, description, name, buys, sells)
+        if (response.ok) {
+          this.tradingDestinations = response.tradingDestinations
+          if (response.resourceRegistry) { this.resourceRegistry = response.resourceRegistry; this.uiManager.updateResources(this.resourceRegistry) }
+          if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
+          this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData)
+          this.renderer.deselectRegion(regionId)
+          this.selectedTerrainRegionId = null
+          this.pendingTerrainAction = null
+          this._refreshDistrictPanel()
+        } else { this.uiManager.showError(response.error); this._refreshDistrictPanel() }
+      } catch (error) { this.uiManager.showError(error.message); this._refreshDistrictPanel() }
     })
 
     this.eventBus.on('TERRAIN_THREAT_APPLY', async ({ name, description }) => {
@@ -179,30 +180,73 @@ export default class App {
     })
 
     this.eventBus.on('FACTION_HOVER', (faction) => this.renderer.highlightFaction(faction))
-    this.eventBus.on('FACTION_HOVER_END', () => this.renderer.clearHover())
+    this.eventBus.on('FACTION_HOVER_END', () => this.renderer.clearFactionHighlight())
 
-    this.eventBus.on('REBUILD_STREETS', async () => {
-      try {
-        const response = await GameAPI.rebuildStreets()
-        if (response.ok) {
-          this.selectedCityEdgeIds.clear()
-          this.pendingCityEdgeType = null
-          if (response.cityDistrictData) {
-            this.renderer.setCityDistrictData(response.cityDistrictData)
-            this.renderer.clearDistrictLayer()
-          }
-          this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-          this.renderer.renderGutters(response.cityDistrictData?.streetGraph)
-          this.renderer.renderBlocks(response.cityDistrictData?.blocks)
-          this.renderer.renderPlots(response.cityDistrictData?.plots, response.cityDistrictData)
-          this.renderer.drawBlockCenters(response.cityDistrictData?.blocks)
-          this.renderer.drawPlotCenters(response.cityDistrictData?.plots)
-          this.renderer.drawStreetSeeds(response.cityDistrictData?.streetGraph)
-        } else {
-          this.uiManager.showError(response.error)
-        }
-      } catch (error) { this.uiManager.showError(error.message) }
+    // ── Guild setup ──
+    this.eventBus.on('GUILD_HQ_PICK_START', () => { this.renderer.hqPickMode = true })
+    this.eventBus.on('HQ_PICKED', (hq) => {
+      this.renderer.hqPickMode = false
+      this.uiManager.guildPanel.setHeadquarters(hq)
     })
+    this.eventBus.on('GUILD_RENAME', async ({ name }) => {
+      if (!name?.trim()) return
+      try {
+        const res = await GameAPI.renameGuild(name.trim())
+        if (res.ok) {
+          this.guilds = res.guilds || this.guilds
+          const g = this._myGuild()
+          if (g) { this.uiManager.guildPanel.setData({ guild: g }); this.uiManager.updateGuild(g) }
+        }
+      } catch { /* silent — rename is best-effort */ }
+    })
+
+    this.eventBus.on('GUILD_CREATE', async (data) => {
+      if (!data.guildName?.trim()) {
+        this.uiManager.showError('Guild name is required'); return
+      }
+      try {
+        const res = await GameAPI.createGuild(data)
+        if (res.ok) {
+          this.guilds = res.guilds || []
+          this.currentPhase = 'Complete'
+          this.uiManager.showSetupPhase('Complete')
+          this.uiManager.guildPanel.setData({
+            guild: res.guild, factions: this.factions,
+            districts: this.renderer.cityDistrictData?.districts || [],
+          })
+          this.uiManager.updateGuild(res.guild)
+        } else {
+          this.uiManager.showError(res.error || 'Guild creation failed')
+        }
+      } catch { this.uiManager.showError('Guild creation failed') }
+    })
+    this.eventBus.on('WALK_MODE_TOGGLED', () => {
+      const entered = this.renderer.toggleWalkMode(() => this.uiManager.setWalkMode(false))
+      if (entered) this.uiManager.setWalkMode(true)
+    })
+  }
+
+  // The local player's guild (their Seat's, or the only one in solo play).
+  _myGuild() {
+    const guilds = this.guilds || []
+    const me = this.gameState?.multiplayer?.meSeatId
+    return guilds.find(g => g.seatId != null && g.seatId === me) || guilds[0] || null
+  }
+
+
+  // Render the city's streets, gutters, blocks, plots, and buildings from a
+  // cityDistrictData payload. Used after every per-district assign/regenerate/lock.
+  // Landmarks and plots arrive ready from the server (ADR-0005) — just render.
+  _renderCityGeometry(cityData) {
+    if (!cityData) return
+    this.renderer.setCityDistrictData(cityData)
+    this.renderer.renderStreetGraph(cityData.streetGraph)
+    this.renderer.renderGutters(cityData.streetGraph)
+    this.renderer.renderBlocks(cityData.blocks)
+    this.renderer.renderPlots(cityData.plots, cityData)
+    this.renderer.drawBlockCenters(cityData.blocks)
+    this.renderer.drawPlotCenters(cityData.plots)
+    this.renderer.drawStreetSeeds(cityData.streetGraph)
   }
 
   // ── Terrain region ──────────────────────────────────────────────────────────
@@ -305,6 +349,7 @@ export default class App {
         const cityData = response.cityDistrictData || { districts: [], edges: {}, edgePoints: [] }
         this.renderer.setCityDistrictData(cityData)
         this.renderer.setMode('city')
+        this.renderer.setFinishedGround(false)   // per-district colours during setup
         this.renderer.drawDistrictCenters(cityData.districts)
         this.uiManager.showSetupPhase('CitySubdivision')
       } else {
@@ -318,25 +363,28 @@ export default class App {
       const response = await GameAPI.finishSubdivision()
       if (response.ok) {
         this.gameState = response
-        this.currentPhase = 'StreetSetup'
+        this.currentPhase = 'GuildCreation'
         this.selectedTerrainRegionId = null
-        this.renderer.setMode('streets')
-        if (response.cityDistrictData) {
-          this.renderer.setCityDistrictData(response.cityDistrictData)
-          this.renderer.clearDistrictLayer()
-        }
-        this.renderer.renderStreetGraph(response.cityDistrictData?.streetGraph)
-        this.renderer.renderGutters(response.cityDistrictData?.streetGraph)
-        this.renderer.renderBlocks(response.cityDistrictData?.blocks)
-        this.renderer.renderPlots(response.cityDistrictData?.plots, response.cityDistrictData)
-        this.renderer.drawBlockCenters(response.cityDistrictData?.blocks)
-        this.renderer.drawPlotCenters(response.cityDistrictData?.plots)
-        this.renderer.drawStreetSeeds(response.cityDistrictData?.streetGraph)
+        // Stay in 'city' mode: districts and their generated streets/buildings
+        // remain visible together (no separate Street Setup view).
+        this.renderer.setMode('city')
+        this.renderer.guildSetupActive = true            // disable terrain/edge hover & select
+        this.renderer.setCityEdgesHidden(true)           // city is final — no City-Edge overlay
+        this.renderer.setFinishedGround(true)            // leaving District Setup → grassy-brown plot bases
+        this._renderCityGeometry(response.cityDistrictData)
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
         }
-        this.uiManager.showSetupPhase('StreetSetup')
+        this.guilds = response.guilds || []
+        this.currentPhase = 'Complete'
+        this.uiManager.showSetupPhase('Complete')
+        const myGuild = this._myGuild()
+        this.uiManager.guildPanel.setData({
+          guild: myGuild, factions: this.factions,
+          districts: response.cityDistrictData?.districts || [],
+        })
+        this.uiManager.updateGuild(myGuild)
       } else {
         this.uiManager.showError(response.error)
       }
@@ -550,14 +598,12 @@ export default class App {
 
   _handleDistrictClick(districtId) {
     const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === districtId)
-    if (!district || district.assignedType) return
+    if (!district) return
 
-    if (this.selectedTerrainRegionId !== null) {
-      this.renderer.deselectRegion(this.selectedTerrainRegionId)
-      this.selectedTerrainRegionId = null
-    }
-
+    // Clicking the already-selected district toggles it off — reverting it to a blank
+    // polygon if it was previewed but never applied.
     if (this.selectedDistrictId === districtId) {
+      this._revertProvisionalDistrict(districtId)
       this.renderer.deselectDistrict(districtId)
       this.selectedDistrictId = null
       this.pendingDistrictType = null
@@ -567,13 +613,42 @@ export default class App {
       return
     }
 
-    if (this.selectedDistrictId !== null) this.renderer.deselectDistrict(this.selectedDistrictId)
-    this._clearCityEdgeSelection()
+    // Clicking off the current selection (onto another district): revert the previous
+    // one if it was never applied.
+    if (this.selectedDistrictId !== null) {
+      this._revertProvisionalDistrict(this.selectedDistrictId)
+      this.renderer.deselectDistrict(this.selectedDistrictId)
+      this.selectedDistrictId = null
+    }
+    if (this.selectedTerrainRegionId !== null) {
+      this.renderer.deselectRegion(this.selectedTerrainRegionId)
+      this.selectedTerrainRegionId = null
+    }
 
+    if (district.locked) { this._refreshDistrictPanel(); return }   // locked districts are final
+
+    this._clearCityEdgeSelection()
     this.selectedDistrictId = districtId
     this.pendingDistrictType = district.isLeadershipDistrict ? 'Leadership' : null
+    this.pendingResidentialClass = null
+    this.pendingLeadershipClass = 'Monarchy'
     this.renderer.selectDistrict(districtId)
     this._refreshDistrictPanel()
+    // The Leadership district has its type fixed on selection — generate its preview
+    // streets immediately (defaults to a Monarchy until a ruling body is chosen).
+    if (this.pendingDistrictType) this._previewDistrictStreets()
+  }
+
+  // Discard the selected district if it was previewed but never applied, returning it
+  // to a blank district polygon (clears its streets too). Locked districts are final.
+  _revertProvisionalDistrict(id = this.selectedDistrictId) {
+    if (id === null || id === undefined) return
+    const d = this.renderer.cityDistrictData?.districts?.find(x => x.id === id)
+    if (!d || !d.assignedType || d.locked) return
+    d.assignedType = null; d.residentialClass = null; d.LeadershipClass = null
+    d.producedResource = null; d.consumedResources = []; d.streetSeed = null; d.description = ''
+    this.renderer.updateDistrictColor(id, null)
+    GameAPI.revertDistrict(id).then(r => { if (r?.ok) this._renderCityGeometry(r.cityDistrictData) }).catch(() => {})
   }
 
   _handleTerrainRegionClick(regionId) {
@@ -586,6 +661,7 @@ export default class App {
     }
     if (this.selectedTerrainRegionId !== null) this.renderer.deselectRegion(this.selectedTerrainRegionId)
     if (this.selectedDistrictId !== null) {
+      this._revertProvisionalDistrict(this.selectedDistrictId)
       this.renderer.deselectDistrict(this.selectedDistrictId)
       this.selectedDistrictId = null
       this.pendingDistrictType = null
@@ -633,14 +709,36 @@ export default class App {
     this.pendingLeadershipClass = 'Monarchy'
     this.renderer.previewDistrictType(this.selectedDistrictId, districtType)
     this._refreshDistrictPanel()
+    this._previewDistrictStreets()
   }
 
-  async _handleDistrictApply({ description, producedResource, consumedResources, residentialClass, LeadershipClass }) {
+  // Provisionally set the selected district's type/class on the server and render the
+  // resulting streets/plots/buildings — so the player sees them the moment a type (and,
+  // for Residential, a class) is chosen, before filling in resources or clicking Apply.
+  async _previewDistrictStreets() {
+    const districtId = this.selectedDistrictId
+    if (districtId === null || !this.pendingDistrictType) return
+    const type = this.pendingDistrictType
+    if (type === 'Residential' && !this.pendingResidentialClass) return   // need a class first
+    const residentialClass = type === 'Residential' ? this.pendingResidentialClass : null
+    const LeadershipClass = type === 'Leadership' ? this.pendingLeadershipClass : null
+    try {
+      const response = await GameAPI.previewDistrictType(districtId, type, residentialClass, LeadershipClass)
+      if (response.ok) {
+        const d = this.renderer.cityDistrictData?.districts?.find(x => x.id === districtId)
+        if (d) { d.assignedType = type; d.residentialClass = residentialClass; d.LeadershipClass = LeadershipClass }
+        this._renderCityGeometry(response.cityDistrictData)
+      } else { this.uiManager.showError(response.error) }
+    } catch (error) { this.uiManager.showError(error.message) }
+  }
+
+  // Apply = lock the district in. Validates + commits resources server-side.
+  async _handleDistrictApply({ description, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass }) {
     if (this.selectedDistrictId === null || !this.pendingDistrictType) return
     const districtId = this.selectedDistrictId
     const districtType = this.pendingDistrictType
     try {
-      const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass)
+      const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource)
       if (response.ok) {
         const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === districtId)
         if (district) {
@@ -650,6 +748,7 @@ export default class App {
           district.description = description
           district.producedResource = producedResource || null
           district.consumedResources = consumedResources || []
+          district.locked = true
         }
         if (response.resourceRegistry) {
           this.resourceRegistry = response.resourceRegistry
@@ -657,6 +756,8 @@ export default class App {
         }
         if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
         this.renderer.updateDistrictColor(districtId, districtType)
+        this._renderCityGeometry(response.cityDistrictData)
+        if (this.selectedDistrictId !== null) this.renderer.deselectDistrict(this.selectedDistrictId)
         this.selectedDistrictId = null
         this.pendingDistrictType = null
         this.pendingResidentialClass = null
@@ -667,6 +768,18 @@ export default class App {
         this._refreshDistrictPanel()
       }
     } catch (error) { this.uiManager.showError(error.message); this._refreshDistrictPanel() }
+  }
+
+  // Reseed the district being edited; leaves the resources/description form untouched
+  // (the panel is intentionally NOT rebuilt).
+  async _handleDistrictRegenerate() {
+    const districtId = this.selectedDistrictId
+    if (districtId === null) return
+    try {
+      const response = await GameAPI.regenerateDistrict(districtId)
+      if (response.ok) this._renderCityGeometry(response.cityDistrictData)
+      else this.uiManager.showError(response.error)
+    } catch (error) { this.uiManager.showError(error.message) }
   }
 
   // ── City edge ───────────────────────────────────────────────────────────────
@@ -691,6 +804,7 @@ export default class App {
           this.pendingTerrainAction = null
         }
         if (this.selectedDistrictId !== null) {
+          this._revertProvisionalDistrict(this.selectedDistrictId)
           this.renderer.deselectDistrict(this.selectedDistrictId)
           this.selectedDistrictId = null
           this.pendingDistrictType = null
@@ -859,75 +973,129 @@ export default class App {
 
   // ── State loading ───────────────────────────────────────────────────────────
 
+  // Solo entry point: load the existing game or start a fresh one. Used by the
+  // "Play Solo" button and as the fallback when no networked game exists.
+  async startSolo() {
+    await this.loadState()
+  }
+
   async loadState() {
     try {
       const state = await GameAPI.getState()
-      const regions = state.worldTerrainData?.regions || []
-
-      if (regions.length > 0) {
-        const setupStep = state.setupStep || 'Terrain'
-        this.gameState = state
-        this.currentPhase = setupStep
-        this.renderer.setTerrainData(
-          regions,
-          state.worldTerrainData.edges || {},
-          state.worldTerrainData.fineCells || [],
-          state.worldTerrainData.edgePoints || []
-        )
-
-        const cityData = state.cityDistrictData
-        if (setupStep !== 'Terrain' && cityData?.districts?.length > 0) {
-          this._finalizeTerrainDisplay()
-          this.renderer.setCityDistrictData(cityData)
-          this.renderer.setMode(setupStep === 'StreetSetup' ? 'streets' : 'city')
-          if (setupStep === 'StreetSetup' || setupStep === 'GuildCreation' || setupStep === 'Complete') {
-            this.renderer.clearDistrictLayer()
-            this.renderer.renderStreetGraph(cityData.streetGraph)
-            this.renderer.renderGutters(cityData.streetGraph)
-            this.renderer.renderBlocks(cityData.blocks)
-            this.renderer.renderPlots(cityData.plots, cityData)
-            this.renderer.drawBlockCenters(cityData.blocks)
-            this.renderer.drawPlotCenters(cityData.plots)
-            this.renderer.drawStreetSeeds(cityData.streetGraph)
-          } else {
-            this.renderer.drawDistrictCenters(cityData.districts)
-          }
-        } else {
-          this.renderer.clearStreetLayer()
-          this.renderer.clearDerivedLayers()
-          this.renderer.setCityDistrictData([])
-          this.renderer.setMode('terrain')
-        }
-
-        // Resource registry is session-only — do not restore from save
-        this.resourceRegistry = []
-        this.uiManager.updateResources([])
-
-        if (state.threats) {
-          this.threats = state.threats
-          this.renderer.renderThreats(this.threats, regions)
-          this.uiManager.updateThreats(this.threats)
-        }
-        if (state.tradingDestinations) {
-          this.tradingDestinations = state.tradingDestinations
-          this.renderer.renderTrades(this.tradingDestinations, state.worldTerrainData)
-        }
-        if (state.factions) {
-          this.factions = state.factions
-          this.uiManager.updateFactions(this.factions)
-        }
-        this.inputHandler.setTerrainData(state)
-        this.uiManager.showSetupPhase(setupStep)
-        this._focusCameraOnCity(regions)
-        this.eventBus.emit('SETUP_STARTED')
-        console.log(`Loaded existing game state at phase: ${setupStep}`)
-      } else {
+      if (!this._applyState(state)) {
         await this.startSetup()
       }
     } catch (error) {
       console.error('Failed to load state:', error)
       await this.startSetup()
     }
+  }
+
+  // Re-pull and re-render from the server without ever auto-initialising a game.
+  // Called on every live-sync nudge and after lobby/turn actions. Safe during the
+  // Lobby (no world yet) — it just refreshes the multiplayer overlay.
+  async refreshFromServer() {
+    try {
+      const state = await GameAPI.getState()
+      this.multiplayerUI?.update(state.multiplayer, state.setupStep)
+      // Solo play (no seat joined) drives rendering through the incremental action
+      // handlers, exactly as before — ignore live-sync nudges for rendering.
+      if (!config.seatKey) return
+      // Don't clobber an in-progress local edit (a pending selection/form) with a
+      // full re-render triggered by our own broadcast. Others (no pending edit) still
+      // reconcile live.
+      if (this._hasPendingEdit()) return
+      this._applyState(state)
+    } catch (error) {
+      console.error('Refresh failed:', error)
+    }
+  }
+
+  _hasPendingEdit() {
+    return this.selectedRegionId != null ||
+           this.selectedDistrictId != null ||
+           this.selectedTerrainRegionId != null ||
+           this.pendingTerrainAction != null ||
+           this.selectedEdgeIds.size > 0 ||
+           this.selectedCityEdgeIds.size > 0
+  }
+
+  // Render the full game from a state snapshot. Returns true if a world was rendered,
+  // false if the snapshot has no terrain yet (Lobby / pre-init) so callers can decide
+  // whether to initialise. Idempotent — safe to call on every sync.
+  _applyState(state) {
+    const regions = state.worldTerrainData?.regions || []
+    if (regions.length === 0) return false
+
+    const setupStep = state.setupStep || 'Terrain'
+    this.gameState = state
+    this.currentPhase = setupStep
+    this.renderer.setTerrainData(
+      regions,
+      state.worldTerrainData.edges || {},
+      state.worldTerrainData.fineCells || [],
+      state.worldTerrainData.edgePoints || []
+    )
+
+    const cityData = state.cityDistrictData
+    if (setupStep !== 'Terrain' && cityData?.districts?.length > 0) {
+      // Past District Setup → finished grassy-brown ground + hide the City-Edge overlay
+      // (the flag makes every renderCityEdges call a no-op, in all render paths).
+      const guildPhase = setupStep === 'GuildCreation' || setupStep === 'Complete'
+      this.renderer.setCityEdgesHidden(guildPhase)
+      this._finalizeTerrainDisplay()
+      this.renderer.setCityDistrictData(cityData)
+      this.renderer.setMode('city')
+      this.renderer.setFinishedGround(guildPhase)
+      this.renderer.drawDistrictCenters(cityData.districts)
+      // Streets/plots/buildings exist for any districts already typed (per-district gen).
+      if (cityData.streetGraph) this._renderCityGeometry(cityData)
+    } else {
+      this.renderer.clearStreetLayer()
+      this.renderer.clearDerivedLayers()
+      this.renderer.setCityDistrictData([])
+      this.renderer.setMode('terrain')
+    }
+
+    this.resourceRegistry = state.resourceRegistry || []
+    this.uiManager.updateResources(this.resourceRegistry)
+
+    if (state.threats) {
+      this.threats = state.threats
+      this.renderer.renderThreats(this.threats, regions)
+      this.uiManager.updateThreats(this.threats)
+    }
+    if (state.tradingDestinations) {
+      this.tradingDestinations = state.tradingDestinations
+      this.renderer.renderTrades(this.tradingDestinations, state.worldTerrainData)
+    }
+    if (state.factions) {
+      this.factions = state.factions
+      this.uiManager.updateFactions(this.factions)
+    }
+    this.inputHandler.setTerrainData(state)
+    this.uiManager.showSetupPhase(setupStep)
+    // In Guild Setup the city is final — disable terrain/district-edge hover & select.
+    this.renderer.guildSetupActive = (setupStep === 'GuildCreation' || setupStep === 'Complete')
+    this.guilds = state.guilds || []
+    if (setupStep === 'GuildCreation' || setupStep === 'Complete') {
+      this.uiManager.guildPanel.setData({
+        guild: this._myGuild(),
+        factions: this.factions,
+        districts: state.cityDistrictData?.districts || [],
+      })
+      this.uiManager.updateGuild(this._myGuild())
+    } else {
+      this.uiManager.guildPanel.reset()
+    }
+    // Focus the camera and announce setup only on the first render — not on every
+    // live-sync re-render, which would yank the camera on each remote change.
+    if (!this._firstRenderDone) {
+      this._firstRenderDone = true
+      this._focusCameraOnCity(regions)
+      this.eventBus.emit('SETUP_STARTED')
+    }
+    return true
   }
 
   _finalizeTerrainDisplay() {
@@ -967,6 +1135,8 @@ export default class App {
         this.threats = []
         this.tradingDestinations = []
         this.factions = []
+        this.guilds = []
+        this.uiManager.guildPanel?.reset()
         this.uiManager.updateResources([])
         this.uiManager.updateFactions([])
         this.uiManager.updateThreats([])
@@ -975,6 +1145,8 @@ export default class App {
         this.renderer.clearAllDebugObjects()
         this.renderer.setCityDistrictData([])
         this.renderer.setMode('terrain')
+        this.renderer.guildSetupActive = false
+        this.renderer.setCityEdgesHidden(false)
         this.renderer.setTerrainData(response.regions, response.edges || {}, response.fineCells || [], response.edgePoints || [])
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import PolylineRenderer from './utils/PolylineRenderer.js'
+import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, centroid } from './utils/renderUtils.js'
 
 export const DISTRICT_COLORS = {
@@ -45,6 +46,8 @@ export default class DistrictRenderer {
     this.districtMeshes = new Map()
     this.cityEdgeMeshes = new Map()
     this.cityPolylines = null
+    this.hideCityEdges = false   // Guild Setup: city is final, hide the City-Edge overlay
+    this.wallTowers = new FeatureManager(scene)   // wallTower.glb at wall corners
     this.wallAnimations = new Map()
     this.selectedCityEdgeIds = new Set()
     this.selectedDistrictId = null
@@ -140,7 +143,7 @@ export default class DistrictRenderer {
     if (!rawPoly || rawPoly.length < 3) return null
 
     const polygon = [...rawPoly]
-    const vertices = polygon.map(v => [v.x, 0.07, v.y]).flat()
+    const vertices = polygon.map(v => [v.x, 0.05, v.y]).flat()   // flush with terrain (see TerrainRenderer)
 
     const triangles = []
     for (let i = 1; i < polygon.length - 1; i++) {
@@ -174,6 +177,19 @@ export default class DistrictRenderer {
     this.wallAnimations.clear()
     this.selectedCityEdgeIds.clear()
 
+    // Guild Setup: suppress non-wall boundary polylines (tan caps, district edge
+    // highlights) but keep Wall meshes and their towers — they are physical structures.
+    if (this.hideCityEdges) {
+      for (const [edgeId, edge] of Object.entries(edges)) {
+        if (edge.assignedType === 'Wall') {
+          const mesh = this.buildWallMesh(edge, edgeId)
+          if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
+        }
+      }
+      this._renderWallTowers(edges)
+      return
+    }
+
     const nonWallEdges = {}
     for (const [edgeId, edge] of Object.entries(edges)) {
       if (edge.assignedType === 'Mud') continue
@@ -185,10 +201,70 @@ export default class DistrictRenderer {
       }
     }
 
-    this.cityPolylines = new PolylineRenderer(this.scene, { thickness: 0.0875, stripY: 0.075, fillY: 0.08 })
+    this.cityPolylines = new PolylineRenderer(this.scene, { thickness: 0.0875, stripY: 0.077, fillY: 0.08 })
     this.cityPolylines.render(nonWallEdges, this.cityEdgePointsById,
       (edge) => edge.assignedType ? DISTRICT_COLORS.get(edge.assignedType) : DISTRICT_COLORS.unassigned
     )
+
+    this._renderWallTowers(edges)
+  }
+
+  // Place a wallTower.glb at each end of a wall and at every district corner /
+  // junction along its length (wall-polyline endpoints and real bends; collinear
+  // samples are skipped). Each tower is rotated to face the AVERAGE of the
+  // outward normals of the wall segments meeting at it — one wall → perpendicular
+  // to that wall; two walls → the bisector. Shared corners dedupe to one tower.
+  _renderWallTowers(edges) {
+    this.wallTowers.clear()
+    const districtById = new Map((this.cityDistrictData?.districts || []).map(d => [d.id, d]))
+    const towers = new Map()   // posKey → { x, y, nx, ny }  (accumulated outward normals)
+
+    const accumulate = (T, seed, neighbours) => {
+      const key = `${Math.round(T.x * 100)},${Math.round(T.y * 100)}`
+      let e = towers.get(key)
+      if (!e) { e = { x: T.x, y: T.y, nx: 0, ny: 0 }; towers.set(key, e) }
+      for (const Q of neighbours) {
+        const dx = Q.x - T.x, dy = Q.y - T.y
+        const len = Math.hypot(dx, dy)
+        if (len < 1e-9) continue
+        let nx = -dy / len, ny = dx / len               // wall normal (perpendicular)
+        if (seed) {                                      // orient away from the district interior
+          const mx = (T.x + Q.x) / 2, my = (T.y + Q.y) / 2
+          if (nx * (mx - seed.x) + ny * (my - seed.y) < 0) { nx = -nx; ny = -ny }
+        }
+        e.nx += nx; e.ny += ny
+      }
+    }
+
+    for (const edge of Object.values(edges || {})) {
+      if (edge.assignedType !== 'Wall') continue
+      const ids = edge.pointIds || []
+      if (ids.length < 2) continue
+      const seed = districtById.get(edge.districtA)?.seedPoint
+      const pts = ids.map(i => this.cityEdgePointsById.get(i))
+      for (let k = 0; k < pts.length; k++) {
+        const p = pts[k], prev = pts[k - 1], next = pts[k + 1]
+        if (!p) continue
+        let isTower = (k === 0 || k === pts.length - 1)
+        if (!isTower && prev && next) {
+          const d1x = p.x - prev.x, d1y = p.y - prev.y, d2x = next.x - p.x, d2y = next.y - p.y
+          const l1 = Math.hypot(d1x, d1y), l2 = Math.hypot(d2x, d2y)
+          if (l1 > 1e-6 && l2 > 1e-6 && (d1x * d2x + d1y * d2y) / (l1 * l2) <= 0.97) isTower = true
+        }
+        if (!isTower) continue
+        const neighbours = []
+        if (prev) neighbours.push(prev)
+        if (next) neighbours.push(next)
+        accumulate(p, seed, neighbours)
+      }
+    }
+
+    const positions = []
+    for (const e of towers.values()) {
+      const rotY = (Math.hypot(e.nx, e.ny) > 1e-9) ? Math.atan2(e.nx, e.ny) : 0  // local +Z → avg normal
+      positions.push({ x: e.x, y: e.y, rotY })
+    }
+    if (positions.length) this.wallTowers.spawnTowers(positions, 0.075)   // wall base height
   }
 
   buildWallMesh(edge, edgeId) {
@@ -265,9 +341,11 @@ export default class DistrictRenderer {
   }
 
   setModeVisibility(inStreets) {
+    // District boundary polylines are replaced by the street graph in street mode.
     this.cityPolylines?.edgeMeshes.forEach(m => { m.visible = !inStreets })
     this.cityPolylines?.junctionMeshes.forEach(m => { m.visible = !inStreets })
-    this.cityEdgeMeshes.forEach(m => { m.visible = !inStreets })
+    // Walls (and their towers) are physical structures — they stay visible in
+    // street mode, sitting on the road generated at their base.
   }
 
   clearDistrictLayer() {
@@ -352,6 +430,7 @@ export default class DistrictRenderer {
         this.cityEdgeMeshes.set(edgeId, group)
         this.wallAnimations.set(edgeId, { object: group, frame: 0 })
       }
+      this._renderWallTowers(this.cityDistrictData?.edges)
       return
     }
     this.cityPolylines?.updateBaseColor(edgeId, DISTRICT_COLORS.get(type) || DISTRICT_COLORS.unassigned)
@@ -389,10 +468,35 @@ export default class DistrictRenderer {
     }
   }
 
+  // Faction-hover highlight of a district. Uses its OWN state (not hoveredDistrictId)
+  // so transient map-hover clearing (clearHover) never wipes it — only
+  // clearFactionDistrict() reverts it.
   highlightFactionDistrict(districtId) {
-    this.hoveredDistrictId = districtId
+    this.clearFactionDistrict()
     const mesh = this.districtMeshes.get(districtId)
-    if (mesh) { mesh.material.color.setHex(0xffffff); mesh.material.emissive?.setHex(0xffffff); mesh.material.emissiveIntensity = 0.35 }
+    if (!mesh) return
+    this._factionDistrictId = districtId
+    this._factionDistrictPrev = {
+      color: mesh.material.color.getHex(),
+      emissive: mesh.material.emissive?.getHex(),
+      ei: mesh.material.emissiveIntensity,
+    }
+    mesh.material.color.setHex(0xffffff)
+    mesh.material.emissive?.setHex(0xffffff)
+    mesh.material.emissiveIntensity = 0.35
+  }
+
+  clearFactionDistrict() {
+    if (this._factionDistrictId == null) return
+    const mesh = this.districtMeshes.get(this._factionDistrictId)
+    const prev = this._factionDistrictPrev
+    if (mesh && prev) {
+      mesh.material.color.setHex(prev.color)
+      mesh.material.emissive?.setHex(prev.emissive ?? prev.color)
+      mesh.material.emissiveIntensity = prev.ei
+    }
+    this._factionDistrictId = null
+    this._factionDistrictPrev = null
   }
 
   // ── Hit testing ─────────────────────────────────────────────────────────────

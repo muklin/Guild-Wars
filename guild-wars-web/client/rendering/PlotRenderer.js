@@ -2,11 +2,23 @@ import * as THREE from 'three'
 import { DISTRICT_COLORS } from './DistrictRenderer.js'
 import { STREET_COLORS } from './StreetRenderer.js'
 import BuildingRenderer from './utils/BuildingRenderer.js'
+import { posHash } from './utils/renderUtils.js'
 
 // Fill material params. PLOT matches plot fills; STREET matches the street
 // surface exactly (see StreetRenderer) so city squares blend into the streets.
 const PLOT_FILL_MAT   = { roughness: 0.5, emissiveIntensity: 0.15 }
 const STREET_FILL_MAT = { roughness: 0.6, emissiveIntensity: 0.5 }
+
+// Fences: a share of plots are "fenced" — a low, light-brown wall along every
+// boundary edge that does NOT face a street.
+const FENCE_FRACTION = 0.5      // share of (non-square) plots that are fenced
+const FENCE_HEIGHT   = 0.03     // wall height in world units (low)
+const FENCE_BASE_Y   = 0.0755   // just above the plot fill (0.075)
+const FENCE_COLOR    = 0xc2a878 // light brown
+
+// Once District Setup is finished, plot bases are recoloured a uniform grassy brown
+// (instead of per-district colours) for the "built city" look — a touch greener.
+const GRASSY_BROWN   = 0x838f55
 
 export default class PlotRenderer {
   constructor(scene, originalMaterials) {
@@ -26,6 +38,11 @@ export default class PlotRenderer {
     this._blockById = new Map()
     this._hoveredBlockMesh = null
     this.hoveredBlockId = null
+
+    this.finishedGround = false   // true after District Setup → plot bases go grassy brown
+    this._plotFills = []          // { mesh, districtId, districtColor, seed } for recolour/highlight
+    this._squareFills = []        // { mesh, districtId } — paved squares, lightened on faction hover
+    this._plotHighlight = []      // materials lightened on faction hover (plots + squares)
   }
 
   setDebugVisible(show) {
@@ -128,6 +145,10 @@ export default class PlotRenderer {
       return DISTRICT_COLORS.get(key) || DISTRICT_COLORS.Neutral
     }
 
+    // Base colour of a non-square plot/underlay: per-district during setup, uniform
+    // grassy brown once finished. The per-district colour is remembered for hover.
+    const plotBase = (districtId) => this.finishedGround ? GRASSY_BROWN : getColor(districtId)
+
     // District-coloured underlay beneath the plots. Plots are already solid
     // district colour, so this fills the thin slivers left where the no-road-
     // crossing trim removes a plot spike — showing district colour, not the
@@ -135,18 +156,32 @@ export default class PlotRenderer {
     for (const block of (districtData?.blocks || [])) {
       const poly = block.blockCorners
       if (!poly?.length || block.blockType === 'square') continue
-      const mesh = this._makeFill(poly, getColor(block.districtId), 0.071, PLOT_FILL_MAT)
-      if (mesh) { this.scene.add(mesh); this.plotMeshes.push(mesh) }
+      const seed = this._polySeed(poly)
+      const mesh = this._makeFill(poly, this._jitterColor(plotBase(block.districtId), seed), 0.071, PLOT_FILL_MAT)
+      if (mesh) {
+        mesh.userData = { districtId: block.districtId }
+        this._plotFills.push({ mesh, districtId: block.districtId, districtColor: getColor(block.districtId), seed })
+        this.scene.add(mesh); this.plotMeshes.push(mesh)
+      }
     }
 
     for (const plot of plots) {
       // City squares are paved street surface: render with the street colour,
       // street material and street height so the block seam is invisible.
       const isSquare = plot.blockType === 'square'
-      const color = isSquare ? this._squareColor(plot, STREET_PRIORITY) : getColor(plot.districtId)
+      const seed = this._polySeed(plot.blockCorners)
+      // Non-square plots get a seeded ±5% colour jitter for ground variation.
+      const color = isSquare ? this._squareColor(plot, STREET_PRIORITY) : this._jitterColor(plotBase(plot.districtId), seed)
       const mesh = isSquare
         ? this._makeFill(plot.blockCorners, color, 0.075, STREET_FILL_MAT)
-        : this._makeFill(plot.blockCorners, color, 0.072, PLOT_FILL_MAT)
+        : this._makeFill(plot.blockCorners, color, 0.073, PLOT_FILL_MAT)
+
+      if (mesh && !isSquare) {
+        mesh.userData = { districtId: plot.districtId }
+        this._plotFills.push({ mesh, districtId: plot.districtId, districtColor: getColor(plot.districtId), seed })
+      } else if (mesh && isSquare) {
+        this._squareFills.push({ mesh, districtId: plot.districtId })
+      }
 
       if (mesh) {
         if (this.showDebug) {
@@ -158,37 +193,90 @@ export default class PlotRenderer {
       }
     }
 
-    const lineVerts = []
+    // Fences: each plot is deterministically fenced or not. A fenced plot gets a low
+    // light-brown wall along every boundary edge that does NOT face a street (street-
+    // facing sides stay open). All walls merge into one mesh.
+    const top = FENCE_BASE_Y + FENCE_HEIGHT
+    const fenceVerts = []
     for (const plot of plots) {
       if (plot.blockType === 'square') continue
       const poly = plot.blockCorners
       if (!poly?.length) continue
-      // Skip street-facing edges: drawing them at this height paints the plot
-      // boundary over the road (most visible wrapping a dead-end). Boundaries
-      // are drawn only between plots, so they respect the street.
+      // Fenced decision seeded by plot position (not the unstable plot id) so it stays
+      // put when neighbouring districts change.
+      let fcx = 0, fcy = 0
+      for (const v of poly) { fcx += v.x; fcy += v.y }
+      if (this._rand(posHash(fcx / poly.length, fcy / poly.length)) >= FENCE_FRACTION) continue
       const streetIdx = new Set((plot.streetEdges || []).map(e => e.index))
       for (let i = 0; i < poly.length; i++) {
-        if (streetIdx.has(i)) continue
+        if (streetIdx.has(i)) continue   // no fence on street-facing sides
         const a = poly[i], b = poly[(i + 1) % poly.length]
-        lineVerts.push(a.x, 0.077, a.y, b.x, 0.077, b.y)
+        // Vertical wall quad (two triangles) along the edge.
+        fenceVerts.push(
+          a.x, FENCE_BASE_Y, a.y,  b.x, FENCE_BASE_Y, b.y,  b.x, top, b.y,
+          a.x, FENCE_BASE_Y, a.y,  b.x, top, b.y,           a.x, top, a.y,
+        )
       }
     }
-    if (lineVerts.length > 0) {
+    if (fenceVerts.length > 0) {
       const geom = new THREE.BufferGeometry()
-      geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lineVerts), 3))
-      const lines = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0x00cc44 }))
-      this.scene.add(lines)
-      this.plotMeshes.push(lines)
+      geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(fenceVerts), 3))
+      geom.computeVertexNormals()
+      const mat = new THREE.MeshStandardMaterial({ color: FENCE_COLOR, roughness: 0.9, metalness: 0, side: THREE.DoubleSide, emissive: FENCE_COLOR, emissiveIntensity: 0.12 })
+      const mesh = new THREE.Mesh(geom, mat)
+      this.scene.add(mesh)
+      this.plotMeshes.push(mesh)
     }
 
     // Street-facing buildings, one per plot in its front half.
-    this.buildingRenderer.render(this.scene, plots)
+    this.buildingRenderer.render(this.scene, plots, districtData)
   }
 
   clearPlotLayer() {
     for (const m of this.plotMeshes) this.scene.remove(m)
     this.plotMeshes = []
+    this._plotFills = []
+    this._squareFills = []
+    this._plotHighlight = []
     this.buildingRenderer.clear(this.scene)
+  }
+
+  // ── Finished-ground recolour + faction-hover highlight ───────────────────────
+
+  // Switch plot bases between per-district colours (during setup) and a uniform
+  // grassy brown (once District Setup is complete). Recolours existing fills now.
+  setFinishedGround(finished) {
+    this.finishedGround = !!finished
+    this.clearDistrictPlotHighlight()
+    for (const f of this._plotFills) {
+      const c = this._jitterColor(this.finishedGround ? GRASSY_BROWN : f.districtColor, f.seed ?? 0)
+      f.mesh.material.color.setHex(c)
+      f.mesh.material.emissive?.setHex(c)
+    }
+  }
+
+  // Lighten one district's plot bases AND its paved squares (the visible "ground
+  // plane") on faction hover. Reverted by clearDistrictPlotHighlight().
+  highlightDistrictPlots(districtId) {
+    this.clearDistrictPlotHighlight()
+    if (districtId === undefined || districtId === null) return
+    const white = new THREE.Color(0xffffff)
+    const lighten = (mesh) => {
+      const mat = mesh.material
+      this._plotHighlight.push({ mat, color: mat.color.getHex(), emissive: mat.emissive?.getHex() })
+      mat.color.lerp(white, 0.45)
+      mat.emissive?.lerp(white, 0.45)
+    }
+    for (const f of this._plotFills)   if (f.districtId === districtId) lighten(f.mesh)
+    for (const s of this._squareFills) if (s.districtId === districtId) lighten(s.mesh)
+  }
+
+  clearDistrictPlotHighlight() {
+    for (const h of this._plotHighlight) {
+      h.mat.color.setHex(h.color)
+      if (h.emissive !== undefined && h.mat.emissive) h.mat.emissive.setHex(h.emissive)
+    }
+    this._plotHighlight = []
   }
 
   // ── Debug ───────────────────────────────────────────────────────────────────
@@ -250,6 +338,32 @@ export default class PlotRenderer {
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────
+
+  // Deterministic [0,1) RNG from a seed (stable across rebuilds) — used to pick
+  // which plots are fenced.
+  _rand(seed) {
+    let s = (seed * 2654435761) >>> 0
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+    return (s >>> 0) / 0x100000000
+  }
+
+  // Stable per-polygon seed from its centroid (independent of unstable plot ids).
+  _polySeed(poly) {
+    if (!poly?.length) return 0
+    let cx = 0, cy = 0
+    for (const v of poly) { cx += v.x; cy += v.y }
+    return posHash(cx / poly.length, cy / poly.length)
+  }
+
+  // Apply a seeded ±5% per-channel jitter to a colour, for ground variation.
+  _jitterColor(hex, seed) {
+    const ch = (shift, i) => {
+      const v = (hex >> shift) & 255
+      const f = 0.95 + this._rand(seed * 31 + i) * 0.10   // [0.95, 1.05]
+      return Math.max(0, Math.min(255, Math.round(v * f)))
+    }
+    return (ch(16, 1) << 16) | (ch(8, 2) << 8) | ch(0, 3)
+  }
 
   // Colour for a city-square plot: the street colour of the majority of its
   // surrounding street edges. Ties broken by street priority (Stone > Brick > Mud).

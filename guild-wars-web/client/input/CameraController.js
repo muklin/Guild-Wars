@@ -1,9 +1,10 @@
 import * as THREE from 'three'
 
 export default class CameraController {
-  constructor(camera, renderer) {
+  constructor(camera, renderer, onDirty) {
     this.camera = camera
     this.renderer = renderer
+    this._onDirty = onDirty ?? (() => {})
     this.worldSize = 50
 
     // Orbital parameters (spherical coordinates)
@@ -28,6 +29,7 @@ export default class CameraController {
 
     // Keyboard state
     this.keys = {}
+    this._enabled = true
 
     this.setupEventListeners()
     this.updateCameraPosition()
@@ -47,6 +49,11 @@ export default class CameraController {
     return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
   }
 
+  setEnabled(on) {
+    this._enabled = on
+    if (!on) this.keys = {}   // clear held keys so nothing moves when re-enabled
+  }
+
   setHomePosition(x, z) {
     this.homeX = x
     this.homeZ = z
@@ -59,7 +66,7 @@ export default class CameraController {
   }
 
   onKeyDown(e) {
-    if (this._isTyping()) return
+    if (!this._enabled || this._isTyping()) return
     const rotationStep = Math.PI / 2
     if (e.code === 'KeyD' && e.shiftKey) return
 
@@ -82,11 +89,13 @@ export default class CameraController {
       this.camera.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.camera.zoom * 1.15))
       this.camera.updateProjectionMatrix()
       this.enforceWorldBounds()
+      this._onDirty()
       e.preventDefault()
     } else if (e.key === '[') {
       this.camera.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.camera.zoom / 1.15))
       this.camera.updateProjectionMatrix()
       this.enforceWorldBounds()
+      this._onDirty()
       e.preventDefault()
     } else {
       this.keys[e.code.toLowerCase()] = true
@@ -95,21 +104,24 @@ export default class CameraController {
   }
 
   onKeyUp(e) {
-    if (this._isTyping()) return
+    if (!this._enabled || this._isTyping()) return
     if (e.code === 'KeyD' && e.shiftKey) return
     this.keys[e.code.toLowerCase()] = false
   }
 
   onMouseWheel(e) {
+    if (!this._enabled) return
     e.preventDefault()
     const zoomFactor = 1.15
     const direction = e.deltaY < 0 ? zoomFactor : 1 / zoomFactor
     this.camera.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.camera.zoom * direction))
     this.camera.updateProjectionMatrix()
     this.enforceWorldBounds()
+    this._onDirty()
   }
 
   onMouseDown(e) {
+    if (!this._enabled) return
     if (e.button === 1 || e.button === 2) {
       this.isPanning = true
       this.gazeLockWorldPoint = this.raycastToGroundPlane(e.clientX, e.clientY)
@@ -191,11 +203,17 @@ export default class CameraController {
     const b = this.getVisibleGroundBounds()
     if (!b) return
     const w = this.worldSize
+    // Allow panning past each map edge by up to half the visible extent, so an
+    // edge or boundary terrain can be dragged out from under the fixed side/top
+    // panels into the interactable centre of the screen (and so the map edge
+    // itself is reachable). Scales with zoom, so it's just enough at any level.
+    const mx = (b.maxX - b.minX) * 0.5
+    const mz = (b.maxZ - b.minZ) * 0.5
     let dx = 0, dz = 0
-    if      (b.minX < 0) dx =  -b.minX
-    else if (b.maxX > w) dx = w - b.maxX
-    if      (b.minZ < 0) dz =  -b.minZ
-    else if (b.maxZ > w) dz = w - b.maxZ
+    if      (b.minX < -mx)    dx = -mx - b.minX
+    else if (b.maxX > w + mx) dx = w + mx - b.maxX
+    if      (b.minZ < -mz)    dz = -mz - b.minZ
+    else if (b.maxZ > w + mz) dz = w + mz - b.maxZ
     if (dx !== 0 || dz !== 0) {
       this.targetPosition.x += dx
       this.targetPosition.z += dz
@@ -238,8 +256,8 @@ export default class CameraController {
   }
 
   update() {
-    if (this._isTyping()) return
-    const moveSpeed = 0.5
+    if (!this._enabled || this._isTyping()) return
+    const moveSpeed = 2.0 / this.camera.zoom   // slower when zoomed in, faster when zoomed out
     let moved = false
 
     const ca = Math.cos(this.azimuth)

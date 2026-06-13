@@ -1,0 +1,41 @@
+{
+  "name": "guild-wars-electron",
+  "version": "0.1.0",
+  "description": "Guild Wars standalone thin client (connects to a host server).",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^42.3.3",
+    "electron-builder": "^26.15.2"
+  },
+  "build": {
+    "appId": "com.guildwars.client",
+    "productName": "Guild Wars",
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist",
+        "to": "dist"
+      },
+      {
+        "from": "../resources",
+        "to": "resources"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}

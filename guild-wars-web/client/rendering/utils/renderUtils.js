@@ -1,5 +1,17 @@
 // Shared geometry utility functions used across renderer classes.
 
+// Stable integer seed from a world position (x, y). Used to make procedural building
+// decisions a function of WHERE a plot is, not its (globally unstable) plot id — so a
+// locked district's buildings stay put when a neighbouring district is added/changed.
+// Quantised to ~1mm to absorb negligible float drift.
+export function posHash(x, y) {
+  const xi = Math.round(x * 1000) | 0
+  const yi = Math.round(y * 1000) | 0
+  let h = (Math.imul(xi, 73856093) ^ Math.imul(yi, 19349663)) >>> 0
+  h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15
+  return h >>> 0
+}
+
 // Ray-cast point-in-polygon test using the crossing-number algorithm.
 export function pointInPolygon(x, y, polygon) {
   let inside = false
