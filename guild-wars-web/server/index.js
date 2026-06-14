@@ -697,6 +697,23 @@ app.delete('/api/saves/:name', async (req, res) => {
   }
 })
 
+// POST /api/dev/regen-preview — re-run building generation and return fresh data
+// for the block preview page (blocks 10, 13, 14). Dev only — no auth required.
+const PREVIEW_BLOCK_IDS = new Set([10, 13, 14])
+app.post('/api/dev/regen-preview', async (req, res) => {
+  try {
+    setupPhase._generateBuildings()
+    await autoSave()
+    const cityData = gameStateManager.cityDistrictData
+    const blocks = (cityData.blocks || []).filter(b => PREVIEW_BLOCK_IDS.has(b.id))
+    const plots  = (cityData.plots  || []).filter(p => PREVIEW_BLOCK_IDS.has(p.blockId))
+    res.json({ ok: true, blocks, plots, landmarkBuildings: cityData.landmarkBuildings || [] })
+  } catch (e) {
+    console.error('regen-preview error:', e)
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
 // Fallback - serve index.html for SPA
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../index.html'))

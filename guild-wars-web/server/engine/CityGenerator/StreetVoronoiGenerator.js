@@ -2,6 +2,12 @@ import DelaunayTriangulator from '../voronoi/DelaunayTriangulator.js'
 import Point from '../voronoi/Point.js'
 import { clipToPolygon, triangleCenter, generateGridSeeds, pip, distToSegSq, distToPolygonBoundary, projectToPolygon, segIntersect } from '../voronoi/VoronoiUtils.js'
 
+// Stable deterministic [0,1) value based on world position — used for gate/bridge probability.
+function posHash(x, y) {
+  const h = Math.sin(x * 127.1 + y * 311.7) * 43758.5453
+  return h - Math.floor(h)
+}
+
 const SNAP_THRESHOLD = 0.25   // world units — near-duplicate node merge
 const BOUNDARY_INTERVAL = 1.0 // segment length along city boundary edges
 export const STREET_HALF_WIDTH = 0.04375  // half road width — must match WorldRenderer thickness / 2
@@ -9,7 +15,7 @@ const MIN_STUB_ANGLE_DEG = 30  // dead-end stubs at <this angle to a neighbor ar
 const MIN_COMPONENT_NODES = 3  // disconnected components below this many nodes are deleted
 const COLLINEAR_NODE_MARGIN = 0.4  // a node within this perpendicular distance of an edge interior is absorbed onto that edge
 
-const STREET_PRIORITY = { Stone: 2, Brick: 1, Mud: 0 }
+const STREET_PRIORITY = { Wall: 4, Canal: 3, Stone: 2, Brick: 1, Mud: 0 }
 
 function streetTypeForDistrict(district) {
   if (!district) return 'Mud'
@@ -444,11 +450,18 @@ function buildJunctions(streetNodes, streetEdges) {
   const r = STREET_HALF_WIDTH
   const nodeById = new Map(streetNodes.map(n => [n.id, n]))
 
-  // Build adjacency: nodeId → [{ roadId, toId, type, districtId }]
+  // Build adjacency: nodeId → [{ roadId, toId, type, districtId, left?, right?, edgeKind? }]
   const adj = new Map(streetNodes.map(n => [n.id, []]))
   for (const e of streetEdges) {
-    adj.get(e.nodeA)?.push({ roadId: e.id, toId: e.nodeB, type: e.type, districtId: e.districtId })
-    adj.get(e.nodeB)?.push({ roadId: e.id, toId: e.nodeA, type: e.type, districtId: e.districtId })
+    const base = { roadId: e.id, type: e.type }
+    if (e.left !== undefined) {
+      // Boundary edge — carries left/right district ids and optional edgeKind
+      adj.get(e.nodeA)?.push({ ...base, toId: e.nodeB, left: e.left, right: e.right, edgeKind: e.edgeKind })
+      adj.get(e.nodeB)?.push({ ...base, toId: e.nodeA, left: e.left, right: e.right, edgeKind: e.edgeKind })
+    } else {
+      adj.get(e.nodeA)?.push({ ...base, toId: e.nodeB, districtId: e.districtId })
+      adj.get(e.nodeB)?.push({ ...base, toId: e.nodeA, districtId: e.districtId })
+    }
   }
 
   const junctions = []
@@ -457,16 +470,30 @@ function buildJunctions(streetNodes, streetEdges) {
   for (const node of streetNodes) {
     const neighbors = adj.get(node.id) || []
 
-    // Junction type/districtId = highest-priority adjacent edge
-    let jType = 'Mud', jDistrictId = null
+    // Junction type = highest-priority adjacent edge.
+    // Boundary info (left/right/edgeKind) is collected separately — it must not be
+    // overwritten when a higher-priority interior edge wins the type contest.
+    let jType = 'Mud', jDistrictId = null, jLeft, jRight, jEdgeKind
     for (const nb of neighbors) {
       if ((STREET_PRIORITY[nb.type] ?? 0) >= (STREET_PRIORITY[jType] ?? 0)) {
         jType = nb.type
         jDistrictId = nb.districtId
       }
+      if (nb.left !== undefined && jLeft === undefined) {
+        jLeft = nb.left
+        jRight = nb.right
+        jEdgeKind = nb.edgeKind
+      }
     }
 
-    const junction = { id: node.id, x: node.x, y: node.y, districtId: jDistrictId, type: jType, connections: [] }
+    const junction = { id: node.id, x: node.x, y: node.y, type: jType, connections: [] }
+    if (jLeft !== undefined) {
+      junction.left = jLeft
+      junction.right = jRight ?? null
+      if (jEdgeKind !== undefined) junction.edgeKind = jEdgeKind
+    } else {
+      junction.districtId = jDistrictId
+    }
 
     // Compute unit outgoing vectors for each neighbor
     const edgeData = []
@@ -476,7 +503,14 @@ function buildJunctions(streetNodes, streetEdges) {
       const dx = other.x - node.x, dy = other.y - node.y
       const len = Math.sqrt(dx * dx + dy * dy)
       if (len < 1e-10) continue
-      edgeData.push({ roadId: nb.roadId, toId: nb.toId, type: nb.type, districtId: nb.districtId, ux: dx / len, uy: dy / len })
+      const ed = { roadId: nb.roadId, toId: nb.toId, type: nb.type, ux: dx / len, uy: dy / len }
+      if (nb.left !== undefined) {
+        ed.left = nb.left; ed.right = nb.right ?? null
+        if (nb.edgeKind !== undefined) ed.edgeKind = nb.edgeKind
+      } else {
+        ed.districtId = nb.districtId
+      }
+      edgeData.push(ed)
     }
 
     // Sort by angle (matches PolylineRenderer._computeJunctionData sort)
@@ -513,14 +547,21 @@ function buildJunctions(streetNodes, streetEdges) {
     // trueLeft  of edge i = slots[i].q1         (left offset at this node along edge i)
     // trueRight of edge i = slots[(i-1+n)%n].q2 (right offset, from the previous slot)
     for (let i = 0; i < n; i++) {
-      junction.connections.push({
+      const conn = {
         toId:        edgeData[i].toId,
         roadId:      edgeData[i].roadId,
         type:        edgeData[i].type,
-        districtId:  edgeData[i].districtId,
         gutterLeft:  slots[i].q1,
         gutterRight: slots[(i - 1 + n) % n].q2,
-      })
+      }
+      if (edgeData[i].left !== undefined) {
+        conn.left = edgeData[i].left
+        conn.right = edgeData[i].right ?? null
+        if (edgeData[i].edgeKind !== undefined) conn.edgeKind = edgeData[i].edgeKind
+      } else {
+        conn.districtId = edgeData[i].districtId
+      }
+      junction.connections.push(conn)
     }
 
     junctions.push(junction)
@@ -547,7 +588,22 @@ export default class StreetVoronoiGenerator {
       const params = getDistrictParams(district)
       const metric = params.metric ?? 'euclidean'
 
-      const perimSeeds = this._samplePerimeter(district.polygon, params.street_spacing)
+      // Collect Wall/Canal/MainRoad boundary segments adjacent to this district so
+      // _samplePerimeter skips intermediate seeds on them. The boundary-node loop
+      // already places fixed nodes there at BOUNDARY_INTERVAL; extra perimeter seeds
+      // would add unintended junctions on the boundary chain.
+      const fixedBoundarySegments = []
+      for (const cityEdge of Object.values(cityEdges || {})) {
+        const isTypedBoundary = cityEdge.assignedType === 'Wall' || cityEdge.assignedType === 'Canal' || cityEdge.assignedType === 'MainRoad'
+        if (!isTypedBoundary) continue
+        if (cityEdge.districtA !== district.id && cityEdge.districtB !== district.id) continue
+        const pts = (cityEdge.pointIds || []).map(id => edgePointById.get(id)).filter(Boolean)
+        for (let i = 0; i < pts.length - 1; i++) {
+          fixedBoundarySegments.push([pts[i], pts[i + 1]])
+        }
+      }
+
+      const perimSeeds = this._samplePerimeter(district.polygon, params.street_spacing, fixedBoundarySegments)
       // Per-district street seed (frozen at lock); falls back to the legacy global form.
       const districtSeed = district.streetSeed ?? (district.id ^ epochSeed)
       const intSeeds   = generateGridSeeds(district.polygon, params.block_density, params.xyRatio ?? 1.0, 0.3, districtSeed)
@@ -719,28 +775,39 @@ export default class StreetVoronoiGenerator {
         }
       }
 
-      // Edge type: Mud boundaries take the better adjacent street type. Walls sit
-      // on a Stone road (the 3D wall is drawn separately, so the base is walkable).
-      // Other non-Mud boundaries (MainRoad, Canal, Docks) keep their city edge type.
+      // Edge type: Mud/untyped → better of the two adjacent district street types.
+      // Wall → 'Wall' type (rendered as wall mesh, not a road).
+      // MainRoad → 'Stone' (it is a road).
+      // Canal/Docks and any other named type → keep their city edge type.
       let boundaryType
       if (!cityEdge.assignedType || cityEdge.assignedType === 'Mud') {
         const typeA = streetTypeForDistrict(districtById.get(cityEdge.districtA))
         const typeB = streetTypeForDistrict(districtById.get(cityEdge.districtB))
         boundaryType = betterStreetType(typeA, typeB)
-      } else if (cityEdge.assignedType === 'Wall' || cityEdge.assignedType === 'MainRoad') {
+      } else if (cityEdge.assignedType === 'Wall') {
+        boundaryType = 'Wall'
+      } else if (cityEdge.assignedType === 'MainRoad') {
         boundaryType = 'Stone'
       } else {
         boundaryType = cityEdge.assignedType
       }
 
+      // Wall/Canal/MainRoad boundaries carry left/right district ids and edgeKind
+      // so the renderer and pathfinder can identify them without cityDistrictData.edges.
+      const edgeKind = (cityEdge.assignedType === 'Wall' || cityEdge.assignedType === 'Canal' || cityEdge.assignedType === 'MainRoad')
+        ? cityEdge.assignedType : undefined
+
       for (let i = 0; i < ordered.length - 1; i++) {
-        boundaryEdges.push({
+        const edge = {
           id: `street-boundary-${edgeId}-${i}`,
           nodeA: ordered[i].id,
           nodeB: ordered[i + 1].id,
           type: boundaryType,
-          districtId: cityEdge.districtA
-        })
+          left: cityEdge.districtA,
+          right: cityEdge.districtB ?? null,
+        }
+        if (edgeKind !== undefined) edge.edgeKind = edgeKind
+        boundaryEdges.push(edge)
       }
 
       boundaryNodesByEdge.set(edgeId, ordered)
@@ -813,13 +880,17 @@ export default class StreetVoronoiGenerator {
     for (const [edgeId, cityEdge] of Object.entries(cityEdges)) {
       const dA = cityEdge.districtA, dB = cityEdge.districtB
       const bNodes = boundaryNodesByEdge.get(edgeId) || []
+      // Skip the first and last nodes — those are the corner vertices where two
+      // city edges meet. Connecting interior streets to corner nodes causes
+      // streets to exit at polygon corners, creating high-aspect-ratio blocks.
+      const connectNodes = bNodes.slice(1, -1)
 
       for (const districtId of [dA, dB]) {
         if (districtId == null) continue
         const distNodes = nodesByDistrict.get(districtId) || []
         if (!distNodes.length) continue
 
-        for (const bn of bNodes) {
+        for (const bn of connectNodes) {
           const bId = find(bn.id)
           const bPt = finalNodeById.get(bId)
           if (!bPt) continue
@@ -857,29 +928,61 @@ export default class StreetVoronoiGenerator {
 
     const junctions = buildJunctions(finalNodes, finalEdges)
 
-    // Capture ordered point paths for each district edge so the client can render
-    // Canal/Wall geometry along the actual boundary-sampled street path (not the
-    // original straight polyline, which plots may now straddle).
-    const boundaryPolylines = {}
-    for (const [edgeId, nodes] of boundaryNodesByEdge) {
-      boundaryPolylines[edgeId] = nodes.map(n => ({ x: n.x, y: n.y }))
+    // ── Mark wall/canal features on boundary junctions ───────────────────────
+    // Barbican: junction where MainRoad meets Wall (endpoint of a MainRoad through a Wall).
+    // Gate:     Wall junction, probability based on district types on each side.
+    // Bridge:   Canal junction, same probability logic.
+    for (const j of junctions) {
+      const connKinds = new Set((j.connections || []).map(c => c.edgeKind).filter(Boolean))
+      if (!connKinds.size) continue
+
+      if (connKinds.has('MainRoad') && connKinds.has('Wall')) {
+        j.wallFeature = 'barbican'
+        continue
+      }
+      if (connKinds.has('Wall')) {
+        const wc = j.connections.find(c => c.edgeKind === 'Wall')
+        const leftType  = districtById.get(wc?.left  ?? j.left)?.assignedType
+        const right     = wc?.right  ?? j.right
+        const rightType = right != null ? districtById.get(right)?.assignedType : null
+        const chance    = right === null ? 0.01 : (leftType && leftType === rightType ? 0.80 : 0.30)
+        if (posHash(j.x, j.y) < chance) j.wallFeature = 'gate'
+      }
+      if (connKinds.has('Canal')) {
+        const cc = j.connections.find(c => c.edgeKind === 'Canal')
+        const leftType  = districtById.get(cc?.left  ?? j.left)?.assignedType
+        const right     = cc?.right  ?? j.right
+        const rightType = right != null ? districtById.get(right)?.assignedType : null
+        const chance    = right === null ? 0.01 : (leftType && leftType === rightType ? 0.80 : 0.30)
+        if (posHash(j.x, j.y) < chance) j.canalFeature = 'bridge'
+      }
     }
 
     const byType = finalEdges.reduce((acc, e) => { acc[e.type] = (acc[e.type] || 0) + 1; return acc }, {})
     const typeStr = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(', ')
     console.log(`Street graph: ${junctions.length} junctions (${typeStr}), ${allCells.length} Voronoi cells`)
-    return { junctions, cells: allCells, seeds: allSeeds, boundaryPolylines }
+    return { junctions, cells: allCells, seeds: allSeeds }
   }
 
   // Perimeter seeds with canonical direction on each edge so shared district
   // boundaries produce identical intermediate seed positions in both districts.
-  _samplePerimeter(polygon, street_spacing) {
+  // fixedBoundarySegments: [[ptA, ptB], ...] — Wall/Canal/MainRoad boundary segments
+  // where intermediate seeding is suppressed (boundary-node loop handles those).
+  _samplePerimeter(polygon, street_spacing, fixedBoundarySegments = []) {
     const seeds = []
     const n = polygon.length
     for (let i = 0; i < n; i++) {
       const v1 = polygon[i]
       const v2 = polygon[(i + 1) % n]
-      seeds.push({ x: v1.x, y: v1.y })
+
+      // Skip intermediate seeds on Wall/Canal/MainRoad boundary segments — those
+      // already have fixed boundary nodes from the boundary-expansion loop.
+      const isFixed = fixedBoundarySegments.some(([fa, fb]) => {
+        const dFwd = Math.hypot(v1.x - fa.x, v1.y - fa.y) + Math.hypot(v2.x - fb.x, v2.y - fb.y)
+        const dRev = Math.hypot(v1.x - fb.x, v1.y - fb.y) + Math.hypot(v2.x - fa.x, v2.y - fa.y)
+        return Math.min(dFwd, dRev) < 0.01
+      })
+      if (isFixed) continue
 
       const dx = v2.x - v1.x, dy = v2.y - v1.y
       const len = Math.sqrt(dx * dx + dy * dy)

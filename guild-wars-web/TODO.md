@@ -38,9 +38,31 @@ I think I need to
 - 
 
 
+Junctions that are "wall" should have a chance of being a gate.  use the t1.glb model for now.
+Junctions that are "Canal" should have a chance of being a bridge.  
+
+The chance, when the right district is null, is very low, maybe 1%
+The chance, when districts are the same type, is high, 80%
+The chance, when districts are a different type, is lower, 30%. 
+
+Any Towers at the ends of Main roads are always a "barbican" or Large City Gate.  use the t1.glb model for now.
+Junctions that are barbicans should be available to connect roads, for new districts.  
+
+
+
+
+
 Fix Buildings.  
-- Rooves still need to be angled correctly across the top of the walls. 
+Take a reasonably complex block or 2 from an existing map and use it as a base to generate buildings in buildingparts.html
+
+For Townhouses: 
+- Allow Building fronts to run exactly from Left boundary to right boundary, no matter the side boundaries behind.  
+- Allow Walls to proceed backwards from the frontage at the same angle as the boundary. 
+- Decide on the depth/wings of the building.
 - Allow Wings of buildings to run at any angle to one another.
+
+In General: 
+- Roof eaves still need to be angled correctly across the top of the walls.
 - Allow wings of buildings to be different heights to one another.
 - Prevent massive Square-ish buildings with one roof span.  
 - Correct the townhouse / instanced per district logic. (should be a mix of townhouses.  Some blocks are town houses with sporadic instanced buildings, some blocks are singleton houses, (mix of instanced and generated houses))
@@ -51,6 +73,7 @@ Fix Buildings.
 - Stone windows should be higher on the wall.  
 
 - Docks 
+
 
 LandMark buildings
 - Add the Castle, and allow it to spawn in Noble Districts, Note this will be some work as the castle needs to consume a large "block" area and be walled and grassed and etc.

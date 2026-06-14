@@ -103,7 +103,7 @@ export default class SetupPhase {
     this.terrainPlacements = []
     this.edgePlacements = []
     this.districtTypePlacements = []
-    this.cityEdgePlacements = []
+    this.districtEdgePlacements = []
     this.districtClassAssignments = new Map()
     this.resourceRegistry = []
     this.threats = []
@@ -117,7 +117,7 @@ export default class SetupPhase {
     this.terrainPlacements = []
     this.edgePlacements = []
     this.districtTypePlacements = []
-    this.cityEdgePlacements = []
+    this.districtEdgePlacements = []
     this.districtClassAssignments.clear()
     this.resourceRegistry = []
     this.threats = []
@@ -533,6 +533,7 @@ export default class SetupPhase {
     if (district.streetSeed == null) district.streetSeed = district.id
     district.locked = true
     this.generateForLocked()
+    this._removeAbsorbedDistrictEdgePlacements()
 
     return { ok: true, resourceRegistry: this.resourceRegistry, factions: this.factions, log: this.log }
   }
@@ -737,7 +738,7 @@ export default class SetupPhase {
 
     edge.assignedType = edgeType
     edge.description = description
-    this.cityEdgePlacements.push({ edgeId, edgeType, description })
+    this.districtEdgePlacements.push({ edgeId, edgeType, description })
     this.log.push(`Assigned ${edgeType} to city edge ${edgeId}`)
     // Regenerate streets for any already-typed adjacent districts so the
     // boundary polyline is stamped with the correct type (Stone for Wall, etc.)
@@ -839,6 +840,19 @@ export default class SetupPhase {
     this._generateStreetGraph(subset, 0, isFinal)
     this._generateBuildings()
     console.log(`[perf] generateForLocked: ${(performance.now()-t0).toFixed(1)}ms (${subset.length}/${cityData.districts.length} districts typed, final=${isFinal})`)
+  }
+
+  // Remove districtEdgePlacements entries whose boundary junctions now exist in the
+  // street graph — i.e., at least one adjacent district has been typed and generated.
+  _removeAbsorbedDistrictEdgePlacements() {
+    const cityData = this.gameStateManager.cityDistrictData
+    const typedIds = new Set((cityData?.districts || []).filter(d => d.assignedType && d.locked).map(d => d.id))
+    this.districtEdgePlacements = this.districtEdgePlacements.filter(entry => {
+      const edge = cityData?.edges?.[entry.edgeId]
+      if (!edge) return false
+      // Keep entry only while neither adjacent district has been locked yet
+      return !typedIds.has(edge.districtA) && !typedIds.has(edge.districtB)
+    })
   }
 
   // Reseed a not-yet-locked district's interior streets, then regenerate.
@@ -943,16 +957,6 @@ export default class SetupPhase {
     const gen = new StreetVoronoiGenerator()
     cityData.streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes)
     console.log(`[perf]   streets: ${(performance.now()-t0).toFixed(1)}ms (${districts.length} districts → ${cityData.streetGraph.junctions.length} junctions, ${cityData.streetGraph.edges?.length ?? '?'} edges)`)
-
-    // Stamp the ordered boundary-street path onto each edge object so the client
-    // can render Canal/Wall geometry along the actual street chain rather than the
-    // original straight District Edge polyline (which plots now straddle).
-    const { boundaryPolylines } = cityData.streetGraph
-    if (boundaryPolylines) {
-      for (const [edgeId, polyline] of Object.entries(boundaryPolylines)) {
-        if (cityData.edges[edgeId]) cityData.edges[edgeId].boundaryPolyline = polyline
-      }
-    }
     this.log.push(`Generated street graph over ${districts.length} district(s): ${cityData.streetGraph.junctions.length} junctions, ${tradeRoutes.length} trade road(s) (final=${isFinal})`)
   }
 
@@ -1188,7 +1192,7 @@ export default class SetupPhase {
     this.terrainPlacements = []
     this.edgePlacements = []
     this.districtTypePlacements = []
-    this.cityEdgePlacements = []
+    this.districtEdgePlacements = []
     this.districtClassAssignments.clear()
     this.resourceRegistry = []
     this.threats = []
@@ -1202,7 +1206,7 @@ export default class SetupPhase {
       terrainPlacements: this.terrainPlacements,
       edgePlacements: this.edgePlacements,
       districtTypePlacements: this.districtTypePlacements,
-      cityEdgePlacements: this.cityEdgePlacements,
+      districtEdgePlacements: this.districtEdgePlacements,
       districtClassAssignments: Array.from(this.districtClassAssignments.entries()),
       resourceRegistry: this.resourceRegistry,
       threats: this.threats,
@@ -1217,7 +1221,7 @@ export default class SetupPhase {
     if (data.terrainPlacements) this.terrainPlacements = data.terrainPlacements
     if (data.edgePlacements) this.edgePlacements = data.edgePlacements
     if (data.districtTypePlacements) this.districtTypePlacements = data.districtTypePlacements
-    if (data.cityEdgePlacements) this.cityEdgePlacements = data.cityEdgePlacements
+    if (data.districtEdgePlacements) this.districtEdgePlacements = data.districtEdgePlacements
     if (data.districtClassAssignments) {
       this.districtClassAssignments = new Map(data.districtClassAssignments)
     }

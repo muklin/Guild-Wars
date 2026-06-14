@@ -127,10 +127,9 @@ export default class StreetRenderer {
     for (const j of junctions) {
       for (const conn of j.connections) {
         if (conn.toId <= j.id) continue
-        // Canal (and future Docks) boundaries are physical waterways rendered by
-        // DistrictRenderer, not walkable streets — skip here so they don't show
-        // as brown Mud roads underneath the water mesh.
-        if (conn.type === 'Canal' || conn.type === 'Docks') continue
+        // Wall, Canal, and Docks boundaries are rendered by DistrictRenderer as
+        // 3D meshes — skip here so they don't show as road ribbons underneath.
+        if (conn.type === 'Wall' || conn.type === 'Canal' || conn.type === 'Docks') continue
         const j2 = junctionById.get(conn.toId)
         if (!j2) continue
         const conn2 = j2.connections.find(c => c.toId === j.id)
@@ -160,11 +159,11 @@ export default class StreetRenderer {
 
     for (const j of junctions) {
       if (j.connections.length < 2) continue
-      if (j.type === 'Canal' || j.type === 'Docks') continue
+      if (j.type === 'Wall' || j.type === 'Canal' || j.type === 'Docks') continue
 
       const pts = []
       for (const conn of j.connections) {
-        if (conn.type === 'Canal' || conn.type === 'Docks') continue
+        if (conn.type === 'Wall' || conn.type === 'Canal' || conn.type === 'Docks') continue
         pts.push(conn.gutterLeft, conn.gutterRight)
       }
       pts.sort((a, b) => Math.atan2(a.y - j.y, a.x - j.x) - Math.atan2(b.y - j.y, b.x - j.x))
@@ -411,7 +410,7 @@ export default class StreetRenderer {
     const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 })
     for (const j of junctions) {
       const m = new THREE.Mesh(geo, mat)
-      m.position.set(j.x, 0.093, j.y)
+      m.position.set(j.x, 0.18, j.y)
       m.visible = this.showDebug && this._streetSeedsVisible
       m.userData = { kind: 'streetSeed', id: j.id, type: j.type, districtId: j.districtId, connections: j.connections?.length ?? 0, x: j.x, y: j.y }
       this.scene.add(m)

@@ -195,7 +195,7 @@ A point in the street graph. Nodes with degree ≥ 3 are **junctions**; nodes wi
 _Avoid_: vertex, waypoint
 
 **Junction**:
-A street node where three or more streets or street like connections meet (degree ≥ 3). Distinct from a bend node (degree 2). 
+A street node where three or more streets or street like connections meet (degree ≥ 3). Interior junctions carry a single `districtId`. Boundary junctions carry `left` and `right` district ids instead, plus an `edgeKind` field matching the District Edge type. The junction `type` reflects the physical boundary: Wall edges produce `type: 'Wall'` junctions, Canal edges produce `type: 'Canal'`, MainRoad edges produce `type: 'Stone'`. Wall and Canal junctions are skipped by the StreetRenderer (their meshes are built by DistrictRenderer instead). `right: null` indicates the exterior (outer city boundary). Distinct from a bend node (degree 2).
 _Avoid_: intersection, crossroads
 
 **District Edge**:

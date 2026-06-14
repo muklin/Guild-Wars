@@ -352,7 +352,7 @@ export default class WorldRenderer {
   _highlightBoundaryChain(edgeId, color) {
     const edge = this.districtRenderer.cityDistrictData?.edges?.[edgeId]
     if (!edge || edge.assignedType) return
-    if (edge.boundaryPolyline?.length >= 2) {
+    if (this.districtRenderer._edgeHasDefinedDistrict(edge)) {
       this.streetRenderer.setBoundaryChainHighlight(edgeId, color)
     }
   }

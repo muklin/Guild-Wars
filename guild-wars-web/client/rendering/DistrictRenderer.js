@@ -176,13 +176,53 @@ export default class DistrictRenderer {
     return mesh
   }
 
-  // Returns true if either adjacent district has been locked (assignedType set).
-  // Once true, the old straight-polyline rendering is replaced by geometry built
-  // from edge.boundaryPolyline (the actual boundary-sampled street path).
+  // Returns true if either adjacent district has been locked (assignedType set),
+  // meaning boundary junctions for this edge now exist in the street graph.
   _edgeHasDefinedDistrict(edge) {
     const districts = this.cityDistrictData?.districts || []
     const districtById = this._districtById || (this._districtById = new Map(districts.map(d => [d.id, d])))
     return !!(districtById.get(edge.districtA)?.assignedType || districtById.get(edge.districtB)?.assignedType)
+  }
+
+  // Extract an ordered polyline from street graph junctions for the boundary between
+  // districtA and districtB with the given edgeKind ('Wall', 'Canal', 'MainRoad').
+  // Returns null if no boundary junctions for this pair exist yet.
+  // Uses per-connection edgeKind/left/right (not junction-level) so that corner
+  // junctions shared with other boundary edges are handled correctly.
+  _extractBoundaryChain(districtA, districtB, edgeKind) {
+    const junctions = this.cityDistrictData?.streetGraph?.junctions
+    if (!junctions?.length) return null
+
+    const matchesConn = (c) =>
+      c.edgeKind === edgeKind &&
+      ((c.left === districtA && c.right === districtB) ||
+       (c.left === districtB && c.right === districtA))
+
+    // A junction is in the chain if it has at least one connection along this boundary.
+    const matches = junctions.filter(j => (j.connections || []).some(matchesConn))
+    if (matches.length < 2) return null
+
+    const jMap = new Map(matches.map(j => [j.id, j]))
+    const adj = new Map()
+    for (const j of matches) {
+      adj.set(j.id, (j.connections || []).filter(c => matchesConn(c) && jMap.has(c.toId)).map(c => c.toId))
+    }
+
+    // Start from an endpoint (degree 1 within the chain) or any node if it's a loop
+    const start = matches.find(j => (adj.get(j.id) || []).length <= 1) ?? matches[0]
+    const chain = [start]
+    const visited = new Set([start.id])
+    let curr = start
+    while (true) {
+      const next = (adj.get(curr.id) || []).find(id => !visited.has(id))
+      if (next == null) break
+      const nj = jMap.get(next)
+      if (!nj) break
+      chain.push(nj)
+      visited.add(nj.id)
+      curr = nj
+    }
+    return chain.length >= 2 ? chain : null
   }
 
   renderCityEdges(edges) {
@@ -199,7 +239,8 @@ export default class DistrictRenderer {
     if (this.hideCityEdges) {
       for (const [edgeId, edge] of Object.entries(edges)) {
         if (edge.assignedType === 'Wall') {
-          const poly = edge.boundaryPolyline?.length >= 2 ? edge.boundaryPolyline : null
+          const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Wall')
+          const poly = chain ?? null
           const mesh = this.buildWallMesh(edge, edgeId, poly)
           if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
         }
@@ -212,33 +253,27 @@ export default class DistrictRenderer {
     for (const [edgeId, edge] of Object.entries(edges)) {
       if (edge.assignedType === 'Mud') continue
 
-      const hasBoundaryPath = !!(edge.boundaryPolyline?.length >= 2)
-      // Use boundary polyline as soon as it exists (set after first district on
-      // either side generates streets). Fall back to straight edge pointIds until then.
-      const boundaryPoly = hasBoundaryPath ? edge.boundaryPolyline : null
-
       if (edge.assignedType === 'Wall') {
-        console.log(`[wall] edge ${edgeId}: boundaryPolyline=${edge.boundaryPolyline?.length ?? 'none'} pts, using ${hasBoundaryPath ? 'boundary' : 'pointIds'}`)
-        const mesh = this.buildWallMesh(edge, edgeId, boundaryPoly)
+        // Settled: chain junctions from street graph. Pending: fall back to pointIds (null → buildWallMesh uses edge.pointIds).
+        const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Wall')
+        const mesh = this.buildWallMesh(edge, edgeId, chain ?? null)
         if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
       } else if (edge.assignedType === 'Canal') {
-        console.log(`[canal] edge ${edgeId}: boundaryPolyline=${edge.boundaryPolyline?.length ?? 'none'} pts, hasBoundaryPath=${hasBoundaryPath}`)
-        if (hasBoundaryPath) {
-          // Render canal as water channel along the actual boundary-street path.
-          // Canal-type connections are suppressed in StreetRenderer so the mesh is visible.
-          const mesh = this.buildCanalMesh(edge.boundaryPolyline, edgeId)
+        const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Canal')
+        if (chain) {
+          const mesh = this.buildCanalMesh(chain, edgeId)
           if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
         } else {
-          // No boundary path yet — show old blue polyline temporarily.
+          // Pending — show placeholder polyline until 1st adjacent district locks.
           nonWallEdges[edgeId] = edge
         }
       } else {
         const defined = this._edgeHasDefinedDistrict(edge)
-        if (!defined || !hasBoundaryPath) {
-          // Show polyline while no district is defined, or until boundary path arrives.
+        if (!defined) {
+          // Show polyline while no district is defined yet.
           nonWallEdges[edgeId] = edge
         }
-        // else: defined + hasBoundaryPath + untyped/MainRoad → suppress old polyline;
+        // else: defined + untyped/MainRoad → suppress old polyline;
         // the street renderer already shows the boundary streets.
       }
     }
@@ -256,12 +291,16 @@ export default class DistrictRenderer {
   _renderWallTowers(edges) {
     this.wallTowers.clear()
     const districtById = new Map((this.cityDistrictData?.districts || []).map(d => [d.id, d]))
-    const towers = new Map()   // posKey → { x, y, nx, ny }
+    // posKey → { x, y, nx, ny, feature: 'gate'|'barbican'|null }
+    const towers = new Map()
 
-    const accumulate = (T, seed, neighbours) => {
+    const accumulate = (T, seed, neighbours, feature) => {
       const key = `${Math.round(T.x * 100)},${Math.round(T.y * 100)}`
       let e = towers.get(key)
-      if (!e) { e = { x: T.x, y: T.y, nx: 0, ny: 0 }; towers.set(key, e) }
+      if (!e) { e = { x: T.x, y: T.y, nx: 0, ny: 0, feature: feature ?? null }; towers.set(key, e) }
+      // Named features (barbican > gate > null) win over plain towers at the same spot.
+      if (feature === 'barbican') e.feature = 'barbican'
+      else if (feature === 'gate' && e.feature !== 'barbican') e.feature = 'gate'
       for (const Q of neighbours) {
         const dx = Q.x - T.x, dy = Q.y - T.y
         const len = Math.hypot(dx, dy)
@@ -275,30 +314,64 @@ export default class DistrictRenderer {
       }
     }
 
+    const TOWER_ANGLE = Math.PI / 18  // 10 degrees — direction change threshold for a corner tower
+
     for (const edge of Object.values(edges || {})) {
-      if (edge.assignedType !== 'Wall') continue
-      const pts = edge.boundaryPolyline?.length >= 2
-        ? edge.boundaryPolyline
-        : (edge.pointIds || []).map(i => this.cityEdgePointsById.get(i))
-      if (pts.length < 2) continue
+      const isWall = edge.assignedType === 'Wall'
+      const isMainRoad = edge.assignedType === 'MainRoad'
+      if (!isWall && !isMainRoad) continue
+
+      const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, edge.assignedType)
+      // Wall falls back to raw pointIds for the placeholder (before any district locks).
+      // MainRoad has no placeholder — skip if no chain yet.
+      const pts = chain ?? (isWall ? (edge.pointIds || []).map(i => this.cityEdgePointsById.get(i)).filter(Boolean) : null)
+      if (!pts || pts.length < 2) continue
       const seed = districtById.get(edge.districtA)?.seedPoint
-      // Towers only at the chain endpoints, not at intermediate boundary junctions.
-      for (const k of [0, pts.length - 1]) {
+
+      for (let k = 0; k < pts.length; k++) {
         const p = pts[k]
         if (!p) continue
+        const isEndpoint = k === 0 || k === pts.length - 1
+
+        const feature = p.wallFeature ?? null  // 'gate', 'barbican', or null
+
+        if (isMainRoad) {
+          // Barbicans only at MainRoad endpoints that sit on a Wall.
+          if (!isEndpoint) continue
+          if (feature !== 'barbican') continue
+        } else {
+          // Walls: always place at endpoints and explicitly-featured junctions (gates,
+          // barbicans). For plain intermediate nodes, only place a tower if the wall
+          // turns by more than TOWER_ANGLE (polygon corners). Collinear interpolated
+          // nodes have ~0° direction change and are always skipped.
+          if (!isEndpoint && !feature) {
+            const prev = pts[k - 1], next = pts[k + 1]
+            if (!prev || !next) continue
+            const dx1 = p.x - prev.x, dy1 = p.y - prev.y
+            const dx2 = next.x - p.x,  dy2 = next.y - p.y
+            let da = Math.abs(Math.atan2(dy2, dx2) - Math.atan2(dy1, dx1))
+            if (da > Math.PI) da = 2 * Math.PI - da
+            if (da <= TOWER_ANGLE) continue
+          }
+        }
         const neighbours = []
         if (pts[k - 1]) neighbours.push(pts[k - 1])
         if (pts[k + 1]) neighbours.push(pts[k + 1])
-        accumulate(p, seed, neighbours)
+        accumulate(p, seed, neighbours, feature)
       }
     }
 
-    const positions = []
+    const towerPositions = [], gatePositions = [], barbicanPositions = []
     for (const e of towers.values()) {
       const rotY = Math.hypot(e.nx, e.ny) > 1e-9 ? Math.atan2(e.nx, e.ny) : 0
-      positions.push({ x: e.x, y: e.y, rotY })
+      const pos = { x: e.x, y: e.y, rotY }
+      if (e.feature === 'barbican') barbicanPositions.push(pos)
+      else if (e.feature === 'gate') gatePositions.push(pos)
+      else towerPositions.push(pos)
     }
-    if (positions.length) this.wallTowers.spawnTowers(positions, 0.075)
+    if (towerPositions.length)   this.wallTowers.spawnTowers(towerPositions, 0.075)
+    if (gatePositions.length)    this.wallTowers.spawnFeature('wallGate', gatePositions, 0.075)
+    if (barbicanPositions.length) this.wallTowers.spawnFeature('barbican', barbicanPositions, 0.075)
   }
 
   // Compute mitered left/right corner points for a polyline at a given half-width.
@@ -398,7 +471,7 @@ export default class DistrictRenderer {
                       && districtById.get(edge.districtB)?.assignedType)
 
     const halfWall  = bothSides ? G * 0.45 : G * 0.70   // internal narrower; external fills gutter
-    const wallH     = bothSides ? G * 1.5  : G * 3.0    // internal half-height; external tall
+    const wallH     = bothSides ? G * 3.0  : G * 4.5    // internal 2×; external 1.5× original heights
     const alleyW    = bothSides ? G * 0.20 : G * 0.30   // alley strip; total stays ≤ G per side
     // group.position.y = 0.075 (street level) is the scale-animation pivot.
     // All local Y coords are relative to that base: wall body 0..wallH, alley floor at -0.022.
@@ -409,21 +482,43 @@ export default class DistrictRenderer {
     const { left: alleyL, right: alleyR } = this._getMiteredCorners(pts, halfWall + alleyW)
 
     // ── Wall body (extruded strip, local Y 0..wallH, world Y 0.075..0.075+wallH) ──
+    // At gate/barbican junctions the wall body is inset by half the gate footprint so the
+    // wall ends exactly at the edge of the gate model.  All segments still render — no gaps.
+    const gateInset = (p) =>
+      p?.wallFeature === 'barbican' ? 0.15 :   // footprint 0.30 / 2
+      p?.wallFeature === 'gate'     ? 0.11 : 0  // footprint 0.22 / 2
+
     const wv = [], wi = []
     for (let i = 0; i < pts.length - 1; i++) {
-      const a = wallL[i], b = wallR[i], c = wallR[i+1], d = wallL[i+1]
+      const insetA = gateInset(pts[i]), insetB = gateInset(pts[i + 1])
+      const dx = pts[i+1].x - pts[i].x, dy = pts[i+1].y - pts[i].y
+      const segLen = Math.hypot(dx, dy)
+      if (segLen < 1e-9) continue
+      if (insetA + insetB >= segLen) continue  // gate consumes whole segment — skip
+      const ux = dx / segLen, uy = dy / segLen
+      const px = -uy, py = ux  // left perpendicular
+
+      // Gate-inset positions along the segment (use straight perp, not miter)
+      const ax = pts[i].x   + ux * insetA, ay = pts[i].y   + uy * insetA
+      const bx = pts[i+1].x - ux * insetB, by = pts[i+1].y - uy * insetB
+
+      const aL = insetA > 0 ? { x: ax + px*halfWall, y: ay + py*halfWall } : wallL[i]
+      const aR = insetA > 0 ? { x: ax - px*halfWall, y: ay - py*halfWall } : wallR[i]
+      const bL = insetB > 0 ? { x: bx + px*halfWall, y: by + py*halfWall } : wallL[i+1]
+      const bR = insetB > 0 ? { x: bx - px*halfWall, y: by - py*halfWall } : wallR[i+1]
+
       const B = wv.length / 3
       wv.push(
-        a.x, wallBase,       a.y,   b.x, wallBase,       b.y,
-        c.x, wallBase,       c.y,   d.x, wallBase,       d.y,
-        a.x, wallBase+wallH, a.y,   b.x, wallBase+wallH, b.y,
-        c.x, wallBase+wallH, c.y,   d.x, wallBase+wallH, d.y
+        aL.x, wallBase,       aL.y,  aR.x, wallBase,       aR.y,
+        bR.x, wallBase,       bR.y,  bL.x, wallBase,       bL.y,
+        aL.x, wallBase+wallH, aL.y,  aR.x, wallBase+wallH, aR.y,
+        bR.x, wallBase+wallH, bR.y,  bL.x, wallBase+wallH, bL.y,
       )
-      wi.push(B+4, B+5, B+6, B+4, B+6, B+7)                               // top
-      wi.push(B+3, B+0, B+4, B+3, B+4, B+7)                               // left face
-      wi.push(B+1, B+2, B+6, B+1, B+6, B+5)                               // right face
-      if (i === 0)              wi.push(B+0, B+1, B+5, B+0, B+5, B+4)     // start cap
-      if (i === pts.length - 2) wi.push(B+2, B+3, B+7, B+2, B+7, B+6)    // end cap
+      wi.push(B+4, B+5, B+6, B+4, B+6, B+7)                                // top
+      wi.push(B+3, B+0, B+4, B+3, B+4, B+7)                                // left face
+      wi.push(B+1, B+2, B+6, B+1, B+6, B+5)                                // right face
+      if (i === 0 || insetA > 0)              wi.push(B+0, B+1, B+5, B+0, B+5, B+4)  // start cap
+      if (i === pts.length - 2 || insetB > 0) wi.push(B+2, B+3, B+7, B+2, B+7, B+6) // end cap
     }
 
     // ── Alley floor strips (local Y = alleyLY ≈ -0.022, world Y ≈ 0.053) ────
@@ -568,8 +663,8 @@ export default class DistrictRenderer {
       if (polyMesh) polyMesh.visible = false
       const old = this.cityEdgeMeshes.get(edgeId)
       if (old) this.scene.remove(old)
-      const poly = edge.boundaryPolyline?.length >= 2 ? edge.boundaryPolyline : null
-      const group = this.buildWallMesh(edge, edgeId, poly)
+      const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Wall')
+      const group = this.buildWallMesh(edge, edgeId, chain ?? null)
       if (group) {
         group.scale.y = 0
         this.scene.add(group)
@@ -581,12 +676,13 @@ export default class DistrictRenderer {
     }
     if (type === 'Canal') {
       const edge = this.cityDistrictData?.edges?.[edgeId]
-      if (edge?.boundaryPolyline?.length >= 2) {
+      const chain = edge ? this._extractBoundaryChain(edge.districtA, edge.districtB, 'Canal') : null
+      if (chain) {
         const polyMesh = this.cityPolylines?.getEdgeMesh(edgeId)
         if (polyMesh) polyMesh.visible = false
         const old = this.cityEdgeMeshes.get(edgeId)
         if (old) this.scene.remove(old)
-        const mesh = this.buildCanalMesh(edge.boundaryPolyline, edgeId)
+        const mesh = this.buildCanalMesh(chain, edgeId)
         if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
         return
       }

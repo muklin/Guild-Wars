@@ -116,7 +116,7 @@ const GROUND_Y = 0.075   // plot-fill surface height (see PlotRenderer); buildin
 
 // Back-yard trees: plots whose building leaves empty space behind it get small trees
 // scattered in the back (never on the street-facing front).
-const TREE_GLB            = '/resources/tree.glb'
+const TREE_GLB            = '/resources/Models/tree.glb'
 const TREE_MIN_BACK_DEPTH = 0.08   // empty depth behind the building required to add trees
 const TREE_SPACING        = 0.07   // back-yard scatter grid spacing
 const TREE_DENSITY        = 0.6    // fraction of grid cells that get a tree
@@ -131,7 +131,12 @@ export default class BuildingRenderer {
     this._paraGroups = []        // THREE.Groups added for parametric buildings
     this._renderGen = 0          // incremented each render; async callbacks abort if stale
     this._visible = true         // buildings shown by default; persists across regenerations
+    this._seedOffset = 0         // mixed into position hashes; 0 = stable (main game default)
   }
+
+  // Randomise the seed offset so the next render() produces a different layout.
+  // Only used by dev/preview tools — the main game leaves seedOffset at 0.
+  randomizeSeed() { this._seedOffset = (Math.random() * 0x7FFFFFFF) | 0 }
 
   clear(scene) {
     this.featureManager?.clear()
@@ -331,9 +336,11 @@ export default class BuildingRenderer {
     return { spec, x, z, rotY }
   }
 
-  // Build a deterministic Building Spec for a residential plot.
+  // Build a Building Spec for a residential plot.
+  // Deterministic by position when _seedOffset is 0 (main game); randomised in
+  // preview tools by setting _seedOffset via randomizeSeed().
   _buildSpec(distKey, bw, bd, worldX, worldZ) {
-    const hash = posHash(worldX, worldZ)
+    const hash = posHash(worldX, worldZ) + this._seedOffset
     const r0 = this._rand(hash),     r1 = this._rand(hash + 7)
     const r2 = this._rand(hash + 13), r3 = this._rand(hash + 19)
     const r4 = this._rand(hash + 23), r5 = this._rand(hash + 29)
@@ -422,7 +429,7 @@ export default class BuildingRenderer {
     // Every plot gets a district-appropriate model (closest fit), placed at the
     // footprint centre and seated on the ground. No procedural box houses. Seeded by
     // position (not plot id) so the choice is stable when neighbouring districts change.
-    const sel = this._selectModel(districtById?.get(plot.districtId), bw, bd, posHash(ccx, ccy))
+    const sel = this._selectModel(districtById?.get(plot.districtId), bw, bd, posHash(ccx, ccy) + this._seedOffset)
     if (sel) housePlacements.push({ x: ccx, z: ccy, rotY: theta, glbPath: sel.glbPath, scale: MODEL_SCALE })
 
     // A large/deep plot leaves empty yard behind the building — scatter small trees there.

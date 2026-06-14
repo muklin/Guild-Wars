@@ -67,20 +67,15 @@ export default class CameraController {
 
   onKeyDown(e) {
     if (!this._enabled || this._isTyping()) return
-    const rotationStep = Math.PI / 2
     if (e.code === 'KeyD' && e.shiftKey) return
 
     if (e.code === 'KeyQ') {
-      this._snapTargetToScreenCenter()
-      this.azimuth -= rotationStep
-      this.updateCameraPosition()
-      this.enforceWorldBounds()
+      if (!this.keys['keyq']) this._snapTargetToScreenCenter()  // lock pivot on first press only
+      this.keys['keyq'] = true
       e.preventDefault()
     } else if (e.code === 'KeyE') {
-      this._snapTargetToScreenCenter()
-      this.azimuth += rotationStep
-      this.updateCameraPosition()
-      this.enforceWorldBounds()
+      if (!this.keys['keye']) this._snapTargetToScreenCenter()  // lock pivot on first press only
+      this.keys['keye'] = true
       e.preventDefault()
     } else if (e.key.toLowerCase() === 'f') {
       this.frameAllContent()
@@ -257,6 +252,20 @@ export default class CameraController {
 
   update() {
     if (!this._enabled || this._isTyping()) return
+
+    const now = performance.now()
+    const delta = this._lastUpdateTime != null ? Math.min((now - this._lastUpdateTime) / 1000, 0.1) : 0
+    this._lastUpdateTime = now
+
+    const rotateSpeed = Math.PI * 0.9  // ~162°/sec — comfortable free rotation
+    let rotated = false
+    if (this.keys['keyq']) { this.azimuth -= rotateSpeed * delta; rotated = true }
+    if (this.keys['keye']) { this.azimuth += rotateSpeed * delta; rotated = true }
+    if (rotated) {
+      this.updateCameraPosition()
+      this.enforceWorldBounds()
+    }
+
     const moveSpeed = 2.0 / this.camera.zoom   // slower when zoomed in, faster when zoomed out
     let moved = false
 
@@ -271,6 +280,5 @@ export default class CameraController {
       this.updateCameraPosition()
       this.enforceWorldBounds()
     }
-    //console.log(this.camera.zoom);
   }
 }

@@ -10,7 +10,7 @@ export { MODELS }
 
 const FEATURES = {
   fields: {
-    glbPath: '/resources/fields.glb',
+    glbPath: '/resources/Models/fields.glb',
     strategy: 'fixed',   // one instance per cell, placed at seed point
     baseScale: .8,
     scaleVariation: 0,
@@ -18,7 +18,7 @@ const FEATURES = {
     loop: false           // wind-sway loops continuously
   },
   forest: {
-    glbPath: '/resources/tree.glb',
+    glbPath: '/resources/Models/tree.glb',
     strategy: 'scatter',  // multiple instances spread across the cell polygon
     count: 15,
     baseScale: 0.38,
@@ -27,21 +27,21 @@ const FEATURES = {
     leanMax: 0.03,
   },
   mountains: {
-    glbPath: '/resources/mtn.glb',
+    glbPath: '/resources/Models/mtn.glb',
     strategy: 'single',   // one instance at the cell seed point, scaled by polygon area
     scaleFactor: 0.05,
     scaleVariation: 0,
     minScale: 1
   },
   hills: {
-    glbPath: '/resources/hills.glb',
+    glbPath: '/resources/Models/hills.glb',
     strategy: 'single',
     scaleFactor: 0.30,
     scaleVariation: 0.15,
     minScale: 0.10
   },
   sea: {
-    glbPath: '/resources/sea.glb',
+    glbPath: '/resources/Models/sea.glb',
     strategy: 'scatter',
     count: 20,
     baseScale: 0.3,
@@ -51,7 +51,7 @@ const FEATURES = {
     billboardY: true,   // Y rotation tracks camera azimuth each frame
   },
   lake: {
-    glbPath: '/resources/lake.glb',
+    glbPath: '/resources/Models/lake.glb',
     strategy: 'scatter',
     count: 5,
     baseScale: 1,
@@ -61,7 +61,7 @@ const FEATURES = {
     billboardY: true,   // Y rotation tracks camera azimuth each frame
   },
   bridge: {
-    glbPath: '/resources/bridge.glb',
+    glbPath: '/resources/Models/bridge.glb',
     strategy: 'absolute',
     baseScale: 1,
     scaleVariation: 0,
@@ -69,15 +69,27 @@ const FEATURES = {
     noAnimation: true
   },
   building: {
-    glbPath: '/resources/h2.glb',
+    glbPath: '/resources/Models/h2.glb',
     fitFootprint: 0.95,    // model is scaled so its footprint ≈ this × the plot building footprint
     rotationOffset: 0,     // added to the street-facing rotation if the model's front isn't +Z
     noAnimation: true,
   },
   wallTower: {
-    glbPath: '/resources/wallTower.glb',
+    glbPath: '/resources/Models/wallTower.glb',
     footprint: 0.22,       // world-unit diameter the model is scaled to
     rotationOffset: 0,     // added to the per-tower facing if the model's front isn't +Z
+    noAnimation: true,
+  },
+  wallGate: {
+    glbPath: '/resources/Models/t1.glb',
+    footprint: 0.22,
+    rotationOffset: 0,
+    noAnimation: true,
+  },
+  barbican: {
+    glbPath: '/resources/Models/t1.glb',
+    footprint: 0.30,
+    rotationOffset: 0,
     noAnimation: true,
   }
 }
@@ -92,7 +104,7 @@ const _sharedGltfCache = new Map()   // path → Promise<gltf>
 
 function loadGLTFShared(path) {
   if (!_sharedGltfCache.has(path)) {
-    // Cache key stays the original '/resources/...' path; assetUrl() resolves it
+    // Cache key stays the original '/resources/Models/...' path; assetUrl() resolves it
     // against assetBase (local bundle in Electron, same-origin in dev) at fetch time.
     _sharedGltfCache.set(path, new Promise((resolve, reject) => {
       _sharedLoader.load(assetUrl(path), resolve, undefined, reject)
@@ -317,6 +329,28 @@ export default class FeatureManager {
       const idx = this._objects.length
       this._spawnOne(gltf, p.x, p.y, scale, (p.rotY ?? 0) + rotOff, 0, 0, false, false, true)
       // Seat the model's base at baseY (the wall foot).
+      const wrapper = this._objects[idx]
+      if (wrapper) wrapper.position.y = baseY - minY * scale
+    }
+  }
+
+  // Generic spawn: use any FEATURES entry by key. Same sizing logic as spawnTowers.
+  async spawnFeature(featureKey, positions, baseY = 0) {
+    if (!positions?.length) return
+    const epoch = this._epoch
+    const cfg = FEATURES[featureKey]
+    if (!cfg) { console.warn(`FeatureManager: unknown feature key '${featureKey}'`); return }
+    let gltf
+    try { gltf = await this._loadGLTF(cfg.glbPath) }
+    catch (err) { console.error(`FeatureManager: failed to load ${cfg.glbPath}`, err); return }
+    if (this._epoch !== epoch) return
+
+    const { minY, size } = this._measureModel(gltf)
+    const scale = (cfg.footprint ?? 0.2) / (Math.max(size.x, size.z) || 1)
+    const rotOff = cfg.rotationOffset ?? 0
+    for (const p of positions) {
+      const idx = this._objects.length
+      this._spawnOne(gltf, p.x, p.y, scale, (p.rotY ?? 0) + rotOff, 0, 0, false, false, true)
       const wrapper = this._objects[idx]
       if (wrapper) wrapper.position.y = baseY - minY * scale
     }
