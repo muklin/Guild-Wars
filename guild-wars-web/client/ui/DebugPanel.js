@@ -4,11 +4,11 @@
 const LAYERS = [
   { key: 'buildings',       label: 'Buildings' },
   { key: 'blockCenters',    label: 'Block Centre points' },
+  { key: 'blockSeeds',      label: 'Block Seeds' },
   { key: 'plotCenters',     label: 'Plot Centre points' },
   { key: 'terrainCenters',  label: 'Terrain Centre points' },
   { key: 'districtCenters', label: 'District Centre points' },
   { key: 'streetSeeds',     label: 'Street Seeds (junctions)' },
-  { key: 'terrainSeeds',    label: 'Terrain Vertices' },
 ]
 
 export default class DebugPanel {

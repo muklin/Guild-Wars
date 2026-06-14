@@ -88,7 +88,7 @@ export const GUILD_TRAITS = [
     title: 'Spies',
     category: 'Faction',
     image: '/resources/traits/spies.svg',
-    description: 'The guild has embedded informants in the city. Once per round the guild may ask the GM one yes/no question about any faction\'s current activities, plans, or resources. The answer is truthful but may be incomplete.',
+    description: 'The guild has embedded informants in the city. Each round it can select on other faction and see all it\'s Influence and Standings until the end of the round.',
   },
   // ── Headquarters ─────────────────────────────────────────────────────────────
   {
@@ -136,7 +136,7 @@ export const GUILD_TRAITS = [
     category: 'Member',
     image: '/resources/traits/legacy.svg',
     requiresHQType: ['Leadership'],
-    description: 'The guild has a history that new members inherit. When the guild completes a major contract or achieves a narrative milestone, it earns 1 additional Round Point. The GM decides what qualifies, but the guild may argue its case.',
+    description: 'The guild has a history that new members inherit. When the guild completes a major contract or achieves a narrative milestone, it earns 1 additional Round Point.',
   },
   // ── Magical ──────────────────────────────────────────────────────────────────
   {
@@ -153,7 +153,7 @@ export const GUILD_TRAITS = [
     category: 'Magical',
     image: '/resources/traits/arcane-focus.svg',
     requiresHQType: ['Magical'],
-    description: 'A minor magical artefact is housed in the HQ that any member may attune to briefly. Once per round one guild member (need not be a spellcaster) may cast any single cantrip as if they were a 1st-level caster. The cantrip is chosen by the guild on purchase.',
+    description: 'A minor magical artefact is housed in the HQ that all members are introduced to. Once per round each guild member can cast the chosen cantrip as if they were a 1st-level caster. The cantrip is chosen by the guild on purchase.',
   },
   {
     id: 'blessing',

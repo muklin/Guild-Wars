@@ -92,8 +92,6 @@ export default class MultiplayerUI {
       const res = await GameAPI.join(name)
       if (!res.ok) { if (err) err.textContent = res.error || 'Join failed.'; return }
       setSeatKey(res.seatKey)
-      await GameAPI.request('/lobby/roll-initiative', 'POST')
-      await GameAPI.request('/lobby/start', 'POST')
       this.app.liveSync?.reconnect()
       this._clearModal()
       await this.app.refreshFromServer()
@@ -102,12 +100,150 @@ export default class MultiplayerUI {
     }
   }
 
+  // ── Initiative roll dialog (new game) ────────────────────────────────────────
+  // Returns a Promise that resolves once the player has rolled and clicked Begin.
+  showInitiativeRoll(mpState) {
+    return new Promise(resolve => {
+      const back = document.createElement('div')
+      back.id = 'mp-initiative'
+      back.style.cssText = 'position:absolute;inset:0;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;pointer-events:auto;z-index:50'
+
+      const panel = document.createElement('div')
+      panel.style.cssText = 'background:#1a1a12;border:2px solid #7a6a52;border-radius:8px;padding:32px 40px;width:380px;color:#e8dcc8;font-family:Arial,sans-serif;text-align:center'
+
+      const title = document.createElement('div')
+      title.style.cssText = 'font-size:22px;font-weight:bold;color:#d4c49a;letter-spacing:1px;margin-bottom:6px'
+      title.textContent = 'Initiative Roll'
+      panel.appendChild(title)
+
+      const sub = document.createElement('div')
+      sub.style.cssText = 'font-size:12px;color:#888;margin-bottom:24px'
+      sub.textContent = 'Determines turn order for Terrain and District setup'
+      panel.appendChild(sub)
+
+      // Seat list
+      const seatList = document.createElement('div')
+      seatList.style.cssText = 'margin-bottom:24px;text-align:left'
+      const seats = mpState?.seats || []
+      const renderSeats = (rolls) => {
+        seatList.innerHTML = ''
+        for (const s of seats) {
+          const row = document.createElement('div')
+          row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-bottom:1px solid #333;font-size:13px'
+          const nameEl = document.createElement('span')
+          nameEl.textContent = s.name + (s.isMe ? ' (you)' : '')
+          nameEl.style.color = s.isMe ? '#d4c49a' : '#aaa'
+          const rollEl = document.createElement('span')
+          const r = rolls[s.seatId ?? s.id]
+          rollEl.style.cssText = `font-weight:bold;font-size:16px;color:${r != null ? '#4ade80' : '#555'}`
+          rollEl.textContent = r != null ? `🎲 ${r}` : '—'
+          row.appendChild(nameEl); row.appendChild(rollEl)
+          seatList.appendChild(row)
+        }
+      }
+      const currentRolls = {}
+      for (const s of seats) if (s.initiativeRoll != null) currentRolls[s.seatId ?? s.id] = s.initiativeRoll
+      renderSeats(currentRolls)
+      panel.appendChild(seatList)
+
+      // D20 die graphic from external SVG with roll-number overlay
+      const d20wrap = document.createElement('div')
+      d20wrap.style.cssText = 'margin-bottom:16px;display:flex;justify-content:center;user-select:none'
+      const d20container = document.createElement('div')
+      d20container.style.cssText = 'position:relative;width:90px;height:90px'
+      const d20svg = document.createElement('img')
+      d20svg.src = '/resources/d20.svg'
+      d20svg.width = 90
+      d20svg.height = 90
+      d20svg.style.cssText = 'display:block;transition:transform 0.08s'
+      // Mutable number overlay centred over the die image
+      const d20num = document.createElement('div')
+      d20num.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:bold;font-family:Arial,sans-serif;color:#d4c49a;pointer-events:none'
+      d20num.textContent = ''
+      d20container.appendChild(d20svg)
+      d20container.appendChild(d20num)
+      d20wrap.appendChild(d20container)
+      panel.appendChild(d20wrap)
+
+      // Roll button
+      const myId = mpState?.meSeatId
+      let myRoll = currentRolls[myId] ?? null
+      let rolling = false
+
+      const rollBtn = document.createElement('button')
+      rollBtn.style.cssText = 'width:100%;padding:12px;margin-bottom:12px;font-size:15px;font-weight:bold;background:#4a3010;border:2px solid #a07030;color:#e8dcc8;border-radius:4px;cursor:pointer;letter-spacing:0.5px'
+      rollBtn.textContent = myRoll != null ? `You rolled ${myRoll}` : 'Roll d20'
+      if (myRoll != null) { rollBtn.disabled = true; d20num.textContent = myRoll; d20num.style.color = '#4ade80' }
+
+      rollBtn.addEventListener('click', async () => {
+        if (rolling || myRoll != null) return
+        rolling = true
+        rollBtn.disabled = true
+
+        // Animate: spin the D20 and cycle random numbers inside
+        let angle = 0
+        const anim = setInterval(() => {
+          angle += 18
+          d20svg.style.transform = `rotate(${angle}deg)`
+          d20num.textContent = String(1 + Math.floor(Math.random() * 20))
+        }, 80)
+
+        try {
+          const res = await GameAPI.request('/lobby/roll-initiative', 'POST')
+          clearInterval(anim)
+          d20svg.style.transform = ''
+          if (res?.order) {
+            for (const entry of res.order) currentRolls[entry.seatId] = entry.roll
+            myRoll = currentRolls[myId]
+            renderSeats(currentRolls)
+            d20num.textContent = myRoll ?? '20'
+            d20num.style.color = '#4ade80'
+            rollBtn.textContent = `You rolled ${myRoll}`
+            beginBtn.disabled = false
+            beginBtn.style.background = '#1a6b1a'
+            beginBtn.style.borderColor = '#4c4'
+            beginBtn.style.cursor = 'pointer'
+          }
+        } catch {
+          clearInterval(anim)
+          d20.style.transform = ''
+          rollBtn.disabled = false
+          rolling = false
+        }
+      })
+      panel.appendChild(rollBtn)
+
+      // Begin button
+      const beginBtn = document.createElement('button')
+      const canBegin = myRoll != null
+      beginBtn.disabled = !canBegin
+      beginBtn.style.cssText = `width:100%;padding:12px;font-size:15px;font-weight:bold;background:${canBegin ? '#1a6b1a' : '#1a1a1a'};border:2px solid ${canBegin ? '#4c4' : '#333'};color:#fff;border-radius:4px;cursor:${canBegin ? 'pointer' : 'not-allowed'}`
+      beginBtn.textContent = 'Begin Terrain Setup'
+      beginBtn.addEventListener('click', async () => {
+        if (beginBtn.disabled) return
+        beginBtn.disabled = true
+        beginBtn.textContent = 'Starting…'
+        try {
+          await GameAPI.request('/lobby/start', 'POST')
+        } catch { /* already started is fine */ }
+        back.remove()
+        resolve()
+      })
+      panel.appendChild(beginBtn)
+
+      back.appendChild(panel)
+      this.root.appendChild(back)
+    })
+  }
+
   // ── Lobby + turn banner (driven by update()) ─────────────────────────────────
   update(mp, setupStep) {
     this.mp = mp
     this.setupStep = setupStep
     const joined = !!(mp && mp.meSeatId)
     if (!joined) { this._clearLobby(); this._clearBanner(); return }
+    // Suppress lobby/banner while the initiative roll dialog is active
+    if (this.root?.querySelector('#mp-initiative')) { this._clearLobby(); this._clearBanner(); return }
     if (!mp.started) { this._clearBanner(); this._renderLobby(mp) }
     else { this._clearLobby(); this._renderBanner(mp, setupStep) }
   }

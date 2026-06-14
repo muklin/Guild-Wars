@@ -24,6 +24,10 @@ export default class GameStateManager {
       plots: []
     }
 
+    // Per-building persistent data keyed by `${kind}:${refId}` (e.g. "plot:plot-5").
+    // Upgrades live here so they stay with the building when a guild vacates.
+    this.buildingData = {}
+
     // Track next auto-IDs
     this.nextFactionAutoId = 100
   }
@@ -114,6 +118,7 @@ export default class GameStateManager {
       successionMethod: this.successionMethod,
       worldTerrainData: this.worldTerrainData,
       cityDistrictData: this.cityDistrictData,
+      buildingData: this.buildingData,
       nextFactionAutoId: this.nextFactionAutoId
     }
   }
@@ -140,6 +145,7 @@ export default class GameStateManager {
     this.successionMethod = data.successionMethod
     this.worldTerrainData = data.worldTerrainData || this.worldTerrainData
     this.cityDistrictData = data.cityDistrictData || this.cityDistrictData
+    if (data.buildingData) this.buildingData = data.buildingData
     if (data.nextFactionAutoId) {
       this.nextFactionAutoId = data.nextFactionAutoId
     } else {
@@ -154,6 +160,7 @@ export default class GameStateManager {
     this.factions.clear()
     this.threats = []
     this.tradingDestinations = []
+    this.buildingData = {}
     this.currentRound = 1
     this.currentPhase = 'Setup'
     this.cityLeader = null

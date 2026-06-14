@@ -118,7 +118,14 @@ export default class PlotVoronoiGenerator {
             blockId: block.id,
             districtId,
             blockCorners: cell.polygon,
-            streetEdges: findStreetFacingEdges(cell.polygon, roadEdges),
+            // _clipPolygonToSide may clip cell polygons to road CENTRELINES (not
+            // gutters), producing edges that sit STREET_HALF_WIDTH away from any
+            // gutter roadEdge — outside findStreetFacingEdges' normal tolerance.
+            // Adding the centreline segments lets those edges be detected too.
+            streetEdges: findStreetFacingEdges(cell.polygon, [
+              ...roadEdges,
+              ...roadLines.map(([a, b]) => ({ roadId: 'centreline', type: 'Mud', ax: a.x, ay: a.y, bx: b.x, by: b.y })),
+            ]),
           })
         }
       }

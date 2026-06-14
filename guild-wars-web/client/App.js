@@ -188,15 +188,42 @@ export default class App {
     this.eventBus.on('FACTION_HOVER_END', () => this.renderer.clearFactionHighlight())
 
     // ── Guild setup ──
-    this.eventBus.on('GUILD_HQ_PICK_START', () => { this.renderer.hqPickMode = true })
-    this.eventBus.on('HQ_PICKED', (hq) => {
+    // Close the panel and enter pick mode; cursor + hover handled by InputHandler.
+    this.eventBus.on('GUILD_HQ_PICK_START', () => {
+      this.renderer.hqPickMode = true
+      this.renderer.clearHQHover()
+      this.uiManager.guildPanel.hide()
+    })
+
+    // User clicked a building — capture snapshot, show preview in panel, reopen.
+    this.eventBus.on('HQ_PREVIEW', (hq) => {
+      const dataUrl = this.renderer.captureHQSnapshot(hq)
+      this.uiManager.guildPanel.setHQPreview(hq, dataUrl)
+      this.uiManager.guildPanel.show()
+    })
+
+    // User clicked Apply — persist to server and confirm.
+    this.eventBus.on('HQ_APPLY', async (hq) => {
       this.renderer.hqPickMode = false
-      this.uiManager.guildPanel.setHeadquarters(hq)
-      // Capture building snapshot asynchronously (after a frame so the scene is rendered)
-      requestAnimationFrame(() => {
-        const dataUrl = this.renderer.captureHQSnapshot(hq)
-        if (dataUrl) this.uiManager.guildPanel.setHQSnapshot(dataUrl)
-      })
+      this.renderer.clearHQHover()
+      document.body.style.cursor = ''
+      try {
+        const res = await GameAPI.setGuildHeadquarters(hq)
+        if (res.ok && res.guild) {
+          this.uiManager.guildPanel.setHeadquarters(hq)
+          this.uiManager.guildPanel.setData({ guild: res.guild })
+        }
+      } catch (e) {
+        console.warn('setGuildHeadquarters failed:', e)
+      }
+    })
+
+    // User cancelled pick mode without applying — just close pick mode.
+    this.eventBus.on('HQ_PICK_CANCEL', () => {
+      this.renderer.hqPickMode = false
+      this.renderer.clearHQHover()
+      document.body.style.cursor = ''
+      this.uiManager.guildPanel.clearHQPreview()
     })
     this.eventBus.on('GUILD_RENAME', async ({ name }) => {
       if (!name?.trim()) return
@@ -244,19 +271,26 @@ export default class App {
     return guilds.find(g => g.seatId != null && g.seatId === me) || guilds[0] || null
   }
 
-  // The local player's current tokens from multiplayer state.
+  // The local player's current tokens: veto from seat, guild/character/round from guild.
   _myTokens() {
     const mp = this.gameState?.multiplayer
     if (!mp) return null
-    const seat = mp.seats?.find(s => s.id === mp.meSeatId)
-    return seat?.tokens ?? null
+    const seat = mp.seats?.find(s => (s.seatId ?? s.id) === mp.meSeatId)
+    if (!seat) return null
+    const guild = this._myGuild()
+    return {
+      veto:      seat.tokens?.veto        ?? 0,
+      guild:     guild?.tokens?.guild     ?? 0,
+      character: guild?.tokens?.character ?? 0,
+      round:     guild?.tokens?.round     ?? 0,
+    }
   }
 
   // The local player's display name from multiplayer state.
   _myPlayerName() {
     const mp = this.gameState?.multiplayer
     if (!mp) return ''
-    const seat = mp.seats?.find(s => s.id === mp.meSeatId)
+    const seat = mp.seats?.find(s => (s.seatId ?? s.id) === mp.meSeatId)
     return seat?.name ?? ''
   }
 
@@ -542,19 +576,11 @@ export default class App {
       const pts = edge.pointIds || []
       const myEndpoints = new Set([pts[0], pts[pts.length - 1]].filter(p => p != null))
 
-      // Cannot flow alongside a Lake
+      // Cannot run alongside a Lake or Sea region (rule 1)
       for (const rId of myRegions) {
-        if (regionMap.get(rId)?.assignedType === 'Lake') return 'Cannot flow alongside a Lake'
-      }
-
-      // Cannot run parallel to an existing River
-      for (const [otherId, other] of Object.entries(edges)) {
-        if (otherId === edgeId || other.assignedType !== 'River') continue
-        const sharesRegion = [other.regionA, other.regionB].some(r => r != null && myRegions.has(r))
-        if (!sharesRegion) continue
-        const otherPts = other.pointIds || []
-        const otherEndpoints = new Set([otherPts[0], otherPts[otherPts.length - 1]].filter(p => p != null))
-        if (![...myEndpoints].some(p => otherEndpoints.has(p))) return 'Cannot run alongside an existing River'
+        const t = regionMap.get(rId)?.assignedType
+        if (t === 'Lake') return 'Cannot flow alongside a Lake'
+        if (t === 'Sea')  return 'Cannot flow alongside a Sea'
       }
     }
 
@@ -865,17 +891,27 @@ export default class App {
     const edgeIds = [...this.selectedCityEdgeIds]
     const edgeType = this.pendingCityEdgeType
     try {
+      let lastCityData = null
       for (const edgeId of edgeIds) {
         const response = await GameAPI.assignCityEdge(edgeId, edgeType, description)
         if (response.ok) {
-          const edge = this.renderer.cityDistrictData?.edges?.[edgeId]
-          if (edge) { edge.assignedType = edgeType; edge.description = description }
-          this.renderer.updateCityEdgeColor(edgeId, edgeType)
+          if (response.cityDistrictData) {
+            lastCityData = response.cityDistrictData
+          } else {
+            const edge = this.renderer.cityDistrictData?.edges?.[edgeId]
+            if (edge) { edge.assignedType = edgeType; edge.description = description }
+            this.renderer.updateCityEdgeColor(edgeId, edgeType)
+          }
         } else {
           this.uiManager.showError(response.error)
           this._refreshDistrictPanel()
           return
         }
+      }
+      if (lastCityData) {
+        this._renderCityGeometry(lastCityData)
+        // Trigger rise animation for newly-assigned wall/canal edges.
+        for (const edgeId of edgeIds) this.renderer.updateCityEdgeColor(edgeId, edgeType)
       }
       this._clearCityEdgeSelection()
       this._refreshDistrictPanel()
@@ -1178,6 +1214,10 @@ export default class App {
         this.renderer.setCityEdgesHidden(false)
         this.renderer.setTerrainData(response.regions, response.edges || {}, response.fineCells || [], response.edgePoints || [])
         this.inputHandler.setTerrainData(response)
+        // Show initiative roll dialog before revealing terrain setup UI
+        if (this.multiplayerUI) {
+          await this.multiplayerUI.showInitiativeRoll(response.multiplayer)
+        }
         this.uiManager.showSetupPhase('Terrain')
         this._focusCameraOnCity(response.regions)
         this.eventBus.emit('SETUP_STARTED')

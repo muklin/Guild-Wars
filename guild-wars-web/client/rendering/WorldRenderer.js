@@ -37,6 +37,7 @@ export default class WorldRenderer {
 
     this._walkMode = null
     this._walkModeOnExit = null
+    this._hqHoverMesh = null
   }
 
 
@@ -319,11 +320,13 @@ export default class WorldRenderer {
   }
 
   selectCityEdge(edgeId) {
-    return this.districtRenderer.selectCityEdge(edgeId)
+    this.districtRenderer.selectCityEdge(edgeId)
+    this._highlightBoundaryChain(edgeId, 0xffffff)
   }
 
   deselectCityEdge(edgeId) {
-    return this.districtRenderer.deselectCityEdge(edgeId)
+    this.districtRenderer.deselectCityEdge(edgeId)
+    this.streetRenderer.clearBoundaryChainHighlight(edgeId)
   }
 
   previewCityEdgeType(edgeId, type) {
@@ -339,7 +342,19 @@ export default class WorldRenderer {
   }
 
   setCityEdgeHover(edgeId) {
-    return this.districtRenderer.setCityEdgeHover(edgeId)
+    this.streetRenderer.clearBoundaryChainHighlight()
+    this.districtRenderer.setCityEdgeHover(edgeId)
+    this._highlightBoundaryChain(edgeId, 0xffff66)
+  }
+
+  // Recolor boundary-sampled streets for a district edge.
+  // Skips typed edges (Canal/Wall/etc.) — they are already rendered as geometry.
+  _highlightBoundaryChain(edgeId, color) {
+    const edge = this.districtRenderer.cityDistrictData?.edges?.[edgeId]
+    if (!edge || edge.assignedType) return
+    if (edge.boundaryPolyline?.length >= 2) {
+      this.streetRenderer.setBoundaryChainHighlight(edgeId, color)
+    }
   }
 
   getDistrictAtWorldPos(worldX, worldY) {
@@ -510,9 +525,53 @@ export default class WorldRenderer {
 
   // ── Hover ────────────────────────────────────────────────────────────────────
 
+  // Outline a plot polygon or ring a landmark during HQ pick mode.
+  setHQHover(kind, refId) {
+    this.clearHQHover()
+    const cd = this.cityDistrictData
+    const mat = new THREE.LineBasicMaterial({ color: 0x88ddff })
+    if (kind === 'plot') {
+      const plot = (cd?.plots || []).find(p => p.id === refId)
+      const poly = plot?.blockCorners
+      if (!poly?.length) return
+      const verts = []
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length]
+        verts.push(a.x, 0.14, a.y, b.x, 0.14, b.y)
+      }
+      const geom = new THREE.BufferGeometry()
+      geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+      this._hqHoverMesh = new THREE.LineSegments(geom, mat)
+    } else if (kind === 'landmark') {
+      const lb = (cd?.landmarkBuildings || [])[refId]
+      if (!lb) return
+      const segs = 24, r = 0.12
+      const verts = []
+      for (let i = 0; i < segs; i++) {
+        const a1 = (i / segs) * Math.PI * 2, a2 = ((i + 1) / segs) * Math.PI * 2
+        verts.push(lb.x + r * Math.cos(a1), 0.14, lb.z + r * Math.sin(a1),
+                   lb.x + r * Math.cos(a2), 0.14, lb.z + r * Math.sin(a2))
+      }
+      const geom = new THREE.BufferGeometry()
+      geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+      this._hqHoverMesh = new THREE.LineSegments(geom, mat)
+    }
+    if (this._hqHoverMesh) { this.scene.add(this._hqHoverMesh); this.markDirty() }
+  }
+
+  clearHQHover() {
+    if (this._hqHoverMesh) {
+      this.scene.remove(this._hqHoverMesh)
+      this._hqHoverMesh.geometry.dispose()
+      this._hqHoverMesh = null
+      this.markDirty()
+    }
+  }
+
   // Transient map hovers only (cursor over the map). Does NOT touch the panel-driven
   // faction highlight, so moving the mouse over the faction panel won't wipe it.
   clearHover() {
+    this.clearHQHover()
     this.terrainRenderer.clearHover()
     this.districtRenderer.clearHover()
     this.streetRenderer.clearHover()
@@ -551,8 +610,11 @@ export default class WorldRenderer {
   }
 
   // Switch plot bases to/from the finished grassy-brown ground (leaving District Setup).
+  // When finishing, also remove the district fill polygons — they're fully covered by
+  // plots/streets/buildings and would bleed through any gap in the geometry.
   setFinishedGround(finished) {
     this.plotRenderer.setFinishedGround(finished)
+    if (finished) this.districtRenderer.clearDistrictLayer()
   }
 
   toggleBuildings() {
@@ -648,11 +710,11 @@ export default class WorldRenderer {
     switch (name) {
       case 'buildings':       this.plotRenderer.buildingRenderer.setBuildingsVisible(on); break
       case 'blockCenters':    this.plotRenderer.setBlockCentersVisible(on); break
+      case 'blockSeeds':      this.plotRenderer.setBlockSeedsVisible(on); break
       case 'plotCenters':     this.plotRenderer.setPlotCentersVisible(on); break
       case 'districtCenters': this.districtRenderer.setDistrictCentersVisible(on); break
       case 'terrainCenters':  this.terrainRenderer.setTerrainCentersVisible(on); break
       case 'streetSeeds':     this.streetRenderer.setStreetSeedsVisible(on); break
-      case 'terrainSeeds':    this.terrainRenderer.setTerrainSeedsVisible(on); break
     }
     this.markDirty()
   }
@@ -663,12 +725,16 @@ export default class WorldRenderer {
     return {
       buildings:       br._visible,
       blockCenters:    this.plotRenderer._blockCentersVisible,
+      blockSeeds:      this.plotRenderer._blockSeedsVisible,
       plotCenters:     this.plotRenderer._plotCentersVisible,
       districtCenters: this.districtRenderer._districtCentersVisible,
       terrainCenters:  this.terrainRenderer._terrainCentersVisible,
       streetSeeds:     this.streetRenderer._streetSeedsVisible,
-      terrainSeeds:    this.terrainRenderer._terrainSeedsVisible,
     }
+  }
+
+  getDistrictCenterAtWorldPos(worldX, worldY, threshold) {
+    return this.districtRenderer.getDistrictCenterAtWorldPos(worldX, worldY, threshold)
   }
 
 
@@ -700,19 +766,23 @@ export default class WorldRenderer {
         }
       }
 
-      // Create a temporary perspective camera aimed at the building
-      const snapCam = new THREE.PerspectiveCamera(45, 300 / 180, 0.1, 1000)
-      snapCam.position.set(wx, 8, wz + 8)
-      snapCam.lookAt(wx, 0, wz)
+      // Isometric-ish shot from above-and-south. Buildings sit at Y≈0.075 and
+      // are ~0.05-0.2 world units tall, so camera at Y=0.35 gives a clean view.
+      const snapCam = new THREE.PerspectiveCamera(45, 300 / 180, 0.001, 100)
+      snapCam.position.set(wx + 0.12, 0.35, wz + 0.30)
+      snapCam.lookAt(wx, 0.08, wz)
 
       // Resize renderer to snapshot dimensions, render, capture, restore
       const origW = this.renderer.domElement.width
       const origH = this.renderer.domElement.height
       const origPixelRatio = this.renderer.getPixelRatio()
+      const origBackground = this.scene.background
+      this.scene.background = new THREE.Color(0x0d1117)  // dark neutral for snapshot
       this.renderer.setPixelRatio(1)
       this.renderer.setSize(300, 180, false)
       this.renderer.render(this.scene, snapCam)
       const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85)
+      this.scene.background = origBackground
       this.renderer.setSize(origW / origPixelRatio, origH / origPixelRatio, false)
       this.renderer.setPixelRatio(origPixelRatio)
       this.markDirty()

@@ -89,12 +89,22 @@ function seatOf(req) {
   return mp.resolveByKey(req.header('X-Seat-Key'))
 }
 
+// Add hqUpgrades from buildingData so the client always gets upgrades on the guild object.
+function enrichGuild(guild) {
+  const hq = guild?.headquarters
+  const key = hq ? `${hq.kind}:${hq.refId}` : null
+  const upgrades = key ? (gameStateManager.buildingData[key]?.upgrades ?? []) : []
+  return { ...guild, hqUpgrades: upgrades }
+}
+
 // Routes
 
 // GET     - Return full game state (+ this seat's redacted multiplayer view)
 app.get('/api/state', (req, res) => {
+  const snap = gameStateManager.getStateSnapshot()
   res.json({
-    ...gameStateManager.getStateSnapshot(),
+    ...snap,
+    guilds: snap.guilds.map(enrichGuild),
     setupStep: setupPhase.currentStep,
     resourceRegistry: setupPhase.resourceRegistry,
     threats: setupPhase.threats,
@@ -163,13 +173,26 @@ app.post('/api/turn/pass', async (req, res) => {
   }
 })
 
-// POST /api/tokens/adjust - adjust a seat's Token counter (manual, human-driven).
+// POST /api/tokens/adjust - adjust a token counter (manual, human-driven).
+// Veto tokens live on the seat; guild/character/round tokens live on the guild.
 app.post('/api/tokens/adjust', async (req, res) => {
   try {
     const { seatId, kind, delta } = req.body
-    const tokens = mp.adjustToken(seatId, kind, delta)
+    if (kind === 'veto') {
+      const tokens = mp.adjustToken(seatId, kind, delta)
+      await autoSave()
+      return res.json({ ok: true, seatId, tokens })
+    }
+    // Guild-owned token kinds
+    const seat = mp.seats.get(seatId)
+    if (!seat) throw new Error(`Seat ${seatId} not found`)
+    const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seatId)
+    if (!guild) throw new Error(`No guild for seat ${seatId}`)
+    if (!guild.tokens) guild.tokens = {}
+    if (!(kind in guild.tokens)) throw new Error(`Unknown guild token type: ${kind}`)
+    guild.tokens[kind] = Math.max(0, guild.tokens[kind] + delta)
     await autoSave()
-    res.json({ ok: true, seatId, tokens })
+    res.json({ ok: true, seatId, tokens: { ...seat.tokens, ...guild.tokens } })
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message })
   }
@@ -208,13 +231,13 @@ app.post('/api/secret/reveal', async (req, res) => {
 app.post('/api/setup/init', async (req, res) => {
   try {
     if (mp.seats.size === 0) throw new Error('No players have joined — use Join Game or Play Solo first')
-    // Clear stale guild references so auto-creation in subdivision/done runs fresh.
-    for (const seat of mp.seats.values()) seat.guildId = null
+    mp.resetForNewGame()
     const result = setupPhase.initialize()
     await autoSave()
     res.json({
       ok: true,
-      ...result
+      ...result,
+      multiplayer: mp.getStateForSeat(req.header('X-Seat-Key')),
     })
   } catch (error) {
     console.error('Setup init error:', error)
@@ -367,7 +390,7 @@ app.post('/api/setup/city/edge', requireActiveSeat, async (req, res) => {
     const { edgeId, edgeType, description } = req.body
     const result = setupPhase.assignCityEdgeType(edgeId, edgeType, description)
     await autoSave()
-    res.json({ ok: result.ok, log: result.log })
+    res.json({ ok: result.ok, cityDistrictData: gameStateManager.cityDistrictData, log: result.log })
   } catch (error) {
     console.error('City edge assign error:', error)
     res.status(400).json({ ok: false, error: error.message })
@@ -455,8 +478,8 @@ app.post('/api/setup/guild', requireActiveSeat, async (req, res) => {
     await autoSave()
     res.json({
       ok: result.ok,
-      guild: result.guild,
-      guilds: Array.from(gameStateManager.guilds.values()),
+      guild: enrichGuild(result.guild),
+      guilds: Array.from(gameStateManager.guilds.values()).map(enrichGuild),
       step: 'Complete',
       log: result.log
     })
@@ -494,18 +517,18 @@ app.post('/api/setup/guild/character/levelup', async (req, res) => {
     const { charId, classChoice } = req.body
     const seat = seatOf(req)
     if (!seat) return res.status(401).json({ ok: false, error: 'Unknown seat' })
-    if ((seat.tokens?.character ?? 0) < 1) return res.status(400).json({ ok: false, error: 'No Character tokens remaining' })
     const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seat.id)
     if (!guild) return res.status(404).json({ ok: false, error: 'No guild found' })
+    if ((guild.tokens?.character ?? 0) < 1) return res.status(400).json({ ok: false, error: 'No Character tokens remaining' })
     const ch = guild.characters?.find(c => c.id === charId)
     if (!ch) return res.status(404).json({ ok: false, error: 'Character not found' })
     if (ch.level === 0 && !classChoice?.trim()) return res.status(400).json({ ok: false, error: 'Class required for first level up' })
-    seat.tokens.character -= 1
+    guild.tokens.character -= 1
     ch.level += 1
     if (ch.level === 1 && classChoice?.trim()) ch.class = classChoice.trim()
     if (ch.role === 'recruit') ch.role = 'member'
     await autoSave()
-    res.json({ ok: true, guild, tokens: seat.tokens })
+    res.json({ ok: true, guild, tokens: { ...seat.tokens, ...guild.tokens } })
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message })
   }
@@ -539,9 +562,9 @@ app.post('/api/setup/guild/trait', async (req, res) => {
     if (!TRAIT_BY_ID.has(traitId)) return res.status(400).json({ ok: false, error: 'Unknown trait' })
     const seat = seatOf(req)
     if (!seat) return res.status(401).json({ ok: false, error: 'Unknown seat' })
-    if ((seat.tokens?.guild ?? 0) < 1) return res.status(400).json({ ok: false, error: 'No Guild tokens remaining' })
     const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seat.id)
     if (!guild) return res.status(404).json({ ok: false, error: 'No guild found' })
+    if ((guild.tokens?.guild ?? 0) < 1) return res.status(400).json({ ok: false, error: 'No Guild tokens remaining' })
     if (!guild.traits) guild.traits = []
     if (guild.traits.includes(traitId)) return res.status(400).json({ ok: false, error: 'Trait already owned' })
     const trait = TRAIT_BY_ID.get(traitId)
@@ -555,11 +578,28 @@ app.post('/api/setup/guild/trait', async (req, res) => {
         return res.status(400).json({ ok: false, error: `Requires HQ in a ${trait.requiresHQType.join(' or ')} district.` })
       }
     }
-    seat.tokens.guild -= 1
+    guild.tokens.guild -= 1
     guild.traits.push(traitId)
     await autoSave()
-    res.json({ ok: true, guild, tokens: seat.tokens })
+    res.json({ ok: true, guild, tokens: { ...seat.tokens, ...guild.tokens } })
   } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/guild/headquarters - set/update the guild's HQ and recalculate influence/standing
+app.post('/api/setup/guild/headquarters', async (req, res) => {
+  try {
+    const { hq } = req.body
+    const seat = seatOf(req)
+    if (!seat) return res.status(401).json({ ok: false, error: 'Unknown seat' })
+    const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seat.id)
+    if (!guild) return res.status(404).json({ ok: false, error: 'No guild found' })
+    const result = setupPhase.setGuildHeadquarters(guild.id, hq)
+    await autoSave()
+    res.json({ ok: result.ok, guild: enrichGuild(result.guild), log: result.log })
+  } catch (error) {
+    console.error('Set HQ error:', error)
     res.status(400).json({ ok: false, error: error.message })
   }
 })
@@ -573,8 +613,12 @@ app.post('/api/setup/guild/hq-upgrade', async (req, res) => {
     if (!seat) return res.status(401).json({ ok: false, error: 'Unknown seat' })
     const guild = Array.from(gameStateManager.guilds.values()).find(g => g.seatId === seat.id)
     if (!guild) return res.status(404).json({ ok: false, error: 'No guild found' })
-    if (!guild.hqUpgrades) guild.hqUpgrades = []
-    if (guild.hqUpgrades.includes(upgradeId)) return res.status(400).json({ ok: false, error: 'Upgrade already owned' })
+    if (!guild.headquarters) return res.status(400).json({ ok: false, error: 'Set a Headquarters before purchasing upgrades' })
+    const hqKey = `${guild.headquarters.kind}:${guild.headquarters.refId}`
+    if (!gameStateManager.buildingData[hqKey]) gameStateManager.buildingData[hqKey] = { upgrades: [] }
+    const bldg = gameStateManager.buildingData[hqKey]
+    if (!bldg.upgrades) bldg.upgrades = []
+    if (bldg.upgrades.includes(upgradeId)) return res.status(400).json({ ok: false, error: 'Upgrade already owned' })
     const upgrade = UPGRADE_BY_ID.get(upgradeId)
     // Validate sufficient resources
     for (const [resource, amount] of Object.entries(upgrade.cost)) {
@@ -585,7 +629,7 @@ app.post('/api/setup/guild/hq-upgrade', async (req, res) => {
     for (const [resource, amount] of Object.entries(upgrade.cost)) {
       guild.resources[resource] = (guild.resources[resource] ?? 0) - amount
     }
-    guild.hqUpgrades.push(upgradeId)
+    bldg.upgrades.push(upgradeId)
     // Side effect: Grand Guildhall grants +10 Standing with all factions
     if (upgradeId === 'grand-guildhall') {
       if (!guild.standing) guild.standing = {}
@@ -594,7 +638,7 @@ app.post('/api/setup/guild/hq-upgrade', async (req, res) => {
       }
     }
     await autoSave()
-    res.json({ ok: true, guild })
+    res.json({ ok: true, guild: enrichGuild(guild) })
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message })
   }

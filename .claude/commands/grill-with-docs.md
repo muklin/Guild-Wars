@@ -1,4 +1,4 @@
-# grill-with-docs
+x# grill-with-docs
 
 Conduct a rigorous, one-question-at-a-time interview to stress-test a design plan against the project's domain model and documentation.
 

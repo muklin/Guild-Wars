@@ -59,9 +59,9 @@ export default class InputHandler {
       // Headquarters picking takes priority: a plot, else the nearest Landmark.
       if (this.renderer.hqPickMode) {
         const plot = this.renderer.getPlotAtWorldPos(worldPos.x, worldPos.y)
-        if (plot) { this.eventBus.emit('HQ_PICKED', { kind: 'plot', ...plot }); return }
+        if (plot) { this.eventBus.emit('HQ_PREVIEW', { kind: 'plot', refId: plot.id, districtId: plot.districtId }); return }
         const landmark = this.renderer.getLandmarkAtWorldPos(worldPos.x, worldPos.y)
-        if (landmark) { this.eventBus.emit('HQ_PICKED', { kind: 'landmark', ...landmark }); return }
+        if (landmark) { this.eventBus.emit('HQ_PREVIEW', { kind: 'landmark', refId: landmark.refId, districtId: landmark.districtId }); return }
         return
       }
       // In Guild Setup the city is final: terrain regions and district (city) edges are
@@ -86,139 +86,170 @@ export default class InputHandler {
     if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
   }
 
+  _showTooltip(html, e) {
+    this.tooltipEl.innerHTML = html
+    this.tooltipEl.style.left = e.clientX + 10 + 'px'
+    this.tooltipEl.style.top  = e.clientY + 10 + 'px'
+    this.tooltipEl.style.display = 'block'
+  }
+
+  _hideTooltip() {
+    this.tooltipEl && (this.tooltipEl.style.display = 'none')
+  }
+
   onMouseMove(e) {
     if (document.getElementById('ui-container')?.contains(e.target)) {
       this.renderer.clearHover()
-      this.tooltipEl && (this.tooltipEl.style.display = 'none')
+      this._hideTooltip()
+      if (this.renderer.hqPickMode) document.body.style.cursor = ''
       return
     }
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
     const debug = this.renderer.showDebug
 
-    if (this.renderer.mode === 'streets') {
+    if (this.renderer.mode === 'city') {
       if (debug) {
-        const blockCenter  = this.renderer.getBlockCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
-        const plotCenter   = blockCenter ? null : this.renderer.getPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.2)
-        const streetSeed   = (!blockCenter && !plotCenter) ? this.renderer.getStreetSeedAtWorldPos(worldPos.x, worldPos.y, 0.1) : null
-        const center = blockCenter || plotCenter || streetSeed
-        if (center) {
+        // Debug dot priority: block > plot > street junction seed > district center
+        // Thresholds are ~1.5× the sphere visual radius so hovering is responsive
+        // without the hit area feeling huge.
+        const blockCenter    = this.renderer.getBlockCenterAtWorldPos(worldPos.x, worldPos.y, 0.05)
+        const plotCenter     = blockCenter ? null : this.renderer.getPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.04)
+        const streetSeed     = (!blockCenter && !plotCenter) ? this.renderer.getStreetSeedAtWorldPos(worldPos.x, worldPos.y, 0.03) : null
+        const districtCenter = (!blockCenter && !plotCenter && !streetSeed) ? this.renderer.getDistrictCenterAtWorldPos(worldPos.x, worldPos.y, 0.1) : null
+        const dot = blockCenter || plotCenter || streetSeed || districtCenter
+        if (dot) {
           this.renderer.clearHover()
-          if (center.kind === 'block') {
-            this.renderer.setBlockHover(center.id)
-            this.tooltipEl.innerHTML = `<div style="font-weight:bold">Block ${center.id}</div>`
-              + `<div style="font-size:0.9em;margin-top:2px">type: ${center.blockType ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
-          } else if (center.kind === 'plot') {
-            this.tooltipEl.innerHTML = `<div style="font-weight:bold">Plot ${center.id}</div>`
-              + `<div style="font-size:0.9em;margin-top:2px">block: ${center.blockId ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
-              + `<div style="font-size:0.85em;opacity:0.85">blockType: ${center.blockType} &nbsp;|&nbsp; streetEdges: ${center.streetEdges}</div>`
-          } else if (center.kind === 'streetSeed') {
-            this.tooltipEl.innerHTML = `<div style="font-weight:bold">Junction ${center.id}</div>`
-              + `<div style="font-size:0.9em;margin-top:2px">type: ${center.type ?? '?'} &nbsp;|&nbsp; district: ${center.districtId ?? '?'}</div>`
-              + `<div style="font-size:0.85em;opacity:0.85">connections: ${center.connections} &nbsp;|&nbsp; (${center.x?.toFixed(3)}, ${center.y?.toFixed(3)})</div>`
+          if (dot.kind === 'block') {
+            this.renderer.setBlockHover(dot.id)
+            this._showTooltip(
+              `<div style="font-weight:bold">Block ${dot.id}</div>` +
+              `<div style="font-size:0.9em;margin-top:2px">type: ${dot.blockType ?? '?'} &nbsp;|&nbsp; district: ${dot.districtId ?? '?'}</div>`,
+              e)
+          } else if (dot.kind === 'plot') {
+            this._showTooltip(
+              `<div style="font-weight:bold">Plot ${dot.id}</div>` +
+              `<div style="font-size:0.9em;margin-top:2px">block: ${dot.blockId ?? '?'} &nbsp;|&nbsp; district: ${dot.districtId ?? '?'}</div>` +
+              `<div style="font-size:0.85em;opacity:0.85">blockType: ${dot.blockType} &nbsp;|&nbsp; streetEdges: ${dot.streetEdges}</div>`,
+              e)
+          } else if (dot.kind === 'streetSeed') {
+            this._showTooltip(
+              `<div style="font-weight:bold">Junction ${dot.id}</div>` +
+              `<div style="font-size:0.9em;margin-top:2px">type: ${dot.type ?? '?'} &nbsp;|&nbsp; district: ${dot.districtId ?? '?'}</div>` +
+              `<div style="font-size:0.85em;opacity:0.85">connections: ${dot.connections} &nbsp;|&nbsp; (${dot.x?.toFixed(3)}, ${dot.y?.toFixed(3)})</div>`,
+              e)
+          } else if (dot.kind === 'districtCenter') {
+            this._showTooltip(
+              `<div style="font-weight:bold">District ${dot.id}</div>` +
+              `<div style="font-size:0.9em;margin-top:2px">type: ${dot.assignedType ?? '?'}</div>` +
+              (dot.residentialClass ? `<div style="font-size:0.85em;opacity:0.85">class: ${dot.residentialClass}</div>` : ''),
+              e)
           }
-          this.tooltipEl.style.left = e.clientX + 10 + 'px'
-          this.tooltipEl.style.top  = e.clientY + 10 + 'px'
-          this.tooltipEl.style.display = 'block'
           return
         }
-        const junction = this.renderer.getJunctionAtWorldPos(worldPos.x, worldPos.y)
+        // Street graph hover (junction nodes and edges)
+        const junction = this.renderer.getJunctionAtWorldPos(worldPos.x, worldPos.y, 0.05)
         if (junction) {
-          this.tooltipEl.innerHTML = `<div style="font-weight:bold">Junction ${junction.id}</div>`
-            + `<div style="font-size:0.9em;margin-top:2px">type: ${junction.type ?? '?'} &nbsp;|&nbsp; district: ${junction.districtId ?? '?'}</div>`
-            + `<div style="font-size:0.85em;margin-top:2px;opacity:0.85">connections: ${junction.connections.length} &nbsp;|&nbsp; (${junction.x.toFixed(3)}, ${junction.y.toFixed(3)})</div>`
-          this.tooltipEl.style.left = e.clientX + 10 + 'px'
-          this.tooltipEl.style.top  = e.clientY + 10 + 'px'
-          this.tooltipEl.style.display = 'block'
+          this._showTooltip(
+            `<div style="font-weight:bold">Junction ${junction.id}</div>` +
+            `<div style="font-size:0.9em;margin-top:2px">type: ${junction.type ?? '?'} &nbsp;|&nbsp; district: ${junction.districtId ?? '?'}</div>` +
+            `<div style="font-size:0.85em;margin-top:2px;opacity:0.85">connections: ${junction.connections.length} &nbsp;|&nbsp; (${junction.x.toFixed(3)}, ${junction.y.toFixed(3)})</div>`,
+            e)
           this.renderer.setJunctionHover(junction.id)
           return
         }
         const edge = this.renderer.getStreetEdgeAtWorldPos(worldPos.x, worldPos.y)
         if (edge) {
           const idStr = edge.id !== null && edge.id !== undefined ? String(edge.id) : '?'
-          this.tooltipEl.innerHTML = `<div style="font-weight:bold">Street ${idStr}</div>`
-            + `<div style="font-size:0.9em;margin-top:2px">type: ${edge.type ?? '?'} &nbsp;|&nbsp; district: ${edge.districtId ?? '?'}</div>`
-            + `<div style="font-size:0.85em;margin-top:2px;opacity:0.85">nodes: ${edge.nodeA}→${edge.nodeB} &nbsp;|&nbsp; len: ${edge.length.toFixed(3)}</div>`
-          this.tooltipEl.style.left = e.clientX + 10 + 'px'
-          this.tooltipEl.style.top  = e.clientY + 10 + 'px'
-          this.tooltipEl.style.display = 'block'
+          this._showTooltip(
+            `<div style="font-weight:bold">Street ${idStr}</div>` +
+            `<div style="font-size:0.9em;margin-top:2px">type: ${edge.type ?? '?'} &nbsp;|&nbsp; district: ${edge.districtId ?? '?'}</div>` +
+            `<div style="font-size:0.85em;margin-top:2px;opacity:0.85">nodes: ${edge.nodeA}→${edge.nodeB} &nbsp;|&nbsp; len: ${edge.length.toFixed(3)}</div>`,
+            e)
           this.renderer.setStreetEdgeHover(edge)
           return
         }
       }
-      this.renderer.clearHover()
-      this.tooltipEl && (this.tooltipEl.style.display = 'none')
-      return
-    }
+      // HQ pick mode: outline hovered plot or landmark, no other interaction.
+      if (this.renderer.hqPickMode) {
+        const plot = this.renderer.getPlotAtWorldPos(worldPos.x, worldPos.y)
+        if (plot) {
+          this.renderer.setHQHover('plot', plot.id)
+          document.body.style.cursor = 'pointer'
+          return
+        }
+        const landmark = this.renderer.getLandmarkAtWorldPos(worldPos.x, worldPos.y)
+        if (landmark) {
+          this.renderer.setHQHover('landmark', landmark.refId)
+          document.body.style.cursor = 'pointer'
+          return
+        }
+        document.body.style.cursor = ''
+        this.renderer.clearHQHover()
+        return
+      }
 
-    if (this.renderer.mode === 'city') {
+      // Non-debug city hover (district/region selection)
       const guildSetup = this.renderer.guildSetupActive
       if (!guildSetup) {
         const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
-        if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); return }
+        if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); this._hideTooltip(); return }
       }
       const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
-      if (district) { this.renderer.setDistrictHover(district.id); return }
+      if (district) { this.renderer.setDistrictHover(district.id); this._hideTooltip(); return }
       if (!guildSetup) {
         const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-        if (region) { this.renderer.setRegionHover(region.id); return }
+        if (region) { this.renderer.setRegionHover(region.id); this._hideTooltip(); return }
       }
       this.renderer.clearHover()
+      this._hideTooltip()
       return
     }
 
     // Terrain mode — check region center seed points first
-    const regionCenter = this.renderer.getTerrainSeedAtWorldPos(worldPos.x, worldPos.y, 0.5)
+    const regionCenter = this.renderer.getTerrainSeedAtWorldPos(worldPos.x, worldPos.y, 0.1)
     if (regionCenter) {
       this.renderer.setRegionHover(regionCenter.regionId)
       if (debug) {
-        this.tooltipEl.innerHTML = `
-          <div style="font-weight: bold">Region ${regionCenter.regionId} (regionCenter)</div>
-          <div style="margin-top: 4px; font-size: 0.9em">(${regionCenter.position.x.toFixed(2)}, ${regionCenter.position.y.toFixed(2)})</div>
-        `
-        this.tooltipEl.style.left = e.clientX + 10 + 'px'
-        this.tooltipEl.style.top = e.clientY + 10 + 'px'
-        this.tooltipEl.style.display = 'block'
+        this._showTooltip(
+          `<div style="font-weight:bold">Region ${regionCenter.regionId} (terrainCenter)</div>` +
+          `<div style="margin-top:4px;font-size:0.9em">(${regionCenter.position.x.toFixed(2)}, ${regionCenter.position.y.toFixed(2)})</div>`,
+          e)
       } else {
-        this.tooltipEl.style.display = 'none'
+        this._hideTooltip()
       }
       return
     }
 
-    const corner = this.renderer.getTerrainCornerAtWorldPos(worldPos.x, worldPos.y, 0.5)
+    const corner = this.renderer.getTerrainCornerAtWorldPos(worldPos.x, worldPos.y, 0.1)
     if (corner) {
       this.renderer.clearHover()
       if (debug) {
         const regionList = corner.regionIds
           .map((id, i) => `Region ${id} (v${corner.vertexIndices[i]})`).join(', ')
         const vid = corner.point.id !== undefined ? `Vertex ${corner.point.id}` : 'Vertex'
-        this.tooltipEl.innerHTML = `
-          <div style="font-weight: bold">${vid} (${corner.point.x.toFixed(2)}, ${corner.point.y.toFixed(2)})</div>
-          <div style="margin-top: 4px; font-size: 0.9em">${regionList}</div>
-        `
-        this.tooltipEl.style.left = e.clientX + 10 + 'px'
-        this.tooltipEl.style.top = e.clientY + 10 + 'px'
-        this.tooltipEl.style.display = 'block'
-      } else { this.tooltipEl.style.display = 'none' }
+        this._showTooltip(
+          `<div style="font-weight:bold">${vid} (${corner.point.x.toFixed(2)}, ${corner.point.y.toFixed(2)})</div>` +
+          `<div style="margin-top:4px;font-size:0.9em">${regionList}</div>`,
+          e)
+      } else { this._hideTooltip() }
       return
     }
 
     const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
-    if (edge) { this.renderer.setEdgeHover(edge.id); this.tooltipEl.style.display = 'none'; return }
+    if (edge) { this.renderer.setEdgeHover(edge.id); this._hideTooltip(); return }
 
     const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
     if (region) {
       this.renderer.setRegionHover(region.id)
       if (debug) {
-        this.tooltipEl.textContent = `Region ${region.id} - ${region.assignedType || 'Unassigned'}`
-        this.tooltipEl.style.left = e.clientX + 10 + 'px'
-        this.tooltipEl.style.top = e.clientY + 10 + 'px'
-        this.tooltipEl.style.display = 'block'
-      } else { this.tooltipEl.style.display = 'none' }
+        this._showTooltip(`Region ${region.id} - ${region.assignedType || 'Unassigned'}`, e)
+      } else { this._hideTooltip() }
     } else {
       this.renderer.clearHover()
-      this.tooltipEl.style.display = 'none'
+      this._hideTooltip()
     }
   }
+
   _isTyping() {
     const el = document.activeElement
     return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')

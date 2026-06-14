@@ -83,6 +83,8 @@ function generateRecruits(n) {
       level: 0,
       role: 'recruit',
       abilityScores,
+      maxHp: 6,
+      currentHp: 6,
     }
   })
 }
@@ -423,22 +425,6 @@ export default class SetupPhase {
     if (!edge) throw new Error(`Edge ${edgeId} not found`)
     if (edge.assignedType) throw new Error(`Edge ${edgeId} is already assigned ${edge.assignedType}`)
 
-    if (edgeType === 'River') {
-      const allEdges = this.gameStateManager.worldTerrainData.edges
-      const myRegions = new Set([edge.regionA, edge.regionB].filter(r => r != null))
-      const myPts = edge.pointIds || []
-      const myEndpoints = new Set([myPts[0], myPts[myPts.length - 1]].filter(p => p != null))
-      for (const [otherId, other] of Object.entries(allEdges)) {
-        if (otherId === edgeId || other.assignedType !== 'River') continue
-        const sharesRegion = [other.regionA, other.regionB].some(r => r != null && myRegions.has(r))
-        if (!sharesRegion) continue
-        const otherPts = other.pointIds || []
-        const otherEndpoints = new Set([otherPts[0], otherPts[otherPts.length - 1]].filter(p => p != null))
-        const sharesEndpoint = [...myEndpoints].some(p => otherEndpoints.has(p))
-        if (!sharesEndpoint) throw new Error('Rivers cannot run alongside each other')
-      }
-    }
-
     edge.assignedType = edgeType
     edge.description = description
     this.edgePlacements.push({ edgeId, edgeType, description })
@@ -753,6 +739,10 @@ export default class SetupPhase {
     edge.description = description
     this.cityEdgePlacements.push({ edgeId, edgeType, description })
     this.log.push(`Assigned ${edgeType} to city edge ${edgeId}`)
+    // Regenerate streets for any already-typed adjacent districts so the
+    // boundary polyline is stamped with the correct type (Stone for Wall, etc.)
+    // before the client tries to build the wall/canal mesh.
+    this.generateForLocked()
     return { ok: true, log: this.log }
   }
 
@@ -953,6 +943,16 @@ export default class SetupPhase {
     const gen = new StreetVoronoiGenerator()
     cityData.streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes)
     console.log(`[perf]   streets: ${(performance.now()-t0).toFixed(1)}ms (${districts.length} districts → ${cityData.streetGraph.junctions.length} junctions, ${cityData.streetGraph.edges?.length ?? '?'} edges)`)
+
+    // Stamp the ordered boundary-street path onto each edge object so the client
+    // can render Canal/Wall geometry along the actual street chain rather than the
+    // original straight District Edge polyline (which plots now straddle).
+    const { boundaryPolylines } = cityData.streetGraph
+    if (boundaryPolylines) {
+      for (const [edgeId, polyline] of Object.entries(boundaryPolylines)) {
+        if (cityData.edges[edgeId]) cityData.edges[edgeId].boundaryPolyline = polyline
+      }
+    }
     this.log.push(`Generated street graph over ${districts.length} district(s): ${cityData.streetGraph.junctions.length} junctions, ${tradeRoutes.length} trade road(s) (final=${isFinal})`)
   }
 
@@ -1072,8 +1072,8 @@ export default class SetupPhase {
       headquarters: this._resolveHeadquarters(headquarters),
       influence: {},
       standing: {},
-      hqUpgrades: [],
       traits: [],
+      tokens: { guild: 2, character: 3, round: 2 },
       resources: { Gold: 200 },   // Rules.md: each guild starts with 200gp
       characters: generateRecruits(5),
     }
@@ -1083,6 +1083,31 @@ export default class SetupPhase {
     gsm.addGuild(guild)
     this.currentStep = 'Complete'
     this.log.push(`Created guild${guild.name ? ` "${guild.name}"` : ''}${guild.headquarters ? ` (HQ in district ${guild.headquarters.districtId})` : ''}`)
+    return { ok: true, guild, log: this.log }
+  }
+
+  // Set (or update) a guild's headquarters and recalculate HQ influence/standing.
+  // Called when the player picks their HQ after guild creation.
+  setGuildHeadquarters(guildId, hq) {
+    const gsm = this.gameStateManager
+    const guild = [...gsm.guilds.values()].find(g => g.id === guildId)
+    if (!guild) throw new Error(`Guild ${guildId} not found`)
+    const resolved = this._resolveHeadquarters(hq)
+    guild.headquarters = resolved
+    if (resolved?.districtId != null) {
+      const hqFaction = this.factions.find(x => x.type === 'district' && x.districtId === resolved.districtId)
+                     ?? this.factions.find(x => x.type === 'leadership' && x.districtId === resolved.districtId)
+      if (hqFaction) {
+        guild.standing[hqFaction.id] = Math.min(100, (guild.standing[hqFaction.id] ?? 50) + 20)
+        const lf = this._leadershipFaction()
+        const leadershipBase = lf?.influence?.[hqFaction.id] ?? 60
+        const otherTotal = [...gsm.guilds.values()]
+          .filter(g => g.id !== guild.id)
+          .reduce((sum, g) => sum + (g.influence[hqFaction.id] ?? 0), 0)
+        guild.influence[hqFaction.id] = Math.min(30, Math.max(0, 100 - leadershipBase - otherTotal))
+      }
+    }
+    this.log.push(`Set headquarters for guild ${guildId}`)
     return { ok: true, guild, log: this.log }
   }
 

@@ -195,28 +195,32 @@ A point in the street graph. Nodes with degree ≥ 3 are **junctions**; nodes wi
 _Avoid_: vertex, waypoint
 
 **Junction**:
-A street node where three or more streets meet (degree ≥ 3). Distinct from a bend node (degree 2).
+A street node where three or more streets or street like connections meet (degree ≥ 3). Distinct from a bend node (degree 2). 
 _Avoid_: intersection, crossroads
 
-**City Edge**:
-The boundary line between two adjacent districts, assignable to a type (Wall, MainRoad, Canal, Docks). Distinct from a terrain **Edge** (which separates terrain regions).
-_Avoid_: district border, district boundary
+**District Edge**:
+The boundary line between two adjacent districts (or between a district and the city exterior), assignable to a type (Wall, MainRoad, Canal, Docks). Before either adjacent district is defined, represented as a straight polyline; once either side has a district, represented by the boundary-sampled street chain. Distinct from a terrain **Edge** (which separates terrain regions).
+_Avoid_: city edge, district border, district boundary
 
-**Wall** (city edge type):
+**Wall** (district edge type):
 A fortified city-edge forming a defensive barrier between or around districts.
 _Avoid_: fence, barrier, rampart
 
-**MainRoad** (city edge type):
+**MainRoad** (district edge type):
 A major road city-edge indicating a primary transit corridor between two districts.
 _Avoid_: highway, main street
 
-**Canal** (city edge type):
+**Canal** (district edge type):
 A navigable waterway city-edge connecting districts; requires adjacent water terrain.
 _Avoid_: channel, waterway
 
-**Docks** (city edge type):
+**Docks** (district edge type):
 A maritime city-edge placed where the city meets a Sea, Lake, or River region, enabling water-based trade.
 _Avoid_: port, harbor
+
+**Alley**:
+A narrow street generated automatically on each side of a Wall or Canal District Edge, providing plot frontage where the structure would otherwise leave plots landlocked. Stone surface beside Canals; Mud surface beside Walls.
+_Avoid_: service road, back lane
 
 ### Blocks & Plots
 

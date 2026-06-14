@@ -857,10 +857,18 @@ export default class StreetVoronoiGenerator {
 
     const junctions = buildJunctions(finalNodes, finalEdges)
 
+    // Capture ordered point paths for each district edge so the client can render
+    // Canal/Wall geometry along the actual boundary-sampled street path (not the
+    // original straight polyline, which plots may now straddle).
+    const boundaryPolylines = {}
+    for (const [edgeId, nodes] of boundaryNodesByEdge) {
+      boundaryPolylines[edgeId] = nodes.map(n => ({ x: n.x, y: n.y }))
+    }
+
     const byType = finalEdges.reduce((acc, e) => { acc[e.type] = (acc[e.type] || 0) + 1; return acc }, {})
     const typeStr = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(', ')
     console.log(`Street graph: ${junctions.length} junctions (${typeStr}), ${allCells.length} Voronoi cells`)
-    return { junctions, cells: allCells, seeds: allSeeds }
+    return { junctions, cells: allCells, seeds: allSeeds, boundaryPolylines }
   }
 
   // Perimeter seeds with canonical direction on each edge so shared district

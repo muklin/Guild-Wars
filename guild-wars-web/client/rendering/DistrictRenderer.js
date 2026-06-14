@@ -117,6 +117,7 @@ export default class DistrictRenderer {
   // ── District data ───────────────────────────────────────────────────────────
 
   setCityDistrictData(data) {
+    this._districtById = null
     if (Array.isArray(data)) {
       this.cityDistrictData = { districts: data, edges: {}, edgePoints: [] }
       this.cityEdgePointsById = new Map()
@@ -175,6 +176,15 @@ export default class DistrictRenderer {
     return mesh
   }
 
+  // Returns true if either adjacent district has been locked (assignedType set).
+  // Once true, the old straight-polyline rendering is replaced by geometry built
+  // from edge.boundaryPolyline (the actual boundary-sampled street path).
+  _edgeHasDefinedDistrict(edge) {
+    const districts = this.cityDistrictData?.districts || []
+    const districtById = this._districtById || (this._districtById = new Map(districts.map(d => [d.id, d])))
+    return !!(districtById.get(edge.districtA)?.assignedType || districtById.get(edge.districtB)?.assignedType)
+  }
+
   renderCityEdges(edges) {
     this.cityPolylines?.dispose()
     this.cityPolylines = null
@@ -182,13 +192,15 @@ export default class DistrictRenderer {
     this.cityEdgeMeshes.clear()
     this.wallAnimations.clear()
     this.selectedCityEdgeIds.clear()
+    this._districtById = null  // invalidate cached map
 
     // Guild Setup: suppress non-wall boundary polylines (tan caps, district edge
     // highlights) but keep Wall meshes and their towers — they are physical structures.
     if (this.hideCityEdges) {
       for (const [edgeId, edge] of Object.entries(edges)) {
         if (edge.assignedType === 'Wall') {
-          const mesh = this.buildWallMesh(edge, edgeId)
+          const poly = edge.boundaryPolyline?.length >= 2 ? edge.boundaryPolyline : null
+          const mesh = this.buildWallMesh(edge, edgeId, poly)
           if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
         }
       }
@@ -199,11 +211,35 @@ export default class DistrictRenderer {
     const nonWallEdges = {}
     for (const [edgeId, edge] of Object.entries(edges)) {
       if (edge.assignedType === 'Mud') continue
+
+      const hasBoundaryPath = !!(edge.boundaryPolyline?.length >= 2)
+      // Use boundary polyline as soon as it exists (set after first district on
+      // either side generates streets). Fall back to straight edge pointIds until then.
+      const boundaryPoly = hasBoundaryPath ? edge.boundaryPolyline : null
+
       if (edge.assignedType === 'Wall') {
-        const mesh = this.buildWallMesh(edge, edgeId)
+        console.log(`[wall] edge ${edgeId}: boundaryPolyline=${edge.boundaryPolyline?.length ?? 'none'} pts, using ${hasBoundaryPath ? 'boundary' : 'pointIds'}`)
+        const mesh = this.buildWallMesh(edge, edgeId, boundaryPoly)
         if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
+      } else if (edge.assignedType === 'Canal') {
+        console.log(`[canal] edge ${edgeId}: boundaryPolyline=${edge.boundaryPolyline?.length ?? 'none'} pts, hasBoundaryPath=${hasBoundaryPath}`)
+        if (hasBoundaryPath) {
+          // Render canal as water channel along the actual boundary-street path.
+          // Canal-type connections are suppressed in StreetRenderer so the mesh is visible.
+          const mesh = this.buildCanalMesh(edge.boundaryPolyline, edgeId)
+          if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
+        } else {
+          // No boundary path yet — show old blue polyline temporarily.
+          nonWallEdges[edgeId] = edge
+        }
       } else {
-        nonWallEdges[edgeId] = edge
+        const defined = this._edgeHasDefinedDistrict(edge)
+        if (!defined || !hasBoundaryPath) {
+          // Show polyline while no district is defined, or until boundary path arrives.
+          nonWallEdges[edgeId] = edge
+        }
+        // else: defined + hasBoundaryPath + untyped/MainRoad → suppress old polyline;
+        // the street renderer already shows the boundary streets.
       }
     }
 
@@ -215,15 +251,12 @@ export default class DistrictRenderer {
     this._renderWallTowers(edges)
   }
 
-  // Place a wallTower.glb at each end of a wall and at every district corner /
-  // junction along its length (wall-polyline endpoints and real bends; collinear
-  // samples are skipped). Each tower is rotated to face the AVERAGE of the
-  // outward normals of the wall segments meeting at it — one wall → perpendicular
-  // to that wall; two walls → the bisector. Shared corners dedupe to one tower.
+  // Towers only at the two boundary endpoints (the district corner points where
+  // multiple edges meet). Intermediate junctions along the wall get arches later.
   _renderWallTowers(edges) {
     this.wallTowers.clear()
     const districtById = new Map((this.cityDistrictData?.districts || []).map(d => [d.id, d]))
-    const towers = new Map()   // posKey → { x, y, nx, ny }  (accumulated outward normals)
+    const towers = new Map()   // posKey → { x, y, nx, ny }
 
     const accumulate = (T, seed, neighbours) => {
       const key = `${Math.round(T.x * 100)},${Math.round(T.y * 100)}`
@@ -233,8 +266,8 @@ export default class DistrictRenderer {
         const dx = Q.x - T.x, dy = Q.y - T.y
         const len = Math.hypot(dx, dy)
         if (len < 1e-9) continue
-        let nx = -dy / len, ny = dx / len               // wall normal (perpendicular)
-        if (seed) {                                      // orient away from the district interior
+        let nx = -dy / len, ny = dx / len
+        if (seed) {
           const mx = (T.x + Q.x) / 2, my = (T.y + Q.y) / 2
           if (nx * (mx - seed.x) + ny * (my - seed.y) < 0) { nx = -nx; ny = -ny }
         }
@@ -244,89 +277,196 @@ export default class DistrictRenderer {
 
     for (const edge of Object.values(edges || {})) {
       if (edge.assignedType !== 'Wall') continue
-      const ids = edge.pointIds || []
-      if (ids.length < 2) continue
+      const pts = edge.boundaryPolyline?.length >= 2
+        ? edge.boundaryPolyline
+        : (edge.pointIds || []).map(i => this.cityEdgePointsById.get(i))
+      if (pts.length < 2) continue
       const seed = districtById.get(edge.districtA)?.seedPoint
-      const pts = ids.map(i => this.cityEdgePointsById.get(i))
-      for (let k = 0; k < pts.length; k++) {
-        const p = pts[k], prev = pts[k - 1], next = pts[k + 1]
+      // Towers only at the chain endpoints, not at intermediate boundary junctions.
+      for (const k of [0, pts.length - 1]) {
+        const p = pts[k]
         if (!p) continue
-        let isTower = (k === 0 || k === pts.length - 1)
-        if (!isTower && prev && next) {
-          const d1x = p.x - prev.x, d1y = p.y - prev.y, d2x = next.x - p.x, d2y = next.y - p.y
-          const l1 = Math.hypot(d1x, d1y), l2 = Math.hypot(d2x, d2y)
-          if (l1 > 1e-6 && l2 > 1e-6 && (d1x * d2x + d1y * d2y) / (l1 * l2) <= 0.97) isTower = true
-        }
-        if (!isTower) continue
         const neighbours = []
-        if (prev) neighbours.push(prev)
-        if (next) neighbours.push(next)
+        if (pts[k - 1]) neighbours.push(pts[k - 1])
+        if (pts[k + 1]) neighbours.push(pts[k + 1])
         accumulate(p, seed, neighbours)
       }
     }
 
     const positions = []
     for (const e of towers.values()) {
-      const rotY = (Math.hypot(e.nx, e.ny) > 1e-9) ? Math.atan2(e.nx, e.ny) : 0  // local +Z → avg normal
+      const rotY = Math.hypot(e.nx, e.ny) > 1e-9 ? Math.atan2(e.nx, e.ny) : 0
       positions.push({ x: e.x, y: e.y, rotY })
     }
-    if (positions.length) this.wallTowers.spawnTowers(positions, 0.075)   // wall base height
+    if (positions.length) this.wallTowers.spawnTowers(positions, 0.075)
   }
 
-  buildWallMesh(edge, edgeId) {
-    const ids = edge.pointIds
-    if (!ids || ids.length < 2) return null
-
-    const thickness = 0.0875
-    const wallHeight = thickness * 3
-    const allVerts = [], allIdx = []
-
-    for (let i = 0; i < ids.length - 1; i++) {
-      const p1 = this.cityEdgePointsById.get(ids[i])
-      const p2 = this.cityEdgePointsById.get(ids[i + 1])
-      if (!p1 || !p2) continue
-      const dx = p2.x - p1.x, dy = p2.y - p1.y
-      const len = Math.sqrt(dx * dx + dy * dy)
-      if (len === 0) continue
-      const px = (-dy / len) * (thickness / 2), py = (dx / len) * (thickness / 2)
-      const b = allVerts.length / 3
-
-      allVerts.push(
-        p1.x - px, 0,          p1.y - py,
-        p1.x + px, 0,          p1.y + py,
-        p2.x + px, 0,          p2.y + py,
-        p2.x - px, 0,          p2.y - py,
-        p1.x - px, wallHeight, p1.y - py,
-        p1.x + px, wallHeight, p1.y + py,
-        p2.x + px, wallHeight, p2.y + py,
-        p2.x - px, wallHeight, p2.y - py
-      )
-
-      allIdx.push(b+4, b+5, b+6,  b+4, b+6, b+7)
-      allIdx.push(b+1, b+2, b+6,  b+1, b+6, b+5)
-      allIdx.push(b+3, b+0, b+4,  b+3, b+4, b+7)
-      allIdx.push(b+0, b+1, b+5,  b+0, b+5, b+4)
-      allIdx.push(b+2, b+3, b+7,  b+2, b+7, b+6)
+  // Compute mitered left/right corner points for a polyline at a given half-width.
+  // Handles first/last points (simple perpendicular) and interior points (bisector miter).
+  _getMiteredCorners(pts, halfWidth) {
+    const left = [], right = []
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], prev = pts[i - 1], next = pts[i + 1]
+      let mx = 0, my = 0
+      if (prev && next) {
+        const l1 = Math.hypot(p.x - prev.x, p.y - prev.y)
+        const l2 = Math.hypot(next.x - p.x, next.y - p.y)
+        const n1x = -(p.y - prev.y) / l1, n1y = (p.x - prev.x) / l1
+        const n2x = -(next.y - p.y) / l2, n2y = (next.x - p.x) / l2
+        const bx = n1x + n2x, by = n1y + n2y
+        const bl = Math.hypot(bx, by)
+        if (bl < 1e-6) { mx = n1x; my = n1y }
+        else { const s = 1 / Math.max(0.15, (bx * n1x + by * n1y) / bl); mx = bx / bl * s; my = by / bl * s }
+      } else {
+        const ref = next ?? prev
+        const len = Math.hypot(ref.x - p.x, ref.y - p.y)
+        if (len > 1e-9) { mx = -(ref.y - p.y) / len; my = (ref.x - p.x) / len }
+      }
+      left.push({ x: p.x + mx * halfWidth, y: p.y + my * halfWidth })
+      right.push({ x: p.x - mx * halfWidth, y: p.y - my * halfWidth })
     }
-    if (allVerts.length === 0) return null
+    return { left, right }
+  }
 
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allVerts), 3))
-    geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(allIdx), 1))
-    geometry.computeVertexNormals()
+  // Build a recessed water channel mesh along `polyline` [{x,y}].
+  // Rendered at Y just above the district mesh so it overrides the district colour;
+  // stone-lining strips sit slightly higher on each side.
+  buildCanalMesh(polyline, edgeId) {
+    if (!polyline || polyline.length < 2) return null
+    const W          = 0.0875   // normal full street width
+    const halfWater  = W          // canal water half-width (total = 2W)
+    const halfStone  = W * 1.25  // stone lining extends 0.25W beyond water on each side
+    const stoneY     = 0.052     // stone banks just above district ground (0.05)
+    const waterY     = 0.056     // water above stone so it shows through in the centre
+    const stoneColor = 0x888888
+    const waterColor = DISTRICT_COLORS.Canal
 
-    const color = DISTRICT_COLORS.Wall
-    const material = new THREE.MeshStandardMaterial({
-      color, roughness: 0.7, metalness: 0,
-      emissive: color, emissiveIntensity: 0.15,
-      side: THREE.DoubleSide
-    })
-    const innerMesh = new THREE.Mesh(geometry, material)
+    const buildStrip = (hw, Y) => {
+      const { left, right } = this._getMiteredCorners(polyline, hw)
+      const verts = [], idx = []
+      for (let i = 0; i < polyline.length - 1; i++) {
+        const b = verts.length / 3
+        verts.push(right[i].x, Y, right[i].y,  left[i].x, Y, left[i].y,
+                   left[i+1].x, Y, left[i+1].y,  right[i+1].x, Y, right[i+1].y)
+        idx.push(b, b+1, b+2,  b, b+2, b+3)
+      }
+      return { verts, idx }
+    }
+
+    const makeGroup = () => {
+      const group = new THREE.Group()
+      group.userData = { cityEdgeId: edgeId }
+
+      const stone = buildStrip(halfStone, stoneY)
+      if (stone.verts.length) {
+        const geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(stone.verts), 3))
+        geo.setIndex(new THREE.BufferAttribute(new Uint32Array(stone.idx), 1))
+        geo.computeVertexNormals()
+        group.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: stoneColor, roughness: 0.8, metalness: 0, side: THREE.DoubleSide })))
+      }
+
+      const water = buildStrip(halfWater, waterY)
+      if (water.verts.length) {
+        const geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(water.verts), 3))
+        geo.setIndex(new THREE.BufferAttribute(new Uint32Array(water.idx), 1))
+        geo.computeVertexNormals()
+        group.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: waterColor, roughness: 0.1, metalness: 0.4, emissive: waterColor, emissiveIntensity: 0.3, side: THREE.DoubleSide })))
+      }
+
+      return group.children.length ? group : null
+    }
+
+    return makeGroup()
+  }
+
+  // Build a wall mesh with proper mitered corners and alley floor strips.
+  // Internal wall (districts on both sides): 0.6W wide, half-height, alleys on both sides.
+  // External wall (one side empty): 1.8W wide, full-height, alley on district side only.
+  buildWallMesh(edge, edgeId, overridePolyline = null) {
+    const pts = (overridePolyline?.length >= 2 ? overridePolyline
+      : (edge.pointIds || []).map(id => this.cityEdgePointsById.get(id)).filter(Boolean))
+    if (!pts || pts.length < 2) return null
+
+    // G = STREET_HALF_WIDTH = the gutter distance from street centre where blocks start.
+    // Wall body + alley must fit within G to avoid extending into building territory.
+    const G = 0.04375
+    const districts = this.cityDistrictData?.districts || []
+    const districtById = new Map(districts.map(d => [d.id, d]))
+    const bothSides = !!(districtById.get(edge.districtA)?.assignedType
+                      && districtById.get(edge.districtB)?.assignedType)
+
+    const halfWall  = bothSides ? G * 0.45 : G * 0.70   // internal narrower; external fills gutter
+    const wallH     = bothSides ? G * 1.5  : G * 3.0    // internal half-height; external tall
+    const alleyW    = bothSides ? G * 0.20 : G * 0.30   // alley strip; total stays ≤ G per side
+    // group.position.y = 0.075 (street level) is the scale-animation pivot.
+    // All local Y coords are relative to that base: wall body 0..wallH, alley floor at -0.022.
+    const wallBase  = 0        // local Y where wall body starts (world 0.075)
+    const alleyLY   = 0.053 - 0.075  // local Y for alley floor → world 0.053
+
+    const { left: wallL, right: wallR } = this._getMiteredCorners(pts, halfWall)
+    const { left: alleyL, right: alleyR } = this._getMiteredCorners(pts, halfWall + alleyW)
+
+    // ── Wall body (extruded strip, local Y 0..wallH, world Y 0.075..0.075+wallH) ──
+    const wv = [], wi = []
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = wallL[i], b = wallR[i], c = wallR[i+1], d = wallL[i+1]
+      const B = wv.length / 3
+      wv.push(
+        a.x, wallBase,       a.y,   b.x, wallBase,       b.y,
+        c.x, wallBase,       c.y,   d.x, wallBase,       d.y,
+        a.x, wallBase+wallH, a.y,   b.x, wallBase+wallH, b.y,
+        c.x, wallBase+wallH, c.y,   d.x, wallBase+wallH, d.y
+      )
+      wi.push(B+4, B+5, B+6, B+4, B+6, B+7)                               // top
+      wi.push(B+3, B+0, B+4, B+3, B+4, B+7)                               // left face
+      wi.push(B+1, B+2, B+6, B+1, B+6, B+5)                               // right face
+      if (i === 0)              wi.push(B+0, B+1, B+5, B+0, B+5, B+4)     // start cap
+      if (i === pts.length - 2) wi.push(B+2, B+3, B+7, B+2, B+7, B+6)    // end cap
+    }
+
+    // ── Alley floor strips (local Y = alleyLY ≈ -0.022, world Y ≈ 0.053) ────
+    const av = [], ai = []
+    for (let i = 0; i < pts.length - 1; i++) {
+      const B = av.length / 3
+      av.push(
+        wallL[i].x,    alleyLY, wallL[i].y,    alleyL[i].x,    alleyLY, alleyL[i].y,
+        alleyL[i+1].x, alleyLY, alleyL[i+1].y, wallL[i+1].x,  alleyLY, wallL[i+1].y
+      )
+      ai.push(B, B+1, B+2, B, B+2, B+3)
+      if (bothSides) {
+        const C = av.length / 3
+        av.push(
+          wallR[i].x,    alleyLY, wallR[i].y,    alleyR[i].x,    alleyLY, alleyR[i].y,
+          alleyR[i+1].x, alleyLY, alleyR[i+1].y, wallR[i+1].x,  alleyLY, wallR[i+1].y
+        )
+        ai.push(C, C+1, C+2, C, C+2, C+3)
+      }
+    }
+
+    const wallColor  = DISTRICT_COLORS.Wall
+    const alleyColor = 0x8B7355   // mud
+
+    const makeMesh = (verts, idx, color, roughness = 0.7) => {
+      if (!verts.length) return null
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1))
+      geo.computeVertexNormals()
+      return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+        color, roughness, metalness: 0, emissive: color, emissiveIntensity: 0.15, side: THREE.DoubleSide
+      }))
+    }
+
     const group = new THREE.Group()
-    group.position.y = 0.075
-    group.add(innerMesh)
+    group.position.y = 0.075   // scale-animation pivot at street level
     group.userData = { cityEdgeId: edgeId }
-    return group
+    const wallMesh  = makeMesh(wv, wi, wallColor)
+    const alleyMesh = makeMesh(av, ai, alleyColor, 0.9)
+    if (wallMesh)  group.add(wallMesh)
+    if (alleyMesh) group.add(alleyMesh)
+    return group.children.length ? group : null
   }
 
   updateWallAnimations() {
@@ -355,7 +495,6 @@ export default class DistrictRenderer {
   }
 
   clearDistrictLayer() {
-    console.log(`clearDistrictLayer: removing ${this.districtMeshes.size} meshes`)
     this.districtMeshes.forEach(m => this.scene.remove(m))
     this.districtMeshes.clear()
   }
@@ -429,7 +568,8 @@ export default class DistrictRenderer {
       if (polyMesh) polyMesh.visible = false
       const old = this.cityEdgeMeshes.get(edgeId)
       if (old) this.scene.remove(old)
-      const group = this.buildWallMesh(edge, edgeId)
+      const poly = edge.boundaryPolyline?.length >= 2 ? edge.boundaryPolyline : null
+      const group = this.buildWallMesh(edge, edgeId, poly)
       if (group) {
         group.scale.y = 0
         this.scene.add(group)
@@ -438,6 +578,18 @@ export default class DistrictRenderer {
       }
       this._renderWallTowers(this.cityDistrictData?.edges)
       return
+    }
+    if (type === 'Canal') {
+      const edge = this.cityDistrictData?.edges?.[edgeId]
+      if (edge?.boundaryPolyline?.length >= 2) {
+        const polyMesh = this.cityPolylines?.getEdgeMesh(edgeId)
+        if (polyMesh) polyMesh.visible = false
+        const old = this.cityEdgeMeshes.get(edgeId)
+        if (old) this.scene.remove(old)
+        const mesh = this.buildCanalMesh(edge.boundaryPolyline, edgeId)
+        if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
+        return
+      }
     }
     this.cityPolylines?.updateBaseColor(edgeId, DISTRICT_COLORS.get(type) || DISTRICT_COLORS.unassigned)
   }
@@ -460,7 +612,10 @@ export default class DistrictRenderer {
   setCityEdgeHover(edgeId) {
     if (this.hoveredCityEdgeId === edgeId) return
     this.clearHover()
-    if (this.cityDistrictData?.edges?.[edgeId]?.assignedType) return
+    const edge = this.cityDistrictData?.edges?.[edgeId]
+    // Typed edges (Wall/Canal/MainRoad) are not hoverable — they're rendered as
+    // geometry and boundary-street chain selection isn't yet supported for re-typing.
+    if (edge?.assignedType) return
     this.hoveredCityEdgeId = edgeId
     if (this.cityEdgeMeshes.has(edgeId)) {
       const mesh = this.cityEdgeMeshes.get(edgeId)
@@ -552,6 +707,16 @@ export default class DistrictRenderer {
       this.debugObjects.push(mesh)
       this._districtDebugMeshes.push(mesh)
     }
+  }
+
+  getDistrictCenterAtWorldPos(worldX, worldY, threshold = 0.3) {
+    const rSq = threshold * threshold
+    for (const mesh of this._districtDebugMeshes) {
+      if (!mesh.visible) continue
+      const dx = worldX - mesh.position.x, dy = worldY - mesh.position.z
+      if (dx * dx + dy * dy < rSq) return mesh.userData
+    }
+    return null
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────

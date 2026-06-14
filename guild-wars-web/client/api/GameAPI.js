@@ -86,6 +86,10 @@ export default class GameAPI {
     return this.request('/setup/guild', 'POST', { guildName, headquarters })
   }
 
+  static async setGuildHeadquarters(hq) {
+    return this.request('/setup/guild/headquarters', 'POST', { hq })
+  }
+
   static async renameGuild(name) {
     return this.request('/setup/guild/rename', 'POST', { name })
   }

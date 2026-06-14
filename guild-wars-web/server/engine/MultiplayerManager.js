@@ -5,8 +5,9 @@ import crypto from 'crypto'
 // (See CONTEXT.md: Initiative / Reversed Initiative, and Game Rules/Rules.md.)
 const STEP_DIRECTION = { Terrain: 'forward', CitySubdivision: 'reversed', GuildCreation: 'forward' }
 
-// Initial per-player Token grants (Game Rules/Rules.md → Setup Phase → Tokens).
-const INITIAL_TOKENS = () => ({ veto: 1, guild: 2, character: 2, round: 2 })
+// Veto tokens live on the seat (needed before a guild exists).
+// Guild/Character/Month tokens live on the guild object itself.
+const INITIAL_SEAT_TOKENS = () => ({ veto: 1 })
 
 // The authoritative multiplayer layer: seats (player identity), the d20 initiative
 // order, whose turn it is, the per-player Token ledger, and a per-seat secret store.
@@ -42,7 +43,7 @@ export default class MultiplayerManager {
       connected: true,
       initiativeRoll: this.started ? 1 + Math.floor(Math.random() * 20) : null,
       passed: false,
-      tokens: INITIAL_TOKENS(),
+      tokens: INITIAL_SEAT_TOKENS(),
     }
     this.seats.set(id, seat)
     if (this.started && !this.initiativeOrder.includes(id)) this.initiativeOrder.push(id)
@@ -131,11 +132,27 @@ export default class MultiplayerManager {
   }
 
   // ── Token ledger ──────────────────────────────────────────────────────────────
+  resetForNewGame() {
+    this.started = false
+    this.initiativeOrder = []
+    this.activeIndex = 0
+    for (const seat of this.seats.values()) {
+      seat.guildId        = null
+      seat.initiativeRoll = null
+      seat.passed         = false
+      seat.tokens         = INITIAL_SEAT_TOKENS()
+    }
+  }
+
+  resetAllTokens() {
+    for (const seat of this.seats.values()) seat.tokens = INITIAL_SEAT_TOKENS()
+  }
+
   adjustToken(seatId, kind, delta) {
     const seat = this.seats.get(seatId)
     if (!seat) throw new Error(`Seat ${seatId} not found`)
-    if (!(kind in seat.tokens)) throw new Error(`Unknown token type: ${kind}`)
-    seat.tokens[kind] = Math.max(0, seat.tokens[kind] + delta)
+    if (kind !== 'veto') throw new Error(`Seat only holds veto tokens; use guild.tokens for '${kind}'`)
+    seat.tokens.veto = Math.max(0, (seat.tokens.veto ?? 0) + delta)
     return seat.tokens
   }
 

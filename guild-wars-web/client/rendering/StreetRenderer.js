@@ -36,6 +36,8 @@ export default class StreetRenderer {
     this._streetHoverMesh = null
     this.hoveredJunctionId = null
     this._junctionHoverMesh = null
+
+    this._boundaryHighlight = []  // { mat, color, emissive, ei } — saved states for recolor restore
   }
 
   setDebugVisible(show) {
@@ -61,6 +63,30 @@ export default class StreetRenderer {
     arr.length = 0
   }
 
+  // Recolor all existing street meshes whose roadId belongs to a boundary chain.
+  // Uses the same save/restore pattern as highlightDistrictStreets.
+  setBoundaryChainHighlight(edgeId, color = 0xffff66) {
+    this.clearBoundaryChainHighlight()
+    const prefix = `street-boundary-${edgeId}-`
+    for (const mesh of this.streetMeshes) {
+      if (!mesh.userData.roadId?.startsWith(prefix)) continue
+      const mat = mesh.material
+      this._boundaryHighlight.push({ mat, color: mat.color.getHex(), emissive: mat.emissive?.getHex(), ei: mat.emissiveIntensity })
+      mat.color.setHex(color)
+      if (mat.emissive) mat.emissive.setHex(color)
+      mat.emissiveIntensity = 0.9
+    }
+  }
+
+  clearBoundaryChainHighlight() {
+    for (const h of this._boundaryHighlight) {
+      h.mat.color.setHex(h.color)
+      if (h.emissive !== undefined && h.mat.emissive) h.mat.emissive.setHex(h.emissive)
+      h.mat.emissiveIntensity = h.ei
+    }
+    this._boundaryHighlight = []
+  }
+
   clearHover() {
     if (this.hoveredStreetEdgeKey !== null) {
       if (this._streetHoverMesh) {
@@ -80,6 +106,7 @@ export default class StreetRenderer {
       }
       this.hoveredJunctionId = null
     }
+    this.clearBoundaryChainHighlight()
   }
 
   setStreetGraph(streetGraph) {
@@ -100,6 +127,10 @@ export default class StreetRenderer {
     for (const j of junctions) {
       for (const conn of j.connections) {
         if (conn.toId <= j.id) continue
+        // Canal (and future Docks) boundaries are physical waterways rendered by
+        // DistrictRenderer, not walkable streets — skip here so they don't show
+        // as brown Mud roads underneath the water mesh.
+        if (conn.type === 'Canal' || conn.type === 'Docks') continue
         const j2 = junctionById.get(conn.toId)
         if (!j2) continue
         const conn2 = j2.connections.find(c => c.toId === j.id)
@@ -129,9 +160,11 @@ export default class StreetRenderer {
 
     for (const j of junctions) {
       if (j.connections.length < 2) continue
+      if (j.type === 'Canal' || j.type === 'Docks') continue
 
       const pts = []
       for (const conn of j.connections) {
+        if (conn.type === 'Canal' || conn.type === 'Docks') continue
         pts.push(conn.gutterLeft, conn.gutterRight)
       }
       pts.sort((a, b) => Math.atan2(a.y - j.y, a.x - j.x) - Math.atan2(b.y - j.y, b.x - j.x))
@@ -195,6 +228,7 @@ export default class StreetRenderer {
   }
 
   clearStreetLayer() {
+    this.clearBoundaryChainHighlight()
     for (const m of this.streetMeshes) this.scene.remove(m)
     this.streetMeshes = []
   }

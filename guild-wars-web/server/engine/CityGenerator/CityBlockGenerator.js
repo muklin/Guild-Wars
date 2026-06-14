@@ -1,5 +1,5 @@
 import { distToSegSq, ptOnSeg, pip } from '../voronoi/VoronoiUtils.js'
-import { STREET_HALF_WIDTH } from './StreetVoronoiGenerator.js'
+import { STREET_HALF_WIDTH, getDistrictParams } from './StreetVoronoiGenerator.js'
 
 
 // Street priority for tie-breaking (paved hierarchy: Stone > Brick > Mud).
@@ -30,11 +30,14 @@ export function findStreetFacingEdges(vertices, roadEdges) {
   const tolSq = (STREET_HALF_WIDTH * 0.6) ** 2
   for (let i = 0; i < n; i++) {
     const va = vertices[i], vb = vertices[(i + 1) % n]
+    // Use midpoint only — NOT individual endpoints. A "transition" edge that
+    // runs perpendicular from a gutter vertex into the plot interior has one
+    // endpoint exactly on the gutter (dist = 0), which would falsely flag it
+    // as street-facing and exclude it from fences. The midpoint of such an
+    // edge is halfway into the interior, well outside the tolerance.
     const mx = (va.x + vb.x) / 2, my = (va.y + vb.y) / 2
     for (const re of roadEdges) {
-      if (distToSegSq(mx,    my,    re.ax, re.ay, re.bx, re.by) < tolSq ||
-          distToSegSq(va.x,  va.y,  re.ax, re.ay, re.bx, re.by) < tolSq ||
-          distToSegSq(vb.x,  vb.y,  re.ax, re.ay, re.bx, re.by) < tolSq) {
+      if (distToSegSq(mx, my, re.ax, re.ay, re.bx, re.by) < tolSq) {
         result.push({ index: i, roadId: re.roadId, type: re.type })
         break
       }
@@ -67,11 +70,15 @@ export default class CityBlockGenerator {
     const blocks = []
     let blockId = 0
 
-    const faces = this._traceFaces(gutterNodes, gutterEdges)
+    const allFaces = this._traceFaces(gutterNodes, gutterEdges)
+    const roadFacePolys = []
 
-    for (const vertices of faces) {
+    for (const vertices of allFaces) {
       if (vertices.length < 3) continue
-      if (this._isRoadFace(vertices, streetNodes, streetEdges)) continue
+      if (this._isRoadFace(vertices, streetNodes, streetEdges)) {
+        roadFacePolys.push(vertices)
+        continue
+      }
 
       let area = 0
       for (let i = 0; i < vertices.length; i++) {
@@ -90,6 +97,17 @@ export default class CityBlockGenerator {
         streetEdges: findStreetFacingEdges(vertices, roadEdges),
       })
     }
+
+    // Mark squares before merging so _mergeSquareClusters can identify them.
+    // markSquareBlocks() in PlotVoronoiGenerator is still called from SetupPhase
+    // for any remaining small blocks; it is a no-op on already-marked blocks.
+    const districtById = new Map(districts.map(d => [d.id, d]))
+    for (const block of blocks) {
+      const params = getDistrictParams(districtById.get(block.districtId))
+      if (block.area < params.square_threshhold) block.blockType = 'square'
+    }
+
+    this._mergeSquareClusters(blocks, roadFacePolys, roadEdges)
 
     console.log(`CityBlockGenerator: ${blocks.length} blocks traced`)
     return { blocks, roadEdges }
@@ -326,5 +344,220 @@ export default class CityBlockGenerator {
       if (pip(cx, cy, d.polygon)) return d.id
     }
     return null
+  }
+
+  // Coalesce adjacent square blocks by removing the streets between them and
+  // filling the combined area with a single "square" polygon.
+  //
+  // Algorithm:
+  //   1. Build a directed half-edge → blockId map from every block's boundary.
+  //   2. For each road-surface face, look up the two blocks adjacent to it (via
+  //      the reverse of each of its directed half-edges). If both are squares,
+  //      the road face is a "square–square street" to be absorbed.
+  //   3. BFS over the square–square adjacency graph to find connected clusters.
+  //   4. Union every cluster's block polygons + connecting road-face polygons
+  //      via directed-edge cancellation (shared interior edges cancel; the
+  //      remaining outer edges form the merged boundary).
+  //   5. Replace original cluster blocks with the merged square; drop clusters
+  //      whose merged boundary has no street-facing edge (rule 2: no street access).
+  //
+  // Mutates `blocks` in place.
+  _mergeSquareClusters(blocks, roadFacePolys, roadEdges) {
+    const squareSet = new Set(blocks.filter(b => b.blockType === 'square').map(b => b.id))
+    if (squareSet.size < 2 || !roadFacePolys.length) return
+
+    const blockById = new Map(blocks.map(b => [b.id, b]))
+
+    // Directed half-edge key: "x1,y1_x2,y2" using 6dp to match gutter-node positions.
+    const pk  = (p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
+    const hek = (a, b) => `${pk(a)}_${pk(b)}`
+
+    // Map every directed block-boundary edge to the block that owns it.
+    const halfEdgeToBlock = new Map()
+    for (const block of blocks) {
+      const c = block.blockCorners, n = c.length
+      for (let i = 0; i < n; i++)
+        halfEdgeToBlock.set(hek(c[i], c[(i + 1) % n]), block.id)
+    }
+
+    // For each road face, find adjacent blocks via the reverse of its directed edges.
+    // Only proceed when exactly two distinct square blocks adjoin the face.
+    const squareAdj    = new Map()  // blockId → Set<blockId>
+    const streetByPair = new Map()  // "minId_maxId" → [roadFacePoly, ...]
+
+    for (const rfPoly of roadFacePolys) {
+      const n = rfPoly.length
+      const adjIds = new Set()
+      for (let i = 0; i < n; i++) {
+        const bid = halfEdgeToBlock.get(hek(rfPoly[(i + 1) % n], rfPoly[i]))
+        if (bid != null) adjIds.add(bid)
+      }
+      if (adjIds.size !== 2) continue
+      const [idA, idB] = [...adjIds]
+      if (!squareSet.has(idA) || !squareSet.has(idB)) continue
+
+      if (!squareAdj.has(idA)) squareAdj.set(idA, new Set())
+      if (!squareAdj.has(idB)) squareAdj.set(idB, new Set())
+      squareAdj.get(idA).add(idB)
+      squareAdj.get(idB).add(idA)
+
+      const pairKey = idA < idB ? `${idA}_${idB}` : `${idB}_${idA}`
+      if (!streetByPair.has(pairKey)) streetByPair.set(pairKey, [])
+      streetByPair.get(pairKey).push(rfPoly)
+    }
+
+    if (!squareAdj.size) return
+
+    // BFS: find connected clusters of mutually adjacent squares.
+    const visited  = new Set()
+    const clusters = []
+    for (const bid of squareSet) {
+      if (visited.has(bid) || !squareAdj.has(bid)) continue
+      const cluster = [], queue = [bid]
+      visited.add(bid)
+      while (queue.length) {
+        const cur = queue.shift()
+        cluster.push(cur)
+        for (const nb of squareAdj.get(cur))
+          if (!visited.has(nb)) { visited.add(nb); queue.push(nb) }
+      }
+      if (cluster.length >= 2) clusters.push(cluster)
+    }
+    if (!clusters.length) return
+
+    // Union polygons and replace original blocks.
+    let nextId  = blocks.reduce((m, b) => Math.max(m, b.id), -1) + 1
+    const toRemove = new Set()
+    const toAdd    = []
+
+    for (const cluster of clusters) {
+      const polys = cluster.map(id => blockById.get(id).blockCorners)
+      for (let i = 0; i < cluster.length; i++) {
+        for (let j = i + 1; j < cluster.length; j++) {
+          const pk2 = cluster[i] < cluster[j]
+            ? `${cluster[i]}_${cluster[j]}` : `${cluster[j]}_${cluster[i]}`
+          polys.push(...(streetByPair.get(pk2) || []))
+        }
+      }
+
+      const merged = this._unionPolygons(polys)
+      if (!merged) continue
+
+      cluster.forEach(id => toRemove.add(id))
+
+      const se = findStreetFacingEdges(merged, roadEdges)
+      if (!se.length) continue   // rule 2: merged area has no street — drop it
+
+      toAdd.push({
+        id: nextId++,
+        districtId: blockById.get(cluster[0]).districtId,
+        blockCorners: merged,
+        area: Math.abs(this._signedArea(merged)),
+        blockType: 'square',
+        streetEdges: se,
+      })
+    }
+
+    for (let i = blocks.length - 1; i >= 0; i--)
+      if (toRemove.has(blocks[i].id)) blocks.splice(i, 1)
+    blocks.push(...toAdd)
+
+    const skipped = clusters.length - toAdd.length
+    console.log(
+      `mergeSquareClusters: ${toAdd.length} merged squares from ${clusters.length} clusters` +
+      ` (${toRemove.size} originals absorbed${skipped ? `, ${skipped} dropped — no street access` : ''})`
+    )
+  }
+
+  // Union an array of polygons using directed-edge cancellation.
+  // All inputs are normalised to CCW before processing.
+  // Returns the largest closed boundary polygon, or null on failure.
+  _unionPolygons(polys) {
+    if (!polys?.length) return null
+    const EPS2 = 1e-8
+
+    const canon = []
+    const keyOf = (p) => {
+      for (let i = 0; i < canon.length; i++) {
+        const dx = canon[i].x - p.x, dy = canon[i].y - p.y
+        if (dx * dx + dy * dy < EPS2) return i
+      }
+      canon.push({ x: p.x, y: p.y })
+      return canon.length - 1
+    }
+
+    const sa = (poly) => {
+      let a = 0
+      for (let i = 0; i < poly.length; i++) {
+        const p = poly[i], q = poly[(i + 1) % poly.length]
+        a += p.x * q.y - q.x * p.y
+      }
+      return a / 2
+    }
+
+    // Normalise each polygon to CCW (positive area) then cancel shared reverse edges.
+    const counts = new Map()
+    for (const poly of polys) {
+      if (!poly?.length) continue
+      let pts = [...poly]
+      if (sa(pts) < 0) pts.reverse()
+      const idx = pts.map(keyOf)
+      for (let i = 0; i < idx.length; i++) {
+        const a = idx[i], b = idx[(i + 1) % idx.length]
+        if (a === b) continue
+        const fwd = `${a}_${b}`, rev = `${b}_${a}`
+        if (counts.has(rev)) {
+          const n = counts.get(rev) - 1
+          if (n <= 0) counts.delete(rev); else counts.set(rev, n)
+        } else {
+          counts.set(fwd, (counts.get(fwd) || 0) + 1)
+        }
+      }
+    }
+    if (!counts.size) return null
+
+    // Build outgoing edge table then chain into the largest closed loop.
+    const out = new Map()
+    for (const e of counts.keys()) {
+      const u = e.indexOf('_'), i = +e.slice(0, u), j = +e.slice(u + 1)
+      if (!out.has(i)) out.set(i, [])
+      out.get(i).push(j)
+    }
+
+    const used = new Set()
+    let best = null
+    for (const startEdge of counts.keys()) {
+      if (used.has(startEdge)) continue
+      const s0 = +startEdge.slice(0, startEdge.indexOf('_'))
+      const loop = []; let cur = s0, guard = 0, closed = false
+      while (guard++ <= counts.size + 1) {
+        loop.push(cur)
+        const nbrs = out.get(cur)
+        if (!nbrs?.length) break
+        let nxt = null
+        for (const c of nbrs) {
+          const k = `${cur}_${c}`
+          if (!used.has(k)) { nxt = c; used.add(k); break }
+        }
+        if (nxt == null) break
+        if (nxt === s0) { closed = true; break }
+        cur = nxt
+      }
+      if (closed && loop.length >= 3) {
+        const poly = loop.map(i => ({ x: canon[i].x, y: canon[i].y }))
+        const a = Math.abs(sa(poly))
+        if (!best || a > best.a) best = { poly, a }
+      }
+    }
+    return best?.poly ?? null
+  }
+
+  _signedArea(poly) {
+    let a = 0
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i], q = poly[(i + 1) % poly.length]
+      a += p.x * q.y - q.x * p.y
+    }
+    return a / 2
   }
 }

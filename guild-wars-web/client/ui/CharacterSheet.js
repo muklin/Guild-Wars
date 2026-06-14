@@ -2,20 +2,22 @@ import * as THREE from 'three'
 import GameAPI from '../api/GameAPI.js'
 import { bringToFront } from './GuildPanel.js'
 
-const PORTRAIT_W = 100
+const PORTRAIT_W = 210
 const PORTRAIT_H = 420
 
 function _mkPortrait() {
   const wrapper = document.createElement('div')
-  wrapper.style.cssText = `width:${PORTRAIT_W}px;height:${PORTRAIT_H}px;border:1px solid #9b8e76;border-radius:3px;overflow:hidden;background:#1e1828;flex-shrink:0`
+  // position:relative + isolation:isolate ensures the WebGL canvas stays
+  // clipped inside this container even when the parent dialog is position:fixed.
+  wrapper.style.cssText = `width:${PORTRAIT_W}px;height:${PORTRAIT_H}px;border:1px solid #9b8e76;border-radius:3px;overflow:hidden;background:#1e1828;flex-shrink:0;position:relative;isolation:isolate`
 
   const canvas = document.createElement('canvas')
-  canvas.style.cssText = 'display:block'
+  canvas.style.cssText = 'display:block;position:absolute;left:0;top:0'
   wrapper.appendChild(canvas)
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
-  renderer.setSize(PORTRAIT_W, PORTRAIT_H)
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  renderer.setSize(PORTRAIT_W, PORTRAIT_H)
   renderer.setClearColor(0x1e1828)
 
   const scene = new THREE.Scene()
@@ -93,6 +95,20 @@ const ABILITIES = [
 ]
 const CLASSES = ['Barbarian','Bard','Cleric','Druid','Fighter','Monk','Paladin','Ranger','Rogue','Sorcerer','Warlock','Wizard']
 
+const ARMORS = [
+  { id: 'none',   label: 'None (Unarmored)',          bonus: 0, maxDex: 99 },
+  { id: 'light',  label: 'Light  (+2 AC, DEX ≤ +4)', bonus: 2, maxDex: 4  },
+  { id: 'medium', label: 'Medium (+4 AC, DEX ≤ +2)', bonus: 4, maxDex: 2  },
+  { id: 'heavy',  label: 'Heavy  (+6 AC, no DEX)',    bonus: 6, maxDex: 0  },
+]
+// null = all classes; array = only listed classes are proficient
+const ARMOR_PROF = {
+  none:   null,
+  light:  ['Barbarian','Bard','Cleric','Druid','Fighter','Paladin','Ranger','Rogue','Warlock'],
+  medium: ['Barbarian','Cleric','Druid','Fighter','Paladin','Ranger'],
+  heavy:  ['Cleric','Fighter','Paladin'],
+}
+
 // ch.id → { el, bodyEl, ch, tokens, playerName, onUpdate, classPickMode }
 const _sheets = new Map()
 
@@ -117,6 +133,128 @@ function _statBox(label, value) {
   d.innerHTML = `<div style="font-size:18px;font-weight:bold;color:#1a1a1a;line-height:1.1">${value}</div>`
     + `<div style="${LABEL_CSS};margin-top:3px">${label}</div>`
   return d
+}
+
+// Circular HP ring — SVG arc bar identical in style to the Diplomacy node rings.
+function _mkHpRing(curHp, maxHp) {
+  const R = 30, CX = 40, CY = 40, SIZE = 80
+  const pct = (maxHp > 0 && curHp != null) ? Math.max(0, Math.min(100, curHp / maxHp * 100)) : 0
+  const p = Math.max(0, Math.min(0.9999, pct / 100))
+  const SVG_NS = 'http://www.w3.org/2000/svg'
+  const mk = (tag, attrs) => {
+    const el = document.createElementNS(SVG_NS, tag)
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
+    return el
+  }
+  const svg = mk('svg', { viewBox: `0 0 ${SIZE} ${SIZE}`, width: SIZE, height: SIZE, style: 'display:block;overflow:visible' })
+  // Track
+  svg.appendChild(mk('circle', { cx: CX, cy: CY, r: R, stroke: '#0d0d0d', 'stroke-width': '5', fill: 'none' }))
+  svg.appendChild(mk('circle', { cx: CX, cy: CY, r: R, stroke: '#242424', 'stroke-width': '3', fill: 'none' }))
+  // Fill arc (starts at top, -π/2)
+  if (p > 0.005) {
+    const startRad = -Math.PI / 2
+    const endRad   = startRad + p * 2 * Math.PI
+    const ex = CX + R * Math.cos(endRad), ey = CY + R * Math.sin(endRad)
+    const angle = p * 360
+    svg.appendChild(mk('path', {
+      d: `M ${CX + R * Math.cos(startRad)} ${CY + R * Math.sin(startRad)} A ${R} ${R} 0 ${angle > 180 ? 1 : 0} 1 ${ex} ${ey}`,
+      stroke: '#22c55e', 'stroke-width': '3', fill: 'none', 'stroke-linecap': 'round'
+    }))
+    // Pill at arc tip
+    const tangentDeg = (endRad + Math.PI / 2) * 180 / Math.PI
+    svg.appendChild(mk('rect', { x: -7, y: -4, width: 14, height: 8, rx: 4, fill: '#4ade80', opacity: '0.28', transform: `translate(${ex},${ey}) rotate(${tangentDeg})` }))
+    svg.appendChild(mk('rect', { x: -5, y: -2, width: 10, height: 4,  rx: 2, fill: '#4ade80', transform: `translate(${ex},${ey}) rotate(${tangentDeg})` }))
+  }
+  // Inner node
+  svg.appendChild(mk('circle', { cx: CX, cy: CY, r: R - 6, fill: '#081408', stroke: '#1a3a1a', 'stroke-width': '1' }))
+  // Current HP number
+  const numText = mk('text', { x: CX, y: CY - 2, 'text-anchor': 'middle', 'dominant-baseline': 'middle', fill: '#4ade80', 'font-size': '14', 'font-weight': 'bold', 'font-family': 'Arial,sans-serif' })
+  numText.textContent = curHp ?? '—'
+  svg.appendChild(numText)
+  // Max HP in brackets
+  if (maxHp != null) {
+    const subText = mk('text', { x: CX, y: CY + 11, 'text-anchor': 'middle', 'dominant-baseline': 'middle', fill: '#2a6a2a', 'font-size': '8', 'font-family': 'Arial,sans-serif' })
+    subText.textContent = `(${maxHp})`
+    svg.appendChild(subText)
+  }
+  // Wrapper with label
+  const wrap = document.createElement('div')
+  wrap.style.cssText = 'flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:2px'
+  wrap.appendChild(svg)
+  const lbl = document.createElement('div')
+  lbl.style.cssText = `${LABEL_CSS};text-align:center`
+  lbl.textContent = 'Hit Points'
+  wrap.appendChild(lbl)
+  return wrap
+}
+
+// Equipment section: Armor (class-gated), Melee, Ranged, 2× Magic attunement.
+function _mkEquipment(state, onAcUpdate) {
+  const ch  = state.ch
+  const ab  = ch.abilityScores || {}
+  const eq  = ch.equipment     || {}
+  const SEL = 'width:100%;font-size:10px;background:#fff;border:1px solid #9b8e76;border-radius:2px;padding:2px 3px;color:#1a1a1a;cursor:pointer'
+  const box = document.createElement('div')
+  box.style.cssText = `${SH};display:flex;flex-direction:column;gap:5px`
+
+  const section = document.createElement('div')
+  section.style.cssText = `${LABEL_CSS};border-bottom:1px solid #d0c8b8;padding-bottom:2px;margin-bottom:2px`
+  section.textContent = 'Equipment'
+  box.appendChild(section)
+
+  const mkRow = (labelText, selectEl) => {
+    const row = document.createElement('div')
+    row.style.cssText = 'display:flex;align-items:center;gap:4px'
+    const lbl = document.createElement('div')
+    lbl.style.cssText = 'font-size:9px;color:#7a6a52;font-weight:bold;white-space:nowrap;width:56px;flex-shrink:0'
+    lbl.textContent = labelText
+    row.appendChild(lbl)
+    row.appendChild(selectEl)
+    return row
+  }
+
+  // ── Armor ────────────────────────────────────────────────────────────────────
+  const armorSel = document.createElement('select')
+  armorSel.style.cssText = SEL
+  const cls = ch.class || ''
+  for (const a of ARMORS) {
+    const profList = ARMOR_PROF[a.id]
+    const proficient = !profList || profList.includes(cls)
+    if (!proficient) continue
+    const opt = document.createElement('option')
+    opt.value = a.id
+    opt.textContent = a.label
+    if ((eq.armor ?? 'none') === a.id) opt.selected = true
+    armorSel.appendChild(opt)
+  }
+  armorSel.addEventListener('change', () => {
+    eq.armor = armorSel.value
+    ch.equipment = eq
+    if (onAcUpdate) onAcUpdate(eq.armor)
+  })
+  box.appendChild(mkRow('Armor', armorSel))
+
+  // ── Melee weapon ─────────────────────────────────────────────────────────────
+  const meleeSel = document.createElement('select')
+  meleeSel.style.cssText = SEL
+  meleeSel.innerHTML = '<option value="">— None —</option>'
+  box.appendChild(mkRow('Melee', meleeSel))
+
+  // ── Ranged weapon ─────────────────────────────────────────────────────────────
+  const rangedSel = document.createElement('select')
+  rangedSel.style.cssText = SEL
+  rangedSel.innerHTML = '<option value="">— None —</option>'
+  box.appendChild(mkRow('Ranged', rangedSel))
+
+  // ── Attunement slots ─────────────────────────────────────────────────────────
+  for (let i = 1; i <= 2; i++) {
+    const magicSel = document.createElement('select')
+    magicSel.style.cssText = SEL
+    magicSel.innerHTML = '<option value="">— None —</option>'
+    box.appendChild(mkRow(`Magic ${i}`, magicSel))
+  }
+
+  return box
 }
 
 function _makeDraggable(el) {
@@ -333,23 +471,26 @@ function _mkColumns(state) {
   const ac  = 10 + _mod(ab.dex)
   const init = _ms(ab.dex)
 
+  // Ability column: 60% narrower — each box is square (width = height ÷ 6 of portrait)
+  const AB_W = 100
   const cols = document.createElement('div')
-  cols.style.cssText = `display:grid;grid-template-columns:${PORTRAIT_W}px 168px 1fr;gap:6px;align-items:start`
+  cols.style.cssText = `display:grid;grid-template-columns:${PORTRAIT_W}px ${AB_W}px 1fr;gap:6px;align-items:start`
 
   // ── PORTRAIT COLUMN ───────────────────────────────────────────────────────
   if (state.portrait) cols.appendChild(state.portrait.el)
 
-  // ── ABILITY SCORES COLUMN ─────────────────────────────────────────────────
+  // ── ABILITY SCORES COLUMN — square boxes ─────────────────────────────────
   const leftCol = document.createElement('div')
   leftCol.style.cssText = 'display:flex;flex-direction:column;gap:4px'
 
   for (const a of ABILITIES) {
     const score = ab[a.key] ?? 10
     const block = document.createElement('div')
-    block.style.cssText = 'background:#fff;border:1px solid #9b8e76;border-radius:4px;padding:6px 5px;display:flex;flex-direction:column;align-items:center;gap:4px'
+    // Square: width = AB_W, height = AB_W (enforced via aspect-ratio)
+    block.style.cssText = `width:${AB_W}px;aspect-ratio:1;background:#fff;border:1px solid #9b8e76;border-radius:4px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;box-sizing:border-box`
     block.appendChild(_abilityScore(score))
     const nameLabel = document.createElement('div')
-    nameLabel.style.cssText = 'font-size:8px;font-weight:bold;text-transform:uppercase;letter-spacing:0.5px;color:#7a6a52;text-align:center;border-top:1px solid #e0d8cc;padding-top:3px;width:100%'
+    nameLabel.style.cssText = 'font-size:7px;font-weight:bold;text-transform:uppercase;letter-spacing:0.4px;color:#7a6a52;text-align:center;border-top:1px solid #e0d8cc;padding-top:2px;width:90%'
     nameLabel.textContent = a.label
     block.appendChild(nameLabel)
     leftCol.appendChild(block)
@@ -361,19 +502,28 @@ function _mkColumns(state) {
   const midCol = document.createElement('div')
   midCol.style.cssText = 'display:flex;flex-direction:column;gap:4px'
 
+  // AC stat box with a live-update ref for armor changes
+  const acValEl = document.createElement('div')
+  acValEl.style.cssText = 'font-size:18px;font-weight:bold;color:#1a1a1a;line-height:1.1'
+  acValEl.textContent = String(ac)
+  const acBox = document.createElement('div')
+  acBox.style.cssText = 'flex:1;background:#fff;border:2px solid #7a6a52;border-radius:5px;text-align:center;padding:6px 3px'
+  acBox.appendChild(acValEl)
+  const acLbl = document.createElement('div'); acLbl.style.cssText = `${LABEL_CSS};margin-top:3px`; acLbl.textContent = 'Armor Class'; acBox.appendChild(acLbl)
+
+  const onAcUpdate = (armorId) => {
+    const armor = ARMORS.find(a => a.id === armorId) || ARMORS[0]
+    const dexMod = _mod(ab.dex)
+    acValEl.textContent = String(10 + armor.bonus + Math.min(dexMod, armor.maxDex))
+  }
+
   const combatRow = document.createElement('div')
-  combatRow.style.cssText = 'display:flex;gap:4px'
-  combatRow.appendChild(_statBox('Armor Class', ac))
+  combatRow.style.cssText = 'display:flex;gap:4px;align-items:center'
+  combatRow.appendChild(_mkHpRing(ch.currentHp, ch.maxHp))
+  combatRow.appendChild(acBox)
   combatRow.appendChild(_statBox('Initiative', init))
   combatRow.appendChild(_statBox('Speed', '30 ft'))
   midCol.appendChild(combatRow)
-
-  const hpBox = document.createElement('div')
-  hpBox.style.cssText = SH
-  hpBox.innerHTML = `<div style="font-size:9px;color:#888;margin-bottom:3px">Hit Point Maximum &nbsp;<b>—</b></div>`
-    + `<div style="height:48px;border:1px solid #c8c0b0;border-radius:2px;margin-bottom:4px"></div>`
-    + `<div style="${LABEL_CSS};text-align:center">Current Hit Points</div>`
-  midCol.appendChild(hpBox)
 
   const atkBox = document.createElement('div')
   atkBox.style.cssText = `${SH};flex:1`
@@ -383,10 +533,7 @@ function _mkColumns(state) {
     + `<div style="${LABEL_CSS};border-top:1px solid #d0c8b8;padding-top:3px;text-align:center">Attacks &amp; Spellcasting</div>`
   midCol.appendChild(atkBox)
 
-  const eqBox = document.createElement('div')
-  eqBox.style.cssText = `${SH};flex:1;min-height:90px`
-  eqBox.innerHTML = `<div style="${LABEL_CSS};margin-bottom:4px">Equipment</div>`
-  midCol.appendChild(eqBox)
+  midCol.appendChild(_mkEquipment(state, onAcUpdate))
 
   cols.appendChild(midCol)
   return cols

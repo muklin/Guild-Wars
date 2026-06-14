@@ -32,6 +32,7 @@ export default class PlotRenderer {
 
     // Per-layer visibility flags (independent; all visible by default when debug is on)
     this._blockCentersVisible = true
+    this._blockSeedsVisible   = true
     this._plotCentersVisible  = true
 
     this.buildingRenderer = new BuildingRenderer()
@@ -52,14 +53,18 @@ export default class PlotRenderer {
   setDebugVisible(show) {
     this.showDebug = show
     for (const m of this._blockDebugMeshes) m.visible = show && this._blockCentersVisible
-    for (const m of this._blockSeedMeshes)  m.visible = show && this._blockCentersVisible
+    for (const m of this._blockSeedMeshes)  m.visible = show && this._blockSeedsVisible
     for (const m of this._plotDebugMeshes)  m.visible = show && this._plotCentersVisible
   }
 
   setBlockCentersVisible(on) {
     this._blockCentersVisible = on
     for (const m of this._blockDebugMeshes) m.visible = this.showDebug && on
-    for (const m of this._blockSeedMeshes)  m.visible = this.showDebug && on
+  }
+
+  setBlockSeedsVisible(on) {
+    this._blockSeedsVisible = on
+    for (const m of this._blockSeedMeshes) m.visible = this.showDebug && on
   }
 
   setPlotCentersVisible(on) {

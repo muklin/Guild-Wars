@@ -24,13 +24,15 @@ const primaryBtn = btnCss + ';background:#1a6b1a;border:1px solid #4c4'
 const TRAIT_CAT_COLORS = { Combat: '#e07060', Economic: '#c8a040', Faction: '#7fd', Headquarters: '#a080d0', Member: '#60a0e0', Magical: '#c060c0' }
 function _traitCatColor(cat) { return TRAIT_CAT_COLORS[cat] || '#aaa' }
 
-// Shared stat bar — thin track, dark border, bright green pill at the value position.
-function _statBar(pct, fillColor, pillColor) {
+// Shared stat bar — thin track, dark border, bright pill at the value position.
+// label: shown in native tooltip on the pill (e.g. "Influence: 30").
+function _statBar(pct, fillColor, pillColor, label) {
   const p = Math.max(0, Math.min(100, pct))
   const pc = pillColor || fillColor
+  const tip = label != null ? ` title="${label}: ${Math.round(pct)}"` : ''
   return `<div style="position:relative;height:3px;background:#0a0a0a;border:1px solid #2a2a2a;border-radius:3px;overflow:visible">`
     + `<div style="position:absolute;left:0;top:0;height:100%;width:${p}%;background:${fillColor};border-radius:3px">`
-    + `<div style="position:absolute;right:-5px;top:50%;transform:translateY(-50%);width:10px;height:4px;border-radius:2px;background:${pc};box-shadow:0 0 6px 3px ${pc}66"></div>`
+    + `<div${tip} style="position:absolute;right:-5px;top:50%;transform:translateY(-50%);width:10px;height:4px;border-radius:2px;background:${pc};box-shadow:0 0 6px 3px ${pc}66;cursor:default"></div>`
     + `</div></div>`
 }
 
@@ -54,7 +56,7 @@ export default class GuildPanel {
     this.factions = []
     this.districts = []
     this.hq = null
-    this.tokens = { veto: 1, guild: 2, character: 2, round: 2 }
+    this.tokens = { veto: 0, guild: 0, character: 0, round: 0 }
     this.playerName = ''
     this.tab = 'Characters'
     this.guildName = ''
@@ -63,6 +65,8 @@ export default class GuildPanel {
     this._expandedUpgradeId = null
     this._previewDistrictId = null
     this._hqSnapshot = null
+    this._pendingHq = null         // hq chosen but not yet Applied
+    this._pendingSnapshot = null
     this._selectedFactionId = null  // for Diplomacy ring click
   }
 
@@ -103,7 +107,11 @@ export default class GuildPanel {
     bringToFront(this.el)
   }
 
-  hide() { if (this.el) this.el.style.display = 'none' }
+  hide() {
+    if (this.el) this.el.style.display = 'none'
+    const tt = document.getElementById('gp-ability-tooltip')
+    if (tt) tt.style.display = 'none'
+  }
 
   toggle() {
     if (!this.el) this.render()
@@ -116,7 +124,7 @@ export default class GuildPanel {
     this.hq = null
     this.guildName = ''
     this.tab = 'Characters'
-    this.tokens = { veto: 1, guild: 2, character: 2, round: 2 }
+    this.tokens = { veto: 0, guild: 0, character: 0, round: 0 }
     this.hide()
     if (this.el) this._render()
   }
@@ -125,7 +133,7 @@ export default class GuildPanel {
     if (guild      !== undefined) this.guild      = guild
     if (factions)                 this.factions   = factions
     if (districts)                this.districts  = districts
-    if (tokens)                   this.tokens     = tokens
+    if (tokens != null)           this.tokens     = tokens
     if (playerName !== undefined) this.playerName = playerName
     if (this.el) this._render()
   }
@@ -135,6 +143,19 @@ export default class GuildPanel {
     if (this.el && this.tab === 'Headquarters') this._render()
   }
 
+  setHQPreview(hq, snapshot) {
+    this._pendingHq = hq
+    this._pendingSnapshot = snapshot || null
+    this.tab = 'Headquarters'
+    if (this.el) this._render()
+  }
+
+  clearHQPreview() {
+    this._pendingHq = null
+    this._pendingSnapshot = null
+    if (this.el) this._render()
+  }
+
   setPreviewDistrict(districtId) {
     this._previewDistrictId = districtId
     if (this.el && this.tab === 'Special') this._render()
@@ -142,6 +163,8 @@ export default class GuildPanel {
 
   setHeadquarters(hq) {
     this.hq = hq
+    this._pendingHq = null
+    this._pendingSnapshot = null
     this._previewDistrictId = null  // confirmed HQ supersedes preview
     if (this.el) this._render()
   }
@@ -197,12 +220,12 @@ export default class GuildPanel {
     el.appendChild(titleBar)
 
     // Token bar
-    const TOKEN_LABELS = { veto: 'Veto', guild: 'Guild', character: 'Character', round: 'Round' }
+    const TOKEN_LABELS = { veto: 'Veto', guild: 'Guild', character: 'Character', round: 'Month' }
     const TOKEN_TIPS = {
       veto:      'Spend to Call a vote to veto a player\'s action. On a successful vote you keep the token; on a failed vote you lose it.',
-      guild:     'Spend to swap for 2 Round Tokens; swap for 2 Character Tokens; Triple your guild\'s coin (only during Guild Setup); Gain 3 new recruits; Gain a Guild Trait.',
+      guild:     'Spend to swap for 2 Month Tokens; swap for 2 Character Tokens; Triple your guild\'s coin (only during Guild Setup); Gain 3 new recruits; Gain a Guild Trait.',
       character: 'Spend to Level up characters:  Costs 1 token per target level (L0→L1 = 1 token, L1→L2 = 2 tokens, etc.).',
-      round:     'Spend to take additional actions during game rounds. See Game Play rules.',
+      round:     'Monthly Action token. Spend to take additional actions during a game Month (~1 month of in-game time). See Game Play rules.',
     }
     const tokenBar = document.createElement('div')
     tokenBar.style.cssText = 'display:flex;gap:16px;padding:5px 12px;background:rgba(0,0,0,0.3);border-bottom:1px solid #333;flex-shrink:0;font-size:11px'
@@ -378,11 +401,11 @@ export default class GuildPanel {
         card.style.cssText = 'background:#080808;border:1px solid #1a1a1a;border-radius:3px;padding:5px'
         card.innerHTML = `<div style="font-size:10px;color:#bbb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:5px">${this._esc(nm)}</div>`
           + `<div style="font-size:8px;color:#7fd;margin-bottom:2px">Inf: ${influence}</div>`
-          + _statBar(influence, '#4a9') + '<div style="margin-bottom:3px"></div>'
+          + _statBar(influence, '#4a9', null, 'Influence') + '<div style="margin-bottom:3px"></div>'
           + `<div style="font-size:8px;color:#fc8;margin-bottom:2px">Std: ${standing}</div>`
-          + _statBar(standing, '#c8a040') + '<div style="margin-bottom:3px"></div>'
+          + _statBar(standing, '#c8a040', null, 'Standing') + '<div style="margin-bottom:3px"></div>'
           + `<div style="font-size:8px;color:#888;margin-bottom:2px">Health: ${health}</div>`
-          + _statBar(health, '#4ade80')
+          + _statBar(health, '#4ade80', null, 'Health')
         grid.appendChild(card)
       }
       factBox.appendChild(grid)
@@ -644,15 +667,48 @@ export default class GuildPanel {
     const ROLE_COLORS = { 'guild-leader': '#fc8', 'guild-second': '#7fd', member: '#ccc', recruit: '#888' }
     const ROLE_LABELS = { 'guild-leader': 'Leader', 'guild-second': 'Second', member: 'Member', recruit: 'Recruit' }
     const RACE_LABELS = { human: 'Human', elf: 'Elf', dwarf: 'Dwarf', halfOrc: 'Half-Orc', halfling: 'Halfling', gnome: 'Gnome' }
+    const _ms = s => { const m = Math.floor(((s ?? 10) - 10) / 2); return (m >= 0 ? '+' : '') + m }
+
+    // Shared ability-score tooltip (one per document, reused across renders)
+    let tt = document.getElementById('gp-ability-tooltip')
+    if (!tt) {
+      tt = document.createElement('div')
+      tt.id = 'gp-ability-tooltip'
+      tt.style.cssText = 'position:fixed;display:none;background:#111;border:1px solid #3a3a3a;border-radius:4px;padding:7px 10px;font-family:monospace;font-size:11px;color:#ccc;z-index:9999;pointer-events:none;line-height:1.75;white-space:pre'
+      document.body.appendChild(tt)
+    }
 
     for (const ch of chars) {
       const row = document.createElement('div')
       row.style.cssText = 'display:grid;grid-template-columns:1fr 80px 80px 80px 40px;gap:4px;padding:5px 8px;border-bottom:1px solid #222;cursor:pointer;border-radius:2px'
-      row.innerHTML = `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${this._esc(ch.name)}</span>`
-        + `<span style="color:#aaa">${RACE_LABELS[ch.race] || this._esc(ch.race || '—')}</span>`
-        + `<span style="color:${ROLE_COLORS[ch.role] || '#aaa'}">${ROLE_LABELS[ch.role] || ch.role}</span>`
-        + `<span style="color:#aaa">${ch.class ? this._esc(ch.class) : '—'}</span>`
-        + `<span style="color:#aaa">${ch.level}</span>`
+
+      // Name span with ability score popup
+      const ab = ch.abilityScores || {}
+      const tipText = `STR: ${ab.str ?? '—'} (${_ms(ab.str)})\nDEX: ${ab.dex ?? '—'} (${_ms(ab.dex)})\nCON: ${ab.con ?? '—'} (${_ms(ab.con)})\nINT: ${ab.int ?? '—'} (${_ms(ab.int)})\nWIS: ${ab.wis ?? '—'} (${_ms(ab.wis)})\nCHA: ${ab.cha ?? '—'} (${_ms(ab.cha)})`
+      const nameSpan = document.createElement('span')
+      nameSpan.textContent = ch.name
+      nameSpan.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis'
+      nameSpan.addEventListener('mouseenter', () => {
+        tt.textContent = tipText
+        tt.style.display = 'block'
+        const r = nameSpan.getBoundingClientRect()
+        tt.style.left = r.left + 'px'
+        tt.style.top  = (r.bottom + 4) + 'px'
+      })
+      nameSpan.addEventListener('mouseleave', () => { tt.style.display = 'none' })
+      row.appendChild(nameSpan)
+
+      const mkCell = (text, color) => {
+        const s = document.createElement('span')
+        s.textContent = text
+        if (color) s.style.color = color
+        return s
+      }
+      row.appendChild(mkCell(RACE_LABELS[ch.race] || ch.race || '—', '#aaa'))
+      row.appendChild(mkCell(ROLE_LABELS[ch.role] || ch.role, ROLE_COLORS[ch.role] || '#aaa'))
+      row.appendChild(mkCell(ch.class || '—', '#aaa'))
+      row.appendChild(mkCell(String(ch.level), '#aaa'))
+
       row.addEventListener('mouseenter', () => { row.style.background = '#1e2e1e' })
       row.addEventListener('mouseleave', () => { row.style.background = '' })
       row.addEventListener('click', () => CharacterSheet.open(ch, {
@@ -898,55 +954,124 @@ export default class GuildPanel {
   }
 
   _tabHeadquarters(body) {
-    const hq = this.hq || this.guild?.headquarters
-    if (!hq) {
+    const confirmedHq = this.hq || this.guild?.headquarters
+    const pending = this._pendingHq
+    const UPG_CAT_COLORS = { Defensive: '#7090c0', Economic: '#c8a040', Political: '#a080d0', Member: '#60a0e0', Intelligence: '#7fd', Prestige: '#e07060' }
+    const ownedUpgrades = new Set(this.guild?.hqUpgrades || [])
+    const gold = this.guild?.resources?.Gold ?? 0
+
+    const mkPickBtn = () => {
+      const btn = document.createElement('button')
+      btn.textContent = 'Choose Headquarters'
+      btn.style.cssText = btnCss + ';background:#333;border:1px solid #666'
+      btn.addEventListener('click', () => this.eventBus.emit('GUILD_HQ_PICK_START'))
+      return btn
+    }
+
+    const mkSnapshot = (snapshot) => {
+      if (snapshot) {
+        const img = document.createElement('img')
+        img.src = snapshot
+        img.style.cssText = 'width:240px;height:150px;object-fit:cover;border-radius:4px;flex-shrink:0;border:1px solid #333'
+        return img
+      }
+      const box = document.createElement('div')
+      box.style.cssText = 'width:240px;height:150px;background:#111;border:1px solid #222;border-radius:4px;display:flex;align-items:center;justify-content:center;flex-shrink:0'
+      box.innerHTML = '<span style="color:#333;font-size:11px">No snapshot</span>'
+      return box
+    }
+
+    // ── State: pending preview (building clicked, not yet applied) ──────────
+    if (pending) {
+      const distName = this._districtFactionName(pending.districtId)
+      const kindLabel = pending.kind === 'plot' ? `Plot ${pending.refId}` : `Landmark ${pending.refId}`
+
+      const infoEl = document.createElement('div')
+      infoEl.style.cssText = 'margin-bottom:10px'
+      infoEl.innerHTML = `<div style="font-size:15px;font-weight:bold;margin-bottom:2px">${this._esc(distName || 'Unknown District')}</div>`
+        + `<div style="color:#666;font-size:10px;margin-bottom:3px">${this._esc(kindLabel)}</div>`
+        + `<div style="color:#7fd;font-size:11px">+30 Influence · +20 Standing with district faction</div>`
+      body.appendChild(infoEl)
+
+      body.appendChild(mkSnapshot(this._pendingSnapshot))
+
+      const btnRow = document.createElement('div')
+      btnRow.style.cssText = 'display:flex;gap:8px;margin-top:12px'
+      btnRow.appendChild(mkPickBtn())
+      const applyBtn = document.createElement('button')
+      applyBtn.textContent = 'Apply'
+      applyBtn.style.cssText = btnCss + ';background:#2a5a2a;border:1px solid #4a9a4a;font-weight:bold'
+      applyBtn.addEventListener('click', () => this.eventBus.emit('HQ_APPLY', pending))
+      btnRow.appendChild(applyBtn)
+      body.appendChild(btnRow)
+      return
+    }
+
+    // ── State: no HQ confirmed yet ─────────────────────────────────────────
+    if (!confirmedHq) {
       const info = document.createElement('div')
       info.textContent = 'No Headquarters chosen.'
       info.style.cssText = 'color:#666;margin-bottom:12px'
       body.appendChild(info)
-    } else {
-      const distName = this._districtFactionName(hq.districtId)
-      const kindLabel = hq.kind === 'plot'
-        ? (hq.refId != null ? `Plot ${hq.refId}` : 'Plot')
-        : (hq.refId != null ? `Landmark ${hq.refId}` : 'Landmark')
-
-      const infoEl = document.createElement('div')
-      infoEl.style.cssText = 'margin-bottom:12px'
-      infoEl.innerHTML = `<div style="font-size:15px;font-weight:bold;margin-bottom:4px">${this._esc(distName)}</div>`
-        + `<div style="color:#666;font-size:10px;margin-bottom:4px">${this._esc(kindLabel)}</div>`
-        + `<div style="color:#7fd;font-size:11px">+30 Influence · +20 Standing with district faction</div>`
-      body.appendChild(infoEl)
-
-      // Snapshot or placeholder
-      if (this._hqSnapshot) {
-        const img = document.createElement('img')
-        img.src = this._hqSnapshot
-        img.style.cssText = 'width:100%;max-width:300px;height:180px;object-fit:cover;border-radius:4px;margin-bottom:12px;display:block'
-        body.appendChild(img)
-      } else {
-        const imgBox = document.createElement('div')
-        imgBox.style.cssText = 'width:100%;max-width:300px;height:180px;background:#111;border:1px solid #333;border-radius:4px;display:flex;align-items:center;justify-content:center;margin-bottom:12px'
-        imgBox.innerHTML = '<span style="color:#444;font-size:11px">Snapshot loading…</span>'
-        body.appendChild(imgBox)
-      }
+      body.appendChild(mkPickBtn())
+      return
     }
 
-    const pickBtn = document.createElement('button')
-    pickBtn.textContent = hq ? 'Change Headquarters (click map)' : 'Choose Headquarters (click a plot or landmark)'
-    pickBtn.style.cssText = btnCss + ';background:#444;border:1px solid #777;margin-bottom:20px'
-    pickBtn.addEventListener('click', () => this.eventBus.emit('GUILD_HQ_PICK_START'))
-    body.appendChild(pickBtn)
+    // ── State: confirmed HQ ─────────────────────────────────────────────────
+    const hq = confirmedHq
+    const distName = this._districtFactionName(hq.districtId)
+    const kindLabel = hq.kind === 'plot'
+      ? (hq.refId != null ? `Plot ${hq.refId}` : 'Plot')
+      : (hq.refId != null ? `Landmark ${hq.refId}` : 'Landmark')
 
-    if (!hq) return
+    const infoEl = document.createElement('div')
+    infoEl.style.cssText = 'margin-bottom:10px'
+    infoEl.innerHTML = `<div style="font-size:15px;font-weight:bold;margin-bottom:2px">${this._esc(distName)}</div>`
+      + `<div style="color:#666;font-size:10px;margin-bottom:3px">${this._esc(kindLabel)}</div>`
+      + `<div style="color:#7fd;font-size:11px">+30 Influence · +20 Standing with district faction</div>`
+    body.appendChild(infoEl)
 
-    // ── HQ Upgrades ───────────────────────────────────────────────────────────
+    // ── Snapshot + owned upgrades side by side ─────────────────────────────
+    const snapRow = document.createElement('div')
+    snapRow.style.cssText = 'display:flex;gap:10px;margin-bottom:12px;align-items:flex-start'
+
+    snapRow.appendChild(mkSnapshot(this._hqSnapshot))
+
+    // Owned upgrades (right)
+    const ownedCol = document.createElement('div')
+    ownedCol.style.cssText = 'flex:1;min-width:0'
+    if (ownedUpgrades.size === 0) {
+      ownedCol.innerHTML = '<div style="color:#333;font-size:10px;font-style:italic">No upgrades purchased.</div>'
+    } else {
+      const ownedHdr = document.createElement('div')
+      ownedHdr.style.cssText = 'font-size:9px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'
+      ownedHdr.textContent = 'Owned Upgrades'
+      ownedCol.appendChild(ownedHdr)
+      for (const id of ownedUpgrades) {
+        const u = UPGRADE_BY_ID.get(id)
+        if (!u) continue
+        const catColor = UPG_CAT_COLORS[u.category] || '#aaa'
+        const row = document.createElement('div')
+        row.style.cssText = `display:flex;align-items:center;gap:5px;font-size:10px;color:${catColor};padding:2px 0`
+        row.innerHTML = `<span style="color:#4a8a4a">✓</span> ${this._esc(u.title)}`
+        ownedCol.appendChild(row)
+      }
+    }
+    snapRow.appendChild(ownedCol)
+    body.appendChild(snapRow)
+
+    // ── Change HQ button + note ────────────────────────────────────────────
+    body.appendChild(mkPickBtn())
+    const rehouseNote = document.createElement('div')
+    rehouseNote.style.cssText = 'font-size:10px;color:#555;margin-top:6px;margin-bottom:18px;line-height:1.5'
+    rehouseNote.textContent = 'Changing your HQ costs 2 Monthly Actions and forfeits all HQ Upgrades.'
+    body.appendChild(rehouseNote)
+
+    // ── Available HQ Upgrades ─────────────────────────────────────────────────
     const upgHdr = document.createElement('div')
     upgHdr.style.cssText = 'font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px'
-    upgHdr.textContent = 'HQ Upgrades'
+    upgHdr.textContent = 'Available Upgrades'
     body.appendChild(upgHdr)
-
-    const ownedUpgrades = new Set(this.guild?.hqUpgrades || [])
-    const gold = this.guild?.resources?.Gold ?? 0
 
     // Group by category
     const byCategory = {}
@@ -954,8 +1079,6 @@ export default class GuildPanel {
       if (!byCategory[u.category]) byCategory[u.category] = []
       byCategory[u.category].push(u)
     }
-
-    const UPG_CAT_COLORS = { Defensive: '#7090c0', Economic: '#c8a040', Political: '#a080d0', Member: '#60a0e0', Intelligence: '#7fd', Prestige: '#e07060' }
 
     for (const [cat, upgrades] of Object.entries(byCategory)) {
       const catColor = UPG_CAT_COLORS[cat] || '#aaa'
