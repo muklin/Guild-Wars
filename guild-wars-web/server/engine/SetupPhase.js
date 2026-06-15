@@ -10,6 +10,41 @@ import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
+const TOWNHOUSE_PROB = {
+  'Residential-Noble':  0.95,
+  'Residential-Middle': 0.95,
+  'Residential-Slums':  0.95,
+}
+
+function _seededRand(seed) {
+  let s = ((seed | 0) * 2654435761) >>> 0
+  s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+  return (s >>> 0) / 0x100000000
+}
+
+function markTownhouseBlocks(blocks, plots, districts) {
+  const districtById = new Map(districts.map(d => [d.id, d]))
+  const plotsByBlock = new Map()
+  for (const plot of plots) {
+    if (!plotsByBlock.has(plot.blockId)) plotsByBlock.set(plot.blockId, [])
+    plotsByBlock.get(plot.blockId).push(plot)
+  }
+  for (const block of blocks) {
+    if (block.blockType === 'square') continue
+    const district = districtById.get(block.districtId)
+    if (district?.assignedType !== 'Residential') continue
+    const key = `Residential-${district.residentialClass ?? 'Middle'}`
+    const prob = TOWNHOUSE_PROB[key] ?? 0
+    if (prob <= 0 || _seededRand(block.id * 7919 + 42) >= prob) continue
+    block.blockType = 'townhouse'
+    for (const plot of (plotsByBlock.get(block.id) || [])) {
+      if (plot.blockType === 'square') continue
+      plot.blockType = 'townhouse'
+      if (_seededRand(plot.id * 13337 + 99) < 0.05) plot.freestanding = true
+    }
+  }
+}
+
 const _dir = dirname(fileURLToPath(import.meta.url))
 let _nameLib = null
 let _abilityArrays = null
@@ -1010,7 +1045,9 @@ export default class SetupPhase {
     const junctions = cityData.streetGraph?.junctions || []
     const { plots } = new PlotVoronoiGenerator().generate(blocks, cityData.districts, junctions, roadEdges, footprints)
     cityData.plots = plots
-    console.log(`[perf]   plots: ${(performance.now()-tPlots).toFixed(1)}ms (${plots.length} plots from ${blocks.length} blocks)`)
+    markTownhouseBlocks(blocks, cityData.plots, cityData.districts)
+    const townhouseCount = blocks.filter(b => b.blockType === 'townhouse').length
+    console.log(`[perf]   plots: ${(performance.now()-tPlots).toFixed(1)}ms (${plots.length} plots, ${townhouseCount} townhouse blocks)`)
 
     console.log(`[perf]   _generateBuildings total: ${(performance.now()-t0).toFixed(1)}ms`)
     this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares`)

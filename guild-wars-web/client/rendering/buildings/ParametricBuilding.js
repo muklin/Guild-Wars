@@ -11,6 +11,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
 const WINDOWS = ['window', 'window-short', 'window-single', 'window-shutter', 'window-closed']
 const STONE_MATS = new Set(['stone', 'granite'])
+const RENDER_ROOFS = false   // set true to restore roofs
 
 function makeRng(seed) {
   let s = (Math.floor(seed) * 2654435761) >>> 0
@@ -62,6 +63,67 @@ function footprintWings(fp, bbox) {
   return [{ ...bbox, dormersOnMinSide: true }]
 }
 
+// Param t where segment p→q crosses segment a→b (strictly interior to both); null otherwise.
+function segCrossT(p, q, a, b) {
+  const rx = q.x - p.x, ry = q.y - p.y, sx = b.x - a.x, sy = b.y - a.y
+  const d = rx * sy - ry * sx
+  if (Math.abs(d) < 1e-12) return null
+  const t = ((a.x - p.x) * sy - (a.y - p.y) * sx) / d
+  const u = ((a.x - p.x) * ry - (a.y - p.y) * rx) / d
+  return (t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9) ? t : null
+}
+function pointInPoly(pt, poly) {
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y
+    if (((yi > pt.y) !== (yj > pt.y)) && (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)) inside = !inside
+  }
+  return inside
+}
+// Unit normal of edge a→b pointing OUTWARD from `wingPoly` (away from the wing interior).
+function edgeOutwardNormal(a, b, wingPoly) {
+  const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1
+  let nx = -dy / L, ny = dx / L
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
+  if (pointInPoly({ x: mx + nx * 1e-3, y: my + ny * 1e-3 }, wingPoly)) { nx = -nx; ny = -ny }
+  return { nx, ny }
+}
+// Sub-intervals [t0,t1] of edge a→b that are EXTERIOR walls. A sub-interval is interior/shared
+// (suppressed) only if another wing occupies the space just OUTSIDE it — i.e. behind the wall,
+// away from this wing. That keeps a street-facing wall even when a sibling wing overlaps its
+// inward side (acute frontages), while still removing abutting party walls and shared interior
+// walls. The edge is split at crossings with, and collinear vertex projections of, the other
+// wings so each sub-interval is wholly exterior or wholly shared.
+const WALL_STEP = 0.1   // model units stepped outward to probe for an adjoining wing
+function boundaryIntervals(a, b, wingPoly, otherWings, tol) {
+  const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy, L = Math.sqrt(L2) || 1
+  const ts = [0, 1]
+  for (const w of otherWings) {
+    const poly = w.poly
+    for (let k = 0; k < poly.length; k++) {
+      const c = poly[k], d = poly[(k + 1) % poly.length]
+      const t = segCrossT(a, b, c, d); if (t != null) ts.push(t)
+      for (const p of [c, d]) {                                  // collinear overlap endpoints
+        if (Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / L < tol) {
+          const tp = ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2
+          if (tp > 1e-6 && tp < 1 - 1e-6) ts.push(tp)
+        }
+      }
+    }
+  }
+  ts.sort((x, y) => x - y)
+  const { nx, ny } = edgeOutwardNormal(a, b, wingPoly)
+  const out = []
+  for (let s = 0; s < ts.length - 1; s++) {
+    const t0 = ts[s], t1 = ts[s + 1]
+    if (t1 - t0 < 1e-6) continue
+    const mt = (t0 + t1) / 2
+    const ox = a.x + dx * mt + nx * WALL_STEP, oy = a.y + dy * mt + ny * WALL_STEP
+    if (!otherWings.some(w => pointInPoly({ x: ox, y: oy }, w.poly))) out.push([t0, t1])
+  }
+  return out
+}
+
 export function assemble(spec, lib) {
   const group = new THREE.Group()
   const rand = makeRng(spec.seed ?? 1)
@@ -105,6 +167,110 @@ export function assemble(spec, lib) {
     mesh.position.set(px, y, pz); mesh.rotation.y = rotY; mesh.scale.x = scaleX * sign; group.add(mesh)
   }
 
+  // ── Polygon-wing path (townhouse buildings) ──────────────────────────────────
+  // Each wing has `vertices: [[x,z],…]` in model space. Processed independently;
+  // no jettying. Group sits at world origin with scale=PARA_SCALE and rotation=0.
+  if (spec.footprint?.type === 'wings' && spec.footprint.wings?.some(w => w.vertices)) {
+    const fwings = spec.footprint.wings
+    const specSF = spec.suppressedFaces ?? []
+    const roofSpec = spec.roof ?? { material: 'slate' }
+    const wingRs = [], dormerPositions = []
+
+    for (const [wi, wing] of fwings.entries()) {
+      const wingFloors = Math.max(1, wing.floors ?? floors)
+      const wingPoly = wing.vertices.map(([x, z]) => ({ x, y: z }))
+      const matTop = matAt(wingFloors - 1)
+      const suppRoof = new Set(specSF.filter(sf => sf.wingIndex === wi && sf.upToFloor >= wingFloors - 1).map(sf => sf.edgeIndex))
+
+      // Walls draw ONLY along the building's merged outline: per edge, the sub-segments
+      // not interior to another wing. Geometry is floor-independent, so compute once.
+      // Every OTHER wing that could share/cover a wall of this wing: this building's other
+      // wings + same-block neighbour buildings' wings (passed via spec.neighborWings, in the
+      // same model space). Each tagged with its floor count for floor-aware suppression.
+      const WALL_TOL = 0.08   // model units: collinear/coincidence tolerance for shared walls
+      const otherWings = [
+        ...fwings.map((w, j) => ({ idx: j, vertices: w.vertices, floors: Math.max(1, w.floors ?? floors) })).filter(w => w.idx !== wi),
+        ...(spec.neighborWings ?? []).map(w => ({ vertices: w.vertices, floors: Math.max(1, w.floors ?? floors) })),
+      ].map(w => ({ poly: w.vertices.map(([x, z]) => ({ x, y: z })), floors: w.floors }))
+      // Drawable sub-intervals of edge a→b at floor f: exterior parts not covered by any
+      // other wing that ALSO reaches this floor. So a taller wing/building keeps its wall
+      // above a shorter neighbour, and abutting shared (party) walls are removed.
+      const drawIntervals = (i, a, b, f) => boundaryIntervals(a, b, wingPoly, otherWings.filter(w => w.floors > f), WALL_TOL)
+      let doorPlaced = false
+
+      for (let f = 0; f < wingFloors; f++) {
+        const yBase = f * H, mat = matAt(f)
+        for (let i = 0; i < wingPoly.length; i++) {
+          const a = wingPoly[i], b = wingPoly[(i + 1) % wingPoly.length]
+          const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy)
+          if (L < 1e-6) continue
+          const ux = dx / L, uy = dy / L, rotY = Math.atan2(uy, -ux)
+          for (const [t0, t1] of drawIntervals(i, a, b, f)) {
+            const segL = L * (t1 - t0)
+            if (segL < 1e-4) continue
+            const s0x = a.x + ux * L * t0, s0y = a.y + uy * L * t0     // segment start
+            // Justify bays evenly along this wall segment (flex panel width to fill).
+            const nBays = Math.max(1, Math.round(segL / B)), pitch = segL / nBays
+            for (let k = 0; k < nBays; k++) {
+              const t = (k + 0.5) * pitch, px = s0x + ux * t, pz = s0y + uy * t
+              place(makeFlatPanel(pitch, H, lib.regions[mat] ?? lib.regions.plaster, lib.materialFor(mat)), px, pz, yBase, rotY)
+              let slot = null
+              if (!doorPlaced && wi === 0 && f === 0 && k === Math.floor(nBays / 2)) { slot = 'door'; doorPlaced = true }
+              else if (STONE_MATS.has(mat) && rand() < 0.5) { addStoneWindow(group, lib, mat, px, pz, yBase, rotY, H) }
+              else if (!STONE_MATS.has(mat) && rand() < 0.6) { slot = WINDOWS[Math.floor(rand() * WINDOWS.length)] }
+              if (slot) place(lib.get(slot), px, pz, yBase, rotY)
+            }
+            // Posts: both segment ends + up to 4 evenly-spaced interior (≤6 per wall segment).
+            place(lib.get('post'), s0x, s0y, yBase, rotY)
+            place(lib.get('post'), s0x + ux * segL, s0y + uy * segL, yBase, rotY)
+            const intCount = Math.min(nBays - 1, 4)
+            for (let p = 1; p <= intCount; p++) {
+              const t = (p * nBays / (intCount + 1)) * pitch
+              place(lib.get('post'), s0x + ux * t, s0y + uy * t, yBase, rotY)
+            }
+          }
+        }
+        // Floor beams: one flexed beam per boundary segment.
+        if (f < wingFloors - 1) {
+          for (let i = 0; i < wingPoly.length; i++) {
+            const a = wingPoly[i], b = wingPoly[(i + 1) % wingPoly.length]
+            const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy)
+            if (L < 1e-6) continue
+            const ux = dx / L, uy = dy / L, rotY = Math.atan2(uy, -ux)
+            for (const [t0, t1] of drawIntervals(i, a, b, f)) {
+              const segL = L * (t1 - t0); if (segL < 1e-4) continue
+              const mt = (t0 + t1) / 2, beam = lib.get('beam'); if (!beam) continue
+              beam.position.set(a.x + ux * L * mt, (f + 1) * H, a.y + uy * L * mt)
+              beam.rotation.y = rotY; beam.scale.x = segL / B; group.add(beam)
+            }
+          }
+        }
+      }
+
+      // Roof per wing: use bounding-box dims stored on wing for gable orientation
+      const wingTopY = Math.max(1, wing.floors ?? floors) * H
+      const R = wingRoof(wing, wingTopY, roofSpec.pitch ?? 0.55, overhang)
+      wingRs.push(R)
+      const wp = [
+        { x: R.minX, y: R.minZ }, { x: R.maxX, y: R.minZ },
+        { x: R.maxX, y: R.maxZ }, { x: R.minX, y: R.maxZ },
+      ]
+      if (RENDER_ROOFS) {
+        addRoof(group, R, roofSpec, lib)
+        addGableFills(group, wp, { topY: wingTopY, ht: R.ht, overhang, isGableEnd: R.isGableEnd, junctionSide: R.junctionSide, suppressedEdges: suppRoof }, matTop, lib)
+        addGableTrim(group, wp, { topY: wingTopY, apexY: R.apexY, ht: R.ht, isGableEnd: R.isGableEnd, overhang, gableStyle, gableBrace, roofMat: roofSpec.material, junctionSide: R.junctionSide, suppressedEdges: suppRoof }, lib)
+        if (R.roofAngle >= 50 && !wing.noDormers) dormerPositions.push(...addDormers(group, R, roofSpec, rand, lib))
+      }
+    }
+    if (RENDER_ROOFS) addChimneys(group, wingRs, floors, rand, lib, dormerPositions)
+    if (spec.tint) {
+      const tintedMat = lib.material.clone()
+      tintedMat.color.copy(spec.tint)
+      group.traverse((o) => { if (o.isMesh && o.material === lib.material) o.material = tintedMat })
+    }
+    return mergeBuilding(group)
+  }
+
   // ── Walls ────────────────────────────────────────────────────────────────────
   for (let f = 0; f < floors; f++) {
     const yBase = f * H, mat = matAt(f), pf = floorPoly(f)
@@ -136,7 +302,12 @@ export function assemble(spec, lib) {
         if (slot) place(lib.get(slot), px, pz, yBase, rotY)
       }
       if (vis) {
-        for (let k = 1; k < nBays; k++) place(lib.get('post'), a.x + ux * k * pitch, a.y + uy * k * pitch, yBase, rotY)
+        // Intermediate posts: evenly spaced, max 4 to avoid overcrowding on long faces
+        const interiorCount = Math.min(nBays - 1, 4)
+        for (let p = 1; p <= interiorCount; p++) {
+          const k = Math.round(p * nBays / (interiorCount + 1))
+          place(lib.get('post'), a.x + ux * k * pitch, a.y + uy * k * pitch, yBase, rotY)
+        }
         if (braceA) place(lib.get(braceSlot), a.x, a.y, yBase, rotY, 1, 1)
         if (braceB) place(lib.get(braceSlot), b.x, b.y, yBase, rotY, 1, -1)
       }
@@ -158,18 +329,19 @@ export function assemble(spec, lib) {
     return wingRoof(w, topY, roofSpec.pitch * pitchMult, overhang)
   })
   const dormerPositions = []
-  for (const R of wingRs) {
-    const wp = [
-      { x: R.minX, y: R.minZ }, { x: R.maxX, y: R.minZ },
-      { x: R.maxX, y: R.maxZ }, { x: R.minX, y: R.maxZ },
-    ]
-    addRoof(group, R, roofSpec, lib)
-    addGableFills(group, wp, { topY, ht: R.ht, overhang, isGableEnd: R.isGableEnd, junctionSide: R.junctionSide, suppressedEdges: suppressedRoofEdges }, matTop, lib)
-    addGableTrim(group, wp, { topY, apexY: R.apexY, ht: R.ht, isGableEnd: R.isGableEnd, overhang, gableStyle, gableBrace, roofMat: roofSpec.material, junctionSide: R.junctionSide, suppressedEdges: suppressedRoofEdges }, lib)
-    if (R.roofAngle >= 50 && !R.noDormers) dormerPositions.push(...addDormers(group, R, roofSpec, rand, lib))
+  if (RENDER_ROOFS) {
+    for (const R of wingRs) {
+      const wp = [
+        { x: R.minX, y: R.minZ }, { x: R.maxX, y: R.minZ },
+        { x: R.maxX, y: R.maxZ }, { x: R.minX, y: R.maxZ },
+      ]
+      addRoof(group, R, roofSpec, lib)
+      addGableFills(group, wp, { topY, ht: R.ht, overhang, isGableEnd: R.isGableEnd, junctionSide: R.junctionSide, suppressedEdges: suppressedRoofEdges }, matTop, lib)
+      addGableTrim(group, wp, { topY, apexY: R.apexY, ht: R.ht, isGableEnd: R.isGableEnd, overhang, gableStyle, gableBrace, roofMat: roofSpec.material, junctionSide: R.junctionSide, suppressedEdges: suppressedRoofEdges }, lib)
+      if (R.roofAngle >= 50 && !R.noDormers) dormerPositions.push(...addDormers(group, R, roofSpec, rand, lib))
+    }
+    addChimneys(group, wingRs, floors, rand, lib, dormerPositions)
   }
-  // Chimneys: building-level count; dormer positions passed so chimneys avoid them.
-  addChimneys(group, wingRs, floors, rand, lib, dormerPositions)
 
   // Per-building atlas tint: clone the shared material once with a hue/brightness shift
   // so neighbouring buildings don't look identical. Stone (procedural) is unaffected.
@@ -197,13 +369,14 @@ function wingRoof(wing, topY, pitch, overhang) {
 }
 
 // Place a flex part along each polygon edge at height y (optionally edge-filtered).
+// edgeFilter(ux, uy, i) — return false to skip edge i.
 function addEdgeParts(group, lib, slot, poly, y, B, edgeFilter) {
   for (let i = 0; i < poly.length; i++) {
     const a = poly[i], b = poly[(i + 1) % poly.length]
     const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy)
     if (L < 1e-6) continue
     const ux = dx / L, uy = dy / L
-    if (edgeFilter && !edgeFilter(ux, uy)) continue
+    if (edgeFilter && !edgeFilter(ux, uy, i)) continue
     const rotY = Math.atan2(uy, -ux), n = Math.max(1, Math.round(L / B)), pitch = L / n
     for (let k = 0; k < n; k++) {
       const m = lib.get(slot); if (!m) continue

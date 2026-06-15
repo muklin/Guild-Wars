@@ -259,6 +259,18 @@ _Avoid_: wall, barrier, rampart
 A structure generated within a plot. A plot can contain one or more building footprints.
 _Avoid_: structure, object
 
+**Townhouse block**:
+A block classified (probabilistically per district type) to produce buildings with shared party walls and continuous street facades. Within a townhouse block, ~5% of plots are freestanding slots instead. The block carries a `blockType: 'townhouse'` flag set at generation time.
+_Avoid_: row block, terrace block
+
+**Freestanding slot**:
+A plot inside a Townhouse block that receives a GLB model building rather than a continuous party-wall facade. Rare (~5%). Adjacent townhouse plots must detect the gap and expose (not suppress) their shared boundary wall.
+_Avoid_: singleton plot, instanced plot
+
+**Townhouse footprint**:
+The building polygon for a plot in a Townhouse block. Computed by: (1) keeping every street-facing edge as a front wall; (2) for each street-facing edge, insetting it inward (perpendicular) by a wing depth chosen from four district-defined bay-depth options; (3) clipping the inset segment to the plot polygon; (4) closing the perimeter with side walls along boundary edges and back walls parallel to their respective frontage. A plot with N street-facing edges produces N wings, each potentially at a different depth.
+_Avoid_: plot footprint, building outline
+
 **Landmark**:
 A district-specific feature building (per `DISTRICT_MODEL_SQUARE`) placed on a district's Square clusters before plots are generated; plot ground under a Landmark footprint is dropped. Distinct from an ordinary plot Building.
 _Avoid_: square feature-building, specialist building
@@ -288,8 +300,16 @@ The wall module between two posts on one floor — the unit of wall layout. Rigi
 _Avoid_: panel slot, module
 
 **Building Spec**:
-The compact deterministic descriptor (seed, footprint, floors, per-floor wall material, roof, chimneys, suppressedFaces) a Parametric Building is assembled from. The footprint is a wing list (`{type:'wings', wings:[…]}`) of axis-aligned rectangles; the server emits the spec; the client assembles deterministically (no `Math.random`).
+The compact deterministic descriptor (seed, footprint, wallMaterial, roof, suppressedFaces) a Parametric Building is assembled from. The footprint is a wing list (`{type:'wings', wings:[…]}`); each wing is either an axis-aligned rect (`{minX,maxX,minZ,maxZ}`) or a polygon (`{vertices:[[x,z],…]}`), plus a per-wing `floors` count and optional roof override. Computed client-side from plot geometry; the client assembles deterministically from the seed (no `Math.random`).
 _Avoid_: blueprint, recipe
+
+**Wing**:
+One rectangular or polygonal volume within a building's footprint. Each wing has an independent floor count drawn from a district-defined list. Adjacent wings at different heights produce a lean-to roof on the shorter wing. The tallest wing (or the convex hull of co-height wings) receives a unified hip/complex roof.
+_Avoid_: section, module, arm
+
+**Lean-to roof**:
+A single-pitch roof on a wing that is shorter than an adjacent wing. Slopes from the outer eave upward to the shared wall of the taller adjacent wing. Used on secondary wings in a Townhouse building.
+_Avoid_: shed roof, mono-pitch, pent roof
 
 **Suppressed face**:
 A building face where wall panels, interior posts, and roof trim are omitted because the face abuts a neighbour building of equal or greater height. Corner posts shared with perpendicular faces are retained. Encoded in the Building Spec as `suppressedFaces`, pre-computed by the server.

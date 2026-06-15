@@ -9,7 +9,6 @@
 // scale a model to a target plot/footprint without measuring at runtime.
 export const MODELS = {
   houses: [
-    { name: 'h1',  glbPath: '/resources/Models/h1.glb',  width: 0.255, depth: 0.349, height: 0.403 },
     { name: 'h2',  glbPath: '/resources/Models/h2.glb',  width: 1.458, depth: 1.996, height: 2.302 },
     { name: 'h3',  glbPath: '/resources/Models/h3.glb',  width: 1.458, depth: 1.996, height: 2.913 },
     { name: 'h4',  glbPath: '/resources/Models/h4.glb',  width: 2.366, depth: 1.996, height: 2.913 },

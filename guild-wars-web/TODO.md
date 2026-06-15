@@ -74,6 +74,9 @@ In General:
 
 - Docks 
 
+Remove the Ambient Occlusion / dirty shading texture from plaster walls.  we only want the shading when its next to a beam or post.  I think the best way to do this is to render planes where we want shadows/dirt to be, and the plane would be textured with an gradient opacity texture.  We've also lost the Ground Dirt texture, (darker at base of ground level fading up to nothing at the top of ground level.) 
+
+
 
 LandMark buildings
 - Add the Castle, and allow it to spawn in Noble Districts, Note this will be some work as the castle needs to consume a large "block" area and be walled and grassed and etc.
