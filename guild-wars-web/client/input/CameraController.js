@@ -1,5 +1,32 @@
 import * as THREE from 'three'
 
+// Floor-scroll: PageUp/PageDown step a world-space clip plane up/down in half-floor-
+// height units — the same granularity Building Spec floor lists use (see
+// ParametricBuilding.js/BuildingRenderer.js's per-wing `floors` entries). The clip
+// plane is the ONLY mechanism that hides/reveals geometry — including the roof, which
+// is just more geometry at a higher Y, not a separately-toggled layer — so scrolling
+// up through a building reveals each floor and then the roof continuously, in line
+// with their actual z-heights, instead of the roof popping in as a separate step.
+// Works in BOTH top-down and the normal isometric view (each has its own default).
+export const FLOOR_SCROLL_MAX = 24
+// Default level on entering top-down: just above the Foundation height (0.5
+// floor-heights = 1 half-unit), so a raised ground floor's foundation is visible
+// without immediately exposing the floors above it.
+export const FLOOR_SCROLL_DEFAULT_TOPDOWN = 1
+// Default level for the iso view (including on load): "max z-height of any object +
+// 0.5" — i.e. above everything, so nothing is culled until the player pages down.
+// FLOOR_SCROLL_MAX is comfortably above any building's roofline, so it doubles as that
+// sentinel rather than computing a literal scene-wide max each time.
+export const FLOOR_SCROLL_DEFAULT_ISO = FLOOR_SCROLL_MAX
+// Top-down mode allows much deeper zoom than the normal 3D view — enough for a single
+// building's footprint (~0.2-0.4 world units across, at MODEL_SCALE/2.3) to fill the
+// frustum (frustumHeight 80 / zoom ≈ visible world height).
+const TOP_DOWN_MAX_ZOOM = 250.0
+
+// View mode + camera location, persisted across a page reload — see _saveState/
+// restoreSavedState below.
+const CAMERA_STATE_KEY = 'gw.cameraState'
+
 export default class CameraController {
   constructor(camera, renderer, onDirty) {
     this.camera = camera
@@ -13,9 +40,11 @@ export default class CameraController {
     this.azimuth = 0
     this.elevation = Math.PI / 6 // 30 degrees
 
-    // Zoom — start framing the full map; allow deep zoom-in
+    // Zoom — start framing the full map; allow deep zoom-in (close enough to read
+    // individual buildings clearly in the angled iso view, short of top-down's even
+    // deeper TOP_DOWN_MAX_ZOOM).
     this.minZoom = 4.5   // enforced dynamically via world bounds
-    this.maxZoom = 40.0
+    this.maxZoom = 150.0
     this.camera.zoom = 4.5
     this.camera.updateProjectionMatrix()
 
@@ -31,8 +60,53 @@ export default class CameraController {
     this.keys = {}
     this._enabled = true
 
+    // Floor-scroll level (half-floor-height units; see FLOOR_SCROLL_MAX/
+    // FLOOR_SCROLL_DEFAULT_* above) — active in both iso and top-down (onKeyDown).
+    this.floorScrollUnits = FLOOR_SCROLL_DEFAULT_ISO
+
     this.setupEventListeners()
     this.updateCameraPosition()
+
+    // Remember view mode + camera location across a page reload — saved once right
+    // before the page actually unloads (not on every camera move, which would mean a
+    // localStorage write every frame while panning/zooming). Walk mode is deliberately
+    // NOT part of this: it's a WorldRenderer/App-level overlay with its own spawn-
+    // validity concerns on reload, not a CameraController field, so restoring this state
+    // naturally leaves it walk-mode-agnostic (always comes back in iso/top-down).
+    window.addEventListener('beforeunload', () => this._saveState())
+  }
+
+  _saveState() {
+    try {
+      localStorage.setItem(CAMERA_STATE_KEY, JSON.stringify({
+        x: this.targetPosition.x, z: this.targetPosition.z,
+        distance: this.distance, azimuth: this.azimuth, elevation: this.elevation,
+        zoom: this.camera.zoom, maxZoom: this.maxZoom,
+        topDown: !!this._topDown, floorScrollUnits: this.floorScrollUnits,
+      }))
+    } catch { /* ignore (private mode / no storage) */ }
+  }
+
+  // Restores a previously-saved view mode + camera location, if one exists. Returns
+  // true if it did (callers use this to skip their own default "centre on city" framing
+  // only when there's nothing to restore). Sets fields directly (not via toggleTopDown())
+  // since the saved elevation/maxZoom already reflect whichever mode was active.
+  restoreSavedState() {
+    let saved
+    try { saved = JSON.parse(localStorage.getItem(CAMERA_STATE_KEY)) } catch { saved = null }
+    if (!saved) return false
+    this.targetPosition.set(saved.x ?? this.targetPosition.x, 0, saved.z ?? this.targetPosition.z)
+    if (typeof saved.distance === 'number') this.distance = saved.distance
+    if (typeof saved.azimuth === 'number') this.azimuth = saved.azimuth
+    if (typeof saved.elevation === 'number') this.elevation = saved.elevation
+    if (typeof saved.maxZoom === 'number') this.maxZoom = saved.maxZoom
+    if (typeof saved.zoom === 'number') this.camera.zoom = Math.min(saved.zoom, this.maxZoom)
+    if (typeof saved.floorScrollUnits === 'number') this.floorScrollUnits = saved.floorScrollUnits
+    this._topDown = !!saved.topDown
+    this.camera.updateProjectionMatrix()
+    this.updateCameraPosition()
+    this._onDirty()
+    return true
   }
 
   setupEventListeners() {
@@ -90,6 +164,14 @@ export default class CameraController {
       this.camera.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.camera.zoom / 1.15))
       this.camera.updateProjectionMatrix()
       this.enforceWorldBounds()
+      this._onDirty()
+      e.preventDefault()
+    } else if (e.code === 'PageUp') {
+      this.floorScrollUnits = Math.min(FLOOR_SCROLL_MAX, this.floorScrollUnits + 1)
+      this._onDirty()
+      e.preventDefault()
+    } else if (e.code === 'PageDown') {
+      this.floorScrollUnits = Math.max(0, this.floorScrollUnits - 1)
       this._onDirty()
       e.preventDefault()
     } else {
@@ -239,6 +321,31 @@ export default class CameraController {
     this.camera.zoom = 3.0
     this.camera.updateProjectionMatrix()
     this.updateCameraPosition()
+  }
+
+  // Straight-down view for the top-down map mode: lock elevation near 90° (a hair short of
+  // it to avoid lookAt's up/forward gimbal-lock at true vertical), remembering whatever
+  // elevation was active so toggling back off restores it. Azimuth/pan stay live. Zoom
+  // range is widened while active (down to roughly one building filling the screen),
+  // restoring the normal-view max on exit and clamping the current zoom back into it.
+  toggleTopDown() {
+    this._topDown = !this._topDown
+    // Each mode has its own default floor-scroll level (reset every time you switch).
+    this.floorScrollUnits = this._topDown ? FLOOR_SCROLL_DEFAULT_TOPDOWN : FLOOR_SCROLL_DEFAULT_ISO
+    if (this._topDown) {
+      this._preTopDownElevation = this.elevation
+      this.elevation = Math.PI / 2 - 0.001
+      this._preTopDownMaxZoom = this.maxZoom
+      this.maxZoom = TOP_DOWN_MAX_ZOOM
+    } else {
+      this.elevation = this._preTopDownElevation ?? Math.PI / 6
+      this.maxZoom = this._preTopDownMaxZoom ?? this.maxZoom
+      this.camera.zoom = Math.min(this.camera.zoom, this.maxZoom)
+      this.camera.updateProjectionMatrix()
+    }
+    this.updateCameraPosition()
+    this._onDirty()
+    return this._topDown
   }
 
   centerOnMap() {

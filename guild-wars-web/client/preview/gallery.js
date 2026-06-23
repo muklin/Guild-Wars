@@ -48,9 +48,9 @@ function rngOf(seed) { let s = (seed * 2654435761) >>> 0; if (!s) s = 1; return 
 function pickMaterials(floors, rand) {
   const nonstone = rand() < 0.5 ? 'wood' : 'plaster'   // one non-stone choice per building
   const r = rand()
-  // r < 0.15 → granite (hewn dark blocks); 0.15–0.5 → regular stone; ≥ 0.5 → nonstone.
-  // Reuses the existing r sample so the rand stream length is unchanged.
-  const stoneType = r < 0.15 ? 'granite' : 'stone'
+  // r < 0.12 → granite (hewn dark blocks); 0.12–0.24 → brick; 0.24–0.5 → regular stone;
+  // ≥ 0.5 → nonstone. Reuses the existing r sample so the rand stream length is unchanged.
+  const stoneType = r < 0.12 ? 'granite' : r < 0.24 ? 'brick' : 'stone'
   if (r < 0.5 && floors > 1) return Array.from({ length: floors }, (_, f) => (f === 0 ? stoneType : nonstone))
   const m = (floors === 1 && r < 0.35) ? stoneType : nonstone
   return Array.from({ length: floors }, () => m)
@@ -71,11 +71,22 @@ for (let row = 0; row < 3; row++) {
     const rand = rngOf(s)
     const floors = 1 + ((row + col) % 3)
     const wall = pickMaterials(floors, rand)
-    // Every third building is L-shaped, so the gallery shows both footprint types.
-    const isL = (row + col) % 3 === 2
-    const footprint = isL
-      ? { type: 'L', w: 3.2 + (col % 2) * 0.8, d: 3.0 + (row % 2) * 0.7 }
-      : { type: 'rect', w: 2.4 + (col % 3) * 0.8, d: 2.0 + (row % 2) * 0.8 }
+    // Single rectangular wing — the degenerate case of the polygon-wing footprint Path A
+    // expects (same shape BuildingRenderer._buildSpec uses for freestanding houses).
+    const w = 2.4 + (col % 3) * 0.8, d = 2.0 + (row % 2) * 0.8
+    // Per-wing floor list — [{zHeight,height,material}, …] in floor-height units, the
+    // shape assemble() now expects (replaces the old floors-count + wallMaterial array).
+    let z = 0
+    const floorList = wall.map((mat) => {
+      const entry = { zHeight: z, height: 1.0, material: mat }
+      z += 1.0
+      return entry
+    })
+    const footprint = { type: 'wings', wings: [{
+      vertices: [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]],
+      front: [[-w / 2, -d / 2], [w / 2, -d / 2]],
+      floors: floorList,
+    }] }
     const roofMat = pickRoof(wall, rand)
     // Per-building hue tint (seeded): plaster/wood/thatch/reed get slight jitter, slate/tile
     // gets a bit more. All expressed as a THREE.Color multiplied against the atlas material.
@@ -84,15 +95,12 @@ for (let row = 0; row < 3; row++) {
     const tintS = 0.25 + rand() * (isWarm ? 0.20 : 0.35)            // saturation (clearly visible)
     const tintL = 0.84 + (rand() - 0.5) * 0.12                      // lightness
     const tint = new THREE.Color().setHSL(tintH, tintS, tintL)
-    const wingHeights = isL ? [1.0, 0.55 + rand() * 0.40] : undefined
     specs.push({
       seed: s,
       floors,
       footprint,
-      wallMaterial: wall,
-      roof: { shape: 'gable', material: roofMat, pitch: 0.42 + rand() * 0.5 },
+      roof: { shape: 'gable', material: roofMat, pitch: 0.42 + rand() * 0.5, overhangMin: 0.14, overhangMax: 0.48 },
       tint,
-      wingHeights,
       _grid: { row, col },
     })
   }

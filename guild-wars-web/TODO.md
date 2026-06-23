@@ -1,42 +1,25 @@
 
 
-Bugs and tweaks:
-1. Character sheet. make the character portrait wider, and actually anchor it to the window. (its currently locked in the top left corner.)  Resize the sheet as indicated:  ![alt text](image.png)
-2. Show Purchased HQ upgrades to the right of the HQ image.
-3. HQ image isn't working ![alt text](image-1.png)
-4. Once an HQ has been selected, you can't change.  (so don't show the button.)  You can rehouse, but it costs 2 round Actions, and you lose all your HQ upgrades.  
-5. Selecting a Guild HQ indicates I will have +30 Influence · +20 Standing with district faction, and says I have selected in Residential: Middle, but I don't see those values updated in the Diplomacy or Overview tabs.
-6. Allow Hover of any "Pills" to see the actual value.  (Show <Type>: <Value>  ie.  Health: 70 )
-7. Need to disambiguate between D&D rounds, (6s) and what I have been also calling rounds (game rounds: ~1 month) Need a new term for that. 
+# Bugs:
+- Fix rooves. Make sure they Gable correctly on the ends of wings.  
+- Squares not rendering texture
+- party walls should NOT be removed between buildings.  No Windows or doors. 
 
 
-in K:\UnityProjects\Guild-Wars\guild-wars-web\client\ui\MultiplayerUI.js @ 149 use K:\UnityProjects\Guild-Wars\guild-wars-web\resources\d20.svg instead.  
+# Baby Features:
+- allow walls to use building generation, to allow for turrets, gates?? 
 
+# Features:
 
-Simplify the combined Squares in the street graph:
-- remove streets that have squares on both sides. 
-- remove squares that are missing a street on one side. 
-- fill holes with a single polygon of type "square"
-Now we will have adjacent squares coalesce into single areas, ringed with streets.   
-- consider how this will affect path routing on squares now.  
+## City Setup 
+### Resources.  
+When players go to create a new resource, we will popup a dialogue to help them name, choose an icon for, set the initial value of (in gold)
 
+### District Definition 
+- When players select a district, they will see a list of the building types, and subtypes available, based on the district type settings, and also sliders, set at the intial defaults, for the amount of those buildings in a district.   These sliders sum to 100% and increasing one slider reduces the others, proportinal to how much weight they all have.  (reducing one slider slowly to 100% would reduce all sliders to 0% at the same time) 
+When the player changes the slider, buildings are generated, (on stop sliding.)
 
-Fix the District Boundary Streets 
-I need to do more thinking about this.  
-The current state is that prior to district definition a user can define the edge of a District to be a canal/Wall/Main/Road/Dock.  
-After it has District defined on one or both sides, the single long boundary changes to be a street, usually not straight. 
-But I still want to be able to let a user hover, select that District boundary street, and set it as a canal/Wall/Main/Road/Dock. 
-I don't want the District boundary to be drawn over the streets.  it looks ugly.
-It seems not to work if you define ie a main street, after the District is set. 
-I think I need to
-- add "district Boundary" to street definitions.  
-- make Streets that are district boundaries hoverable and selectable (the entire street boundary with the adjacent district) if they havent' been defined before.
-- render them correctly when they are defined before district definition.
-- render them correctly when they are defined after district definition.
-- Improve canals, docks rivers, to render them as deeper than ground level
-- add working (walkable) bridges over rivers and canals. 
-- 
-
+## Special Junctions
 
 Junctions that are "wall" should have a chance of being a gate.  use the t1.glb model for now.
 Junctions that are "Canal" should have a chance of being a bridge.  
@@ -45,53 +28,70 @@ The chance, when the right district is null, is very low, maybe 1%
 The chance, when districts are the same type, is high, 80%
 The chance, when districts are a different type, is lower, 30%. 
 
-Any Towers at the ends of Main roads are always a "barbican" or Large City Gate.  use the t1.glb model for now.
-Junctions that are barbicans should be available to connect roads, for new districts.  
+## Buildings 
+### Add arches under buildings
+Archways, Portals or passages that pass under a building to the Courtyard beyond.  
+- only on ground floor. 
+- one or two bays wide. 
+- only up to 3 bays deep.
+- These are simple, internal walls facing inward to the archway 
+- Just leave the ceiling open at the moment.  We will add wood ceiling and knees later.
 
+### Generate Docks 
 
-
-
-
-Fix Buildings.  
-Take a reasonably complex block or 2 from an existing map and use it as a base to generate buildings in buildingparts.html
-
-For Townhouses: 
-- Allow Building fronts to run exactly from Left boundary to right boundary, no matter the side boundaries behind.  
-- Allow Walls to proceed backwards from the frontage at the same angle as the boundary. 
-- Decide on the depth/wings of the building.
-- Allow Wings of buildings to run at any angle to one another.
-
-In General: 
-- Roof eaves still need to be angled correctly across the top of the walls.
-- Allow wings of buildings to be different heights to one another.
-- Prevent massive Square-ish buildings with one roof span.  
-- Correct the townhouse / instanced per district logic. (should be a mix of townhouses.  Some blocks are town houses with sporadic instanced buildings, some blocks are singleton houses, (mix of instanced and generated houses))
-- Stop dark stone from being used above ground floor. (and lighten it somewhat.)
-- reduce the number of wood uprights on buildings.  There should never be more than about 6 uprights on a long building face, (10+)
-- Add arches under buildings
-- allow walls to use building generation, to allow for turrets, gates?? 
-- Stone windows should be higher on the wall.  
-
-- Docks 
-
-Remove the Ambient Occlusion / dirty shading texture from plaster walls.  we only want the shading when its next to a beam or post.  I think the best way to do this is to render planes where we want shadows/dirt to be, and the plane would be textured with an gradient opacity texture.  We've also lost the Ground Dirt texture, (darker at base of ground level fading up to nothing at the top of ground level.) 
-
-
-
-LandMark buildings
+### LandMark buildings
 - Add the Castle, and allow it to spawn in Noble Districts, Note this will be some work as the castle needs to consume a large "block" area and be walled and grassed and etc.
 - Market place stalls
 - Better Mages towers
 - Better and more varied churches
 - Better Industrial buildings 
 - Warehouses.
+ 
+## Building Type 
+- buildings (including all Landmark buildings) have a Type. 
+- Type can be Residental, Industial, Commercial, Military, Public
+- All Types also have Subtypes:  Residential: [Slum, MiddleClass, Noble], Commercial:[ <resource>trader, (incl food and Labour), Banks, MoneyLenders, etc.], Industial:[forge, smelter,blacksmith, bowyer-fletcher, etc. ], Public: [tavern, inn, whorehouse, buskers alley, etc.], etc.  
+- Type and subtype influence the Buildings initial geometry. 
 
-- 
+
+
+## Gameplay during terrain 
+During Terrain setup players define
+ - remote Cities / towns / Aggressors
+ - gods
+ - Special Terrain: Volcano, edge of ice sheet ... etc? 
 
 
 
-Get into per round Actions.  
+## Groundplane changes or Z-height implementation.  HUGE
+- the ground plane is currently a single plane at z=0.
 
+- Terrain centres, and edgepoints then District centres and boundaries, then Streets, all get a z-height.
+- when city and Terrain are fine voronois are generated z-heights of all points are randomized in a thin band.  
+- Terrain types set, and drag adjacent parts of the map up or down, proportional to the type, 
+  - sea - a lot, and all fine voronoi z-heights are set to the same value.
+  - lake - a bit, and all fine voronoi z-heights are set to the same value.
+  - swamp - same as lake, and all fine voronoi z-heights are smoothed
+  - rivers set their z-heights so end point to end point is a consistent gradient.  
+  - plains and deserts are flat.
+  - Cliffs detect the direction of drop off, (if same then randomly select one.) 
+   - split the vertices, separate the adjacent fine voronoi z-heights, add a cliff face geometry
+  - hills increase a bit and all fine voronoi z-heights are multiplied.
+  - mountains increase a lot and all fine voronoi z-heights are multiplied even more.  
+- during Terrain application, the z-heights of all 
+- District boundaries set, and drag adjacent parts of the map up or down, proportional to the type
+ - Canals decrease slightly.  
+- Streets are rendered along z-heights.  
+- plots are unaffected and run along the z-heights too.  
+- buidings are generated in the same ways as currently, with wings, unaffected by z-height. 
+- Wings will will quantize their ground level height to be the first level where the highest vert is above ground.
+- wings merge to buidings as normal.  
+
+
+
+## per round Actions
+
+- Need to disambiguate between D&D rounds, (6s) and what I have been also calling rounds (game rounds: ~1 month) Need a new term for that. 
 
 
 Each round each District and trade faction will gain their produced resources.  The base for each is their current health.  But then The District must 

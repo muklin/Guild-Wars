@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
-import { makeWallMaterial } from './stoneMaterial.js'
+import { makeWallMaterial, makeFloorMaterial } from './stoneMaterial.js'
+import { makeBrickMaterial } from './brickMaterial.js'
 
 // Loads one building-part THEME: its manifest (grid + atlas regions), the shared
 // texture atlas, and each part slot's geometry. All parts share ONE atlas material,
@@ -9,9 +10,10 @@ import { makeWallMaterial } from './stoneMaterial.js'
 export default class PartLibrary {
   // `worldScale` is the scale the assembled building will be rendered at. The stone +
   // grime shader effects are world-space, so they're tuned by it to stay proportional.
-  constructor(base, { worldScale = 1 } = {}) {
+  constructor(base, { worldScale = 1, baseY = 0 } = {}) {
     this.base = base.replace(/\/$/, '')
     this.worldScale = worldScale
+    this.baseY = baseY
     this.geos = new Map()
     this.material = null
     this.grid = null
@@ -30,10 +32,33 @@ export default class PartLibrary {
     tex.minFilter = THREE.NearestMipmapLinearFilter
     tex.generateMipmaps = true
     // World-space shader effects scaled to the building's render scale (tuned at scale 1).
-    const grimeHeight = 1.15 * this.worldScale, stoneDensity = 6.0 / this.worldScale
-    this.material = makeWallMaterial({ map: tex, grimeHeight })                          // atlas walls (+ grime)
-    this.stoneMaterial = makeWallMaterial({ stone: true, density: stoneDensity, grimeHeight })  // procedural stone
-    this.darkMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2622, roughness: 1, metalness: 0 })  // sooty interiors
+    // Ground dirt fades over one ground-floor height, measured up from the building base.
+    const grimeHeight = (this.grid?.floorHeight ?? 1.4) * this.worldScale
+    // Stone density is now sampled in LOCAL/model space (see stoneMaterial.js), so no
+    // /worldScale compensation is needed — mirrors the brick material's same fix.
+    const stoneDensity = 6.0, baseY = this.baseY
+    this.material = makeWallMaterial({ map: tex, grimeHeight, baseY })                          // atlas walls (+ grime)
+    this.stoneMaterial = makeWallMaterial({ stone: true, density: stoneDensity, grimeHeight, baseY })  // procedural stone
+    // Stone columns get the same procedural stone, offset in the noise so a column
+    // standing right against a stone wall doesn't show the identical cell pattern.
+    this.stoneColumnMaterial = makeWallMaterial({ stone: true, density: stoneDensity, grimeHeight, baseY, offset: [37.1, 11.7, -23.4] })
+    // Brick base colour: the light grey, nudged 10% toward a very pale blue, with a
+    // slight (0.2%) per-brick jitter so it isn't perfectly flat.
+    const brickBase = new THREE.Color(0xbcbcb6).lerp(new THREE.Color().setHSL(0.58, 0.35, 0.88), 0.1)
+    const brickPalette = [[brickBase.getHex(), 1, 0.002]]
+    // Brick: same procedural-wall treatment as stone (no atlas region needed), 2:1 (1:2)
+    // brick aspect ratio — bricks twice as wide as tall. Sampled in LOCAL/model space now
+    // (see brickMaterial.js), so scale is in model units directly — no /worldScale needed.
+    this.brickMaterial = makeBrickMaterial({ scaleU: 4, scaleV: 8, palette: brickPalette, grimeHeight, baseY })
+    // Stone columns ("poles") get their own brick instance: a 4:1 aspect ratio and ~80%
+    // smaller bricks than a first pass at this used, since a narrow vertical pole reads
+    // better with small, elongated bricks than the wide wall-course proportions.
+    this.brickColumnMaterial = makeBrickMaterial({ scaleU: 10, scaleV: 25, palette: brickPalette, grimeHeight, baseY })
+    this.darkMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2622, roughness: 1, metalness: 0, side: THREE.DoubleSide })  // sooty interiors
+    // Floors: sampled in LOCAL space (see makeFloorMaterial), so density is in model units
+    // directly — no /worldScale correction needed like the world-space wall materials above.
+    this.floorStoneMaterial = makeFloorMaterial({ stone: true })
+    this.floorWoodMaterial  = makeFloorMaterial({ stone: false })
 
     const loader = new GLTFLoader()
     for (const name of Object.keys(manifest.parts)) {
@@ -55,6 +80,8 @@ export default class PartLibrary {
 
   // Material for generated geometry (gable fills, roof) of a given wall material.
   materialFor(material) {
-    return material === 'stone' ? this.stoneMaterial : this.material
+    if (material === 'stone') return this.stoneMaterial
+    if (material === 'brick') return this.brickMaterial
+    return this.material
   }
 }

@@ -3,6 +3,7 @@
 // per-district Landmark spec to place Landmarks and carve their ground out of plots
 // before plots are generated; the client needs the same data to render them. Keeping
 // one source of truth avoids the two drifting.
+import { DISTRICTS, DEFAULTS, districtConfigKey } from './districtConfig.js'
 
 // Building / prop model catalogue. width × depth × height are the measured model
 // footprint in model units (offline GLB bbox, node transforms applied), used to
@@ -59,7 +60,7 @@ export const MODELS = {
 export const MODEL_BY_NAME = new Map(Object.values(MODELS).flat().map(m => [m.name, m]))
 
 // Fixed model-unit → world-unit scale. Models are NEVER stretched.
-export const MODEL_SCALE = 0.13
+export const MODEL_SCALE = 0.08
 
 // Horizontal bbox-centre offset (model units) for each model. Models are authored
 // with their ORIGIN at the "front door", so their geometry sits behind the origin
@@ -82,28 +83,19 @@ export const MODEL_OFFSET = {
   colliseum: { x: -0.270, z: -6.648 },
 }
 
-// Landmark buildings per district: the special models placed on a district's Square
-// clusters (a paved plaza of joined squares). Value = count of that model wanted.
-// Placed before plots; plot ground under a Landmark footprint is dropped.
-export const DISTRICT_MODEL_SQUARE = {
-  'Residential-Slums':  { well1: 6 },
-  'Residential-Middle': { well1: 4 },
-  'Residential-Noble':  { t2: 2 },
-  'Market':             { m1: 2, t4: 2, hall: 1 },
-  'Leadership':         { hall: 1 },
-  'Religious':          { church: 1 },
-  'Magical':            { t2: 2, hall: 1 },
-  'Military':           { t3: 2 },
-  'Industry':           { t5: 1, hall: 1 },
-  'Entertainment':      { colliseum: 1 },
-  default:              { },
-}
+// Landmark buildings per district (the special models placed on a district's Square
+// clusters — a paved plaza of joined squares; value = count of that model wanted;
+// placed before plots, plot ground under a Landmark footprint is dropped) now live in
+// shared/districtConfig.js (DISTRICTS[key].landmarks), alongside every other per-
+// district-type table. Kept as a derived export + districtModelKey() so LandmarkPlacer
+// doesn't need to change its call pattern.
+export const DISTRICT_MODEL_SQUARE = Object.fromEntries(
+  Object.entries(DISTRICTS).map(([key, d]) => [key, d.landmarks])
+)
+DISTRICT_MODEL_SQUARE.default = DEFAULTS.landmarks
 
-// District → DISTRICT_MODEL_SQUARE key (mirrors BuildingRenderer._districtKey).
+// District → DISTRICT_MODEL_SQUARE key — same as districtConfigKey, just defaulting to
+// the literal string 'default' instead of null for an unassigned district.
 export function districtModelKey(d) {
-  const t = d?.assignedType
-  if (!t) return 'default'
-  if (t === 'Residential') return `Residential-${d.residentialClass ?? 'Middle'}`
-  if (t === 'Leadership') return 'Leadership'
-  return t
+  return districtConfigKey(d) ?? 'default'
 }

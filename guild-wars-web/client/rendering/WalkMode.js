@@ -3,19 +3,27 @@ import { pointInPolygon } from './utils/renderUtils.js'
 
 const GROUND_Y     = 0.075
 const PARA_SCALE   = 0.13 / 2.3         // matches BuildingRenderer
-const CHAR_HEIGHT  = 1.12 * PARA_SCALE  // ≈ 0.063 world units (80% of one floor)
-const CHAR_RADIUS  = 0.25 * PARA_SCALE  // ≈ 0.014 world units
+const CHAR_HEIGHT  = 1 * PARA_SCALE  // ≈ 0.063 world units (80% of one floor)
+const CHAR_RADIUS  = 0.18 * PARA_SCALE  // ≈ 0.014 world units
 const BODY_HEIGHT  = CHAR_HEIGHT * 0.60 // shorter cylinder; head sits on top
 const HEAD_RADIUS  = CHAR_HEIGHT * 0.22 // dodecahedron head
 const PIVOT_Y      = GROUND_Y + BODY_HEIGHT + HEAD_RADIUS  // camera orbit pivot = head centre
 const MOVE_SPEED   = 0.17               // world units / second
 const SPRINT_MULT  = 3.5                // speed multiplier when sprint toggled
-const MOUSE_SENS   = 0.002             // radians / pixel
+const MOUSE_SENS   = 0.0005             // radians / pixel
 const PITCH_MIN    = -20 * Math.PI / 180  // 20° below horizontal
 const PITCH_MAX    =  Math.PI / 2 - 0.01  // just under straight up
+const FENCE_CLEARANCE = 0.012             // world units, on top of CHAR_RADIUS
+
+// Shortest distance from (x,y) to segment a→b.
+function distToSegment(x, y, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy || 1
+  const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / L2))
+  return Math.hypot(x - (a.x + dx * t), y - (a.y + dy * t))
+}
 
 export default class WalkMode {
-  constructor(scene, renderer, streetGraph, plots, targetPos, initialYaw, onExit) {
+  constructor(scene, renderer, streetGraph, targetPos, initialYaw, onExit, buildingRenderer, fenceSegments) {
     this._scene  = scene
     this._onExit = onExit
 
@@ -37,10 +45,25 @@ export default class WalkMode {
     this._head.castShadow = false
     scene.add(this._head)
 
-    // Building footprint polygons for collision (plot.blockCorners = {x,y} = world XZ)
-    this._collisionPolys = (plots || [])
-      .filter(p => p.blockType !== 'square' && p.streetEdges?.length > 0 && p.blockCorners?.length >= 3)
-      .map(p => p.blockCorners)
+    // Building footprint polygons for collision — the ACTUAL built wing footprints (world
+    // space), not the full plot boundary, so the character can cross plot/yard space freely
+    // and only collides with real building walls.
+    this._collisionPolys = []
+    for (const { entry } of (buildingRenderer?._lastPolyWingEntries ?? [])) {
+      const wings = entry.spec?.footprint?.wings ?? []
+      const c = Math.cos(entry.rotY ?? 0), sn = Math.sin(entry.rotY ?? 0)
+      for (const w of wings) {
+        if (!w.vertices?.length) continue
+        this._collisionPolys.push(w.vertices.map(([vx, vz]) => {
+          const px = vx * PARA_SCALE, pz = vz * PARA_SCALE
+          return { x: entry.x + px * c + pz * sn, y: entry.z - px * sn + pz * c }
+        }))
+      }
+    }
+
+    // Fence segments (world-space) for collision — treated as thin solid walls, blocked
+    // whenever the candidate position comes within FENCE_CLEARANCE of one.
+    this._fenceSegments = fenceSegments ?? []
 
     // Spawn at the junction nearest to the current camera target
     const spawn = this._findSpawn(streetGraph, targetPos)
@@ -139,6 +162,11 @@ export default class WalkMode {
       let blocked = false
       for (const poly of this._collisionPolys) {
         if (pointInPolygon(nx, nz, poly)) { blocked = true; break }
+      }
+      if (!blocked) {
+        for (const { a, b } of this._fenceSegments) {
+          if (distToSegment(nx, nz, a, b) < CHAR_RADIUS + FENCE_CLEARANCE) { blocked = true; break }
+        }
       }
       if (!blocked) {
         this._px = nx

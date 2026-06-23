@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import GameAPI from '../api/GameAPI.js'
-import { bringToFront } from './GuildPanel.js'
+import * as ViewStack from './ViewStack.js'
 
 const PORTRAIT_W = 210
 const PORTRAIT_H = 420
@@ -555,6 +555,13 @@ function _refreshHeader(state) {
 
 function _refreshActions(_state) { /* class picker is now inline in header */ }
 
+function _closeSheet(state) {
+  state.el.remove()
+  _sheets.delete(state.ch.id)
+  state.portrait?.cleanup()
+  ViewStack.remove(state.view)
+}
+
 function _build(state) {
   const ch    = state.ch
   const count = _sheets.size
@@ -567,24 +574,21 @@ function _build(state) {
     `left:${Math.min(window.innerWidth - 800, 80 + count * 22)}px`,
     `top:${Math.min(window.innerHeight - 580, 40 + count * 22)}px`,
   ].join(';')
-  el.addEventListener('mousedown', () => bringToFront(el))
+  state.view = { el, close: () => _closeSheet(state) }
+  el.addEventListener('mousedown', () => ViewStack.bringToFront(state.view))
   el.addEventListener('wheel', e => e.stopPropagation(), { passive: true })
-  el.addEventListener('keydown', e => e.stopPropagation())
+  el.addEventListener('keydown', e => { if (e.key !== 'Escape') e.stopPropagation() })
   _makeDraggable(el)
   state.el = el
 
   const tb = document.createElement('div')
   tb.className = 'cs-title-bar'
   tb.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 10px;background:#4a3828;cursor:move;flex-shrink:0'
-  tb.innerHTML = '<span style="font-size:10px;color:#d4c4a0;user-select:none;letter-spacing:1px">DUNGEONS &amp; DRAGONS — CHARACTER SHEET</span>'
+  tb.innerHTML = '<span style="font-size:10px;color:#d4c4a0;user-select:none;letter-spacing:1px">Guild Member Dossier</span>'
   const closeBtn = document.createElement('button')
   closeBtn.textContent = '×'
   closeBtn.style.cssText = 'background:none;border:none;color:#d4c4a0;font-size:18px;cursor:pointer;line-height:1;padding:0 4px'
-  closeBtn.addEventListener('click', () => {
-    el.remove()
-    _sheets.delete(ch.id)
-    state.portrait?.cleanup()
-  })
+  closeBtn.addEventListener('click', () => _closeSheet(state))
   tb.appendChild(closeBtn)
   el.appendChild(tb)
 
@@ -608,7 +612,7 @@ const CharacterSheet = {
       if (playerName !== undefined) s.playerName = playerName
       if (guild      !== undefined) s.guild      = guild
       if (onUpdate   !== undefined) s.onUpdate   = onUpdate
-      bringToFront(s.el)
+      ViewStack.bringToFront(s.view)
       _refreshHeader(s)
       _refreshActions(s)
       return
@@ -623,7 +627,7 @@ const CharacterSheet = {
     }
     const el = _build(state)
     document.body.appendChild(el)
-    bringToFront(el)
+    ViewStack.bringToFront(state.view)
     _sheets.set(ch.id, state)
   },
 }

@@ -1,12 +1,12 @@
 import * as THREE from 'three'
-import CameraController from '../input/CameraController.js'
+import CameraController, { FLOOR_SCROLL_MAX } from '../input/CameraController.js'
 import WalkMode from './WalkMode.js'
 
 import TerrainRenderer from './TerrainRenderer.js'
 import DistrictRenderer from './DistrictRenderer.js'
-import StreetRenderer from './StreetRenderer.js'
-import PlotRenderer from './PlotRenderer.js'
+import GroundRenderer from './GroundRenderer.js'
 import { pointInPolygon, distanceToLineSegment } from './utils/renderUtils.js'
+import { GROUND_Y as BUILDING_GROUND_Y } from './utils/BuildingRenderer.js'
 
 const RENDER_STREETS = true
 const RENDER_GUTTERS = false
@@ -30,10 +30,9 @@ export default class WorldRenderer {
     this._lastCamPos = null
     this._frameCount = 0
 
-    this.terrainRenderer = null
+    this.terrainRenderer  = null
     this.districtRenderer = null
-    this.streetRenderer = null
-    this.plotRenderer = null
+    this.groundRenderer   = null
 
     this._walkMode = null
     this._walkModeOnExit = null
@@ -51,6 +50,11 @@ export default class WorldRenderer {
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.setPixelRatio(window.devicePixelRatio)
     this.renderer.shadowMap.enabled = false
+    // Floor-scroll (see CameraController's floorScrollUnits) clips the scene with a
+    // world-space horizontal plane while active — see _applyFloorScrollClip().
+    this.renderer.localClippingEnabled = true
+    this._floorScrollClipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)
+    this._lastAppliedFloorScrollUnits = null
     document.body.insertBefore(this.renderer.domElement, document.body.firstChild)
 
     this._debugEl = document.createElement('div')
@@ -87,9 +91,8 @@ export default class WorldRenderer {
 
     this.terrainRenderer  = new TerrainRenderer(this.scene)
     this.districtRenderer = new DistrictRenderer(this.scene)
-    this.streetRenderer   = new StreetRenderer(this.scene)
-    this.plotRenderer     = new PlotRenderer(this.scene, this.originalMaterials)
-    this.plotRenderer.buildingRenderer.setDirtyCallback(() => this.markDirty())
+    this.groundRenderer   = new GroundRenderer(this.scene, this.originalMaterials)
+    this.groundRenderer.buildingRenderer.setDirtyCallback(() => this.markDirty())
 
     window.addEventListener('resize', () => this.onWindowResize())
 
@@ -114,6 +117,7 @@ export default class WorldRenderer {
     }
 
     this.cameraController.update()
+    this._applyFloorScrollClip()
     const p = this.camera.position
     const lp = this._lastCamPos
     const camMoved = !lp || lp.x !== p.x || lp.y !== p.y || lp.z !== p.z
@@ -153,6 +157,20 @@ export default class WorldRenderer {
 
   setHomePosition(x, z) {
     this.cameraController?.setHomePosition(x, z)
+  }
+
+  // Restores a previously-saved view mode + camera location (see CameraController's
+  // _saveState/restoreSavedState). Returns true if there was one to restore.
+  restoreCameraState() {
+    const restored = this.cameraController?.restoreSavedState() ?? false
+    if (restored) {
+      // Mirrors toggleTopDownMode()'s side effects — restoring straight through
+      // CameraController skips them since it isn't a toggle from the current state.
+      this.groundRenderer.buildingRenderer.setInterbuildingWallsVisible(this.cameraController._topDown)
+      this._lastAppliedFloorScrollUnits = null   // force _applyFloorScrollClip to re-sync next frame
+      this.markDirty()
+    }
+    return restored
   }
 
 
@@ -281,7 +299,7 @@ export default class WorldRenderer {
 
   setCityDistrictData(data) {
     this.districtRenderer.setCityDistrictData(data)
-    this.streetRenderer.setStreetGraph(this.districtRenderer.cityDistrictData?.streetGraph)
+    this.groundRenderer.setStreetGraph(this.districtRenderer.cityDistrictData?.streetGraph)
   }
 
   renderDistricts(districts) {
@@ -326,7 +344,7 @@ export default class WorldRenderer {
 
   deselectCityEdge(edgeId) {
     this.districtRenderer.deselectCityEdge(edgeId)
-    this.streetRenderer.clearBoundaryChainHighlight(edgeId)
+    this.groundRenderer.clearBoundaryChainHighlight(edgeId)
   }
 
   previewCityEdgeType(edgeId, type) {
@@ -342,7 +360,7 @@ export default class WorldRenderer {
   }
 
   setCityEdgeHover(edgeId) {
-    this.streetRenderer.clearBoundaryChainHighlight()
+    this.groundRenderer.clearBoundaryChainHighlight()
     this.districtRenderer.setCityEdgeHover(edgeId)
     this._highlightBoundaryChain(edgeId, 0xffff66)
   }
@@ -353,7 +371,7 @@ export default class WorldRenderer {
     const edge = this.districtRenderer.cityDistrictData?.edges?.[edgeId]
     if (!edge || edge.assignedType) return
     if (this.districtRenderer._edgeHasDefinedDistrict(edge)) {
-      this.streetRenderer.setBoundaryChainHighlight(edgeId, color)
+      this.groundRenderer.setBoundaryChainHighlight(edgeId, color)
     }
   }
 
@@ -421,105 +439,102 @@ export default class WorldRenderer {
   }
 
 
-  // ── Street delegation ───────────────────────────────────────────────────────
+  // ── Ground delegation (streets + plots + squares + blocks + fences) ─────────
 
   renderStreetGraph(streetGraph) {
     if (!RENDER_STREETS) return
     // The trade road is now a street-graph member; drop the setup-phase ribbon
     // so the same path isn't drawn twice.
     this.terrainRenderer.clearTradeRoadRibbon()
-    return this.streetRenderer.renderStreetGraph(streetGraph)
+    return this.groundRenderer.renderStreetGraph(streetGraph)
   }
 
   clearStreetLayer() {
-    return this.streetRenderer.clearStreetLayer()
+    return this.groundRenderer.clearStreetLayer()
   }
 
   renderGutters(streetGraph) {
     if (!RENDER_GUTTERS) return
-    return this.streetRenderer.renderGutters(streetGraph)
+    return this.groundRenderer.renderGutters(streetGraph)
   }
 
   clearGutterLayer() {
-    return this.streetRenderer.clearGutterLayer()
+    return this.groundRenderer.clearGutterLayer()
   }
 
   setStreetEdgeHover(edge) {
-    return this.streetRenderer.setStreetEdgeHover(edge)
+    return this.groundRenderer.setStreetEdgeHover(edge)
   }
 
   setJunctionHover(junctionId) {
-    return this.streetRenderer.setJunctionHover(junctionId)
+    return this.groundRenderer.setJunctionHover(junctionId)
   }
 
   getStreetEdgeAtWorldPos(worldX, worldY, threshold) {
-    return this.streetRenderer.getStreetEdgeAtWorldPos(worldX, worldY, threshold)
+    return this.groundRenderer.getStreetEdgeAtWorldPos(worldX, worldY, threshold)
   }
 
   getJunctionAtWorldPos(worldX, worldY, threshold) {
-    return this.streetRenderer.getJunctionAtWorldPos(worldX, worldY, threshold)
+    return this.groundRenderer.getJunctionAtWorldPos(worldX, worldY, threshold)
   }
 
   drawStreetSeeds(streetGraph) {
-    return this.streetRenderer.drawStreetSeeds(streetGraph)
+    return this.groundRenderer.drawStreetSeeds(streetGraph)
   }
 
   getStreetSeedAtWorldPos(worldX, worldY, threshold) {
-    return this.streetRenderer.getStreetSeedAtWorldPos(worldX, worldY, threshold)
+    return this.groundRenderer.getStreetSeedAtWorldPos(worldX, worldY, threshold)
   }
-
-
-  // ── Plot / Block delegation ─────────────────────────────────────────────────
 
   renderBlocks(blocks) {
     if (!RENDER_BLOCKS) {
-      this.plotRenderer._blockById = new Map((blocks || []).map(b => [b.id, b.blockCorners]))
+      this.groundRenderer._blockById = new Map((blocks || []).map(b => [b.id, b.blockCorners]))
       return
     }
-    return this.plotRenderer.renderBlocks(blocks)
+    return this.groundRenderer.renderBlocks(blocks)
   }
 
   clearBlockLayer() {
-    return this.plotRenderer.clearBlockLayer()
+    return this.groundRenderer.clearBlockLayer()
   }
 
   setBlockHover(blockId) {
-    return this.plotRenderer.setBlockHover(blockId)
+    return this.groundRenderer.setBlockHover(blockId)
   }
 
   clearBlockHover() {
-    return this.plotRenderer.clearBlockHover()
+    return this.groundRenderer.clearBlockHover()
   }
 
   renderPlots(plots, districtData) {
     if (!RENDER_PLOTS) return
-    return this.plotRenderer.renderPlots(plots, districtData)
+    return this.groundRenderer.renderPlots(plots, districtData)
   }
 
   clearPlotLayer() {
-    return this.plotRenderer.clearPlotLayer()
+    return this.groundRenderer.clearPlotLayer()
   }
 
   drawBlockCenters(blocks) {
-    return this.plotRenderer.drawBlockCenters(blocks)
+    return this.groundRenderer.drawBlockCenters(blocks)
   }
 
   getBlockCenterAtWorldPos(worldX, worldY, threshold) {
-    return this.plotRenderer.getBlockCenterAtWorldPos(worldX, worldY, threshold)
+    return this.groundRenderer.getBlockCenterAtWorldPos(worldX, worldY, threshold)
   }
 
   drawPlotCenters(plots) {
-    return this.plotRenderer.drawPlotCenters(plots)
+    return this.groundRenderer.drawPlotCenters(plots)
   }
 
   getPlotCenterAtWorldPos(worldX, worldY, threshold) {
-    return this.plotRenderer.getPlotCenterAtWorldPos(worldX, worldY, threshold)
+    return this.groundRenderer.getPlotCenterAtWorldPos(worldX, worldY, threshold)
   }
 
   clearDerivedLayers() {
-    this.streetRenderer.clearGutterLayer()
-    this.plotRenderer.clearBlockLayer()
-    this.plotRenderer.clearPlotLayer()
+    this.groundRenderer.clearGutterLayer()
+    this.groundRenderer.clearBlockLayer()
+    this.groundRenderer.clearPlotLayer()
   }
 
 
@@ -574,16 +589,14 @@ export default class WorldRenderer {
     this.clearHQHover()
     this.terrainRenderer.clearHover()
     this.districtRenderer.clearHover()
-    this.streetRenderer.clearHover()
-    this.plotRenderer.clearHover()
+    this.groundRenderer.clearHover()
   }
 
   // Revert the faction-hover highlight (district mesh + streets + plots + squares, or
   // an off-map region). Called on un-hover, independent of map-hover clearing.
   clearFactionHighlight() {
     this.districtRenderer.clearFactionDistrict()
-    this.streetRenderer.clearDistrictHighlight()
-    this.plotRenderer.clearDistrictPlotHighlight()
+    this.groundRenderer.clearDistrictHighlight()
     this.terrainRenderer.clearFactionRegion()
   }
 
@@ -602,8 +615,7 @@ export default class WorldRenderer {
     this.clearFactionHighlight()
     if (faction.districtId !== undefined) {
       this.districtRenderer.highlightFactionDistrict(faction.districtId)
-      this.streetRenderer.highlightDistrictStreets(faction.districtId)
-      this.plotRenderer.highlightDistrictPlots(faction.districtId)
+      this.groundRenderer.highlightDistrict(faction.districtId)
     } else if (faction.regionId !== undefined) {
       this.terrainRenderer.highlightFactionRegion(faction.regionId)
     }
@@ -613,30 +625,89 @@ export default class WorldRenderer {
   // When finishing, also remove the district fill polygons — they're fully covered by
   // plots/streets/buildings and would bleed through any gap in the geometry.
   setFinishedGround(finished) {
-    this.plotRenderer.setFinishedGround(finished)
+    this.groundRenderer.setFinishedGround(finished)
     if (finished) this.districtRenderer.clearDistrictLayer()
   }
 
   toggleBuildings() {
-    const br = this.plotRenderer.buildingRenderer
+    const br = this.groundRenderer.buildingRenderer
     br.setBuildingsVisible(!br._visible)
     this.markDirty()
   }
 
+  toggleRoofs() {
+    const br = this.groundRenderer.buildingRenderer
+    br.setRoofsVisible(!br._roofsVisible)
+    this.markDirty()
+    return br._roofsVisible
+  }
+
+  // ── Top-down mode ────────────────────────────────────────────────────────────
+  // Straight-down orthographic view (camera elevation locked near 90°). Roofs are NOT
+  // separately toggled off here — they're just more geometry, hidden/revealed by the
+  // SAME floor-scroll clip plane as everything else (see _applyFloorScrollClip), so
+  // they appear in line with their actual z-height instead of popping in as a step.
+  toggleTopDownMode() {
+    if (this._walkMode) this._exitWalkMode()   // T while walking switches straight to top-down
+    const isTopDown = this.cameraController.toggleTopDown()
+    this.groundRenderer.buildingRenderer.setInterbuildingWallsVisible(isTopDown)
+    this._lastAppliedFloorScrollUnits = null   // force _applyFloorScrollClip to re-sync next frame
+    this.markDirty()
+    return isTopDown
+  }
+
+  // Floor-scroll (PageUp/PageDown, see CameraController): clips the whole scene —
+  // including roofs — with a world-space horizontal plane at the scrolled-to level, so
+  // everything above it disappears and the scrolled-to level + everything below renders
+  // normally (decision #10). Active in BOTH top-down and the normal iso view, each with
+  // its own default level. Only re-applies the (cheap) plane constant when the scroll
+  // level actually changed.
+  _applyFloorScrollClip() {
+    const cc = this.cameraController
+    if (cc.floorScrollUnits === this._lastAppliedFloorScrollUnits) return
+    this._lastAppliedFloorScrollUnits = cc.floorScrollUnits
+
+    if (cc.floorScrollUnits >= FLOOR_SCROLL_MAX) {
+      this.renderer.clippingPlanes = []
+      return
+    }
+    const br = this.groundRenderer.buildingRenderer
+    // +0.1 floor-height-units above the exact half-floor multiple: floor surfaces now
+    // sit exactly AT that multiple (see ParametricBuilding.js's addFloor call site), so
+    // clipping exactly at the boundary would cut the floor away along with the wall
+    // above it — comfortably below the NEXT half-floor step (0.5 away) so it never
+    // bleeds into the level above.
+    const clipY = BUILDING_GROUND_Y + (cc.floorScrollUnits * 0.5 + 0.1) * br.floorHeightWorld
+    this._floorScrollClipPlane.constant = clipY
+    this.renderer.clippingPlanes = [this._floorScrollClipPlane]
+  }
+
   // ── Walk Mode ─────────────────────────────────────────────────────────────────
+
+  // Walk, top-down, and iso are fully isolated camera modes — neither elevation/zoom
+  // state nor the floor-scroll clip plane should leak between them. _applyFloorScrollClip
+  // never runs while walk mode owns rendering (animate() returns early), so without this
+  // a clip plane left over from a prior top-down session would silently clip the walk
+  // view too (and vice versa, stale walk state would leak into the next top-down/iso view).
+  _clearFloorScrollClip() {
+    this.renderer.clippingPlanes = []
+    this._lastAppliedTopDown = false
+    this._lastAppliedFloorScrollUnits = null
+  }
 
   // Returns true if walk mode was entered, false if it was exited.
   // onExitCallback is called whenever walk mode ends (including Esc key).
   toggleWalkMode(onExitCallback) {
     if (!this._walkMode) {
+      if (this.cameraController._topDown) this.cameraController.toggleTopDown()   // leave top-down cleanly first
+      this._clearFloorScrollClip()
       this._walkModeOnExit = onExitCallback
       const streetGraph   = this.districtRenderer.cityDistrictData?.streetGraph
-      const plots         = this.cityDistrictData?.plots || []
       const targetPos     = { x: this.cameraController.targetPosition.x, z: this.cameraController.targetPosition.z }
       const initialYaw    = this.cameraController.azimuth
       this._walkMode = new WalkMode(
-        this.scene, this.renderer, streetGraph, plots, targetPos, initialYaw,
-        () => this._exitWalkMode()
+        this.scene, this.renderer, streetGraph, targetPos, initialYaw,
+        () => this._exitWalkMode(), this.groundRenderer.buildingRenderer, this.groundRenderer._fenceSegments,
       )
       this.cameraController.setEnabled(false)
       return true
@@ -651,6 +722,7 @@ export default class WorldRenderer {
     const { x, z } = this._walkMode.characterPosition
     this._walkMode.destroy()
     this._walkMode = null
+    this._clearFloorScrollClip()   // back to iso — always unclipped, never inherits walk/top-down state
     // Re-centre the iso camera on the character's last position at max zoom
     this.cameraController.targetPosition.set(x, 0, z)
     this.cameraController.updateCameraPosition()
@@ -671,14 +743,12 @@ export default class WorldRenderer {
     this.showDebug = !this.showDebug
     this.terrainRenderer.setDebugVisible(this.showDebug)
     this.districtRenderer.setDebugVisible(this.showDebug)
-    this.streetRenderer.setDebugVisible(this.showDebug)
-    this.plotRenderer.setDebugVisible(this.showDebug)
+    this.groundRenderer.setDebugVisible(this.showDebug)
 
     const allDebug = new Set([
       ...this.terrainRenderer.debugObjects,
       ...this.districtRenderer.debugObjects,
-      ...this.streetRenderer.debugObjects,
-      ...this.plotRenderer.debugObjects,
+      ...this.groundRenderer.debugObjects,
     ])
 
     if (this.showDebug) {
@@ -701,35 +771,34 @@ export default class WorldRenderer {
   clearAllDebugObjects() {
     this.terrainRenderer.clearDebugObjects()
     this.districtRenderer.clearDebugObjects()
-    this.streetRenderer.clearDebugObjects()
-    this.plotRenderer.clearDebugObjects()
+    this.groundRenderer.clearDebugObjects()
   }
 
   // Set a single debug layer's visibility. Called by DebugPanel checkboxes.
   setDebugLayer(name, on) {
     switch (name) {
-      case 'buildings':       this.plotRenderer.buildingRenderer.setBuildingsVisible(on); break
-      case 'blockCenters':    this.plotRenderer.setBlockCentersVisible(on); break
-      case 'blockSeeds':      this.plotRenderer.setBlockSeedsVisible(on); break
-      case 'plotCenters':     this.plotRenderer.setPlotCentersVisible(on); break
+      case 'buildings':       this.groundRenderer.buildingRenderer.setBuildingsVisible(on); break
+      case 'blockCenters':    this.groundRenderer.setBlockCentersVisible(on); break
+      case 'blockSeeds':      this.groundRenderer.setBlockSeedsVisible(on); break
+      case 'plotCenters':     this.groundRenderer.setPlotCentersVisible(on); break
       case 'districtCenters': this.districtRenderer.setDistrictCentersVisible(on); break
       case 'terrainCenters':  this.terrainRenderer.setTerrainCentersVisible(on); break
-      case 'streetSeeds':     this.streetRenderer.setStreetSeedsVisible(on); break
+      case 'streetSeeds':     this.groundRenderer.setStreetSeedsVisible(on); break
     }
     this.markDirty()
   }
 
   // Returns current per-layer visibility so DebugPanel can initialise its checkboxes.
   getDebugLayerStates() {
-    const br = this.plotRenderer.buildingRenderer
+    const br = this.groundRenderer.buildingRenderer
     return {
       buildings:       br._visible,
-      blockCenters:    this.plotRenderer._blockCentersVisible,
-      blockSeeds:      this.plotRenderer._blockSeedsVisible,
-      plotCenters:     this.plotRenderer._plotCentersVisible,
+      blockCenters:    this.groundRenderer._blockCentersVisible,
+      blockSeeds:      this.groundRenderer._blockSeedsVisible,
+      plotCenters:     this.groundRenderer._plotCentersVisible,
       districtCenters: this.districtRenderer._districtCentersVisible,
       terrainCenters:  this.terrainRenderer._terrainCentersVisible,
-      streetSeeds:     this.streetRenderer._streetSeedsVisible,
+      streetSeeds:     this.groundRenderer._streetSeedsVisible,
     }
   }
 

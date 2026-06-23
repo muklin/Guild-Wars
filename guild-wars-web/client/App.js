@@ -1177,8 +1177,12 @@ export default class App {
     const city = regions?.find(r => r.assignedType === 'City')
     const sp = city?.seedPoint
     if (sp) {
-      this.renderer.focusCameraOn(sp.x, sp.y)
+      // "Home" (see CameraController.centerOnMap) always targets the city centre,
+      // restored state or not. The actual current camera position/zoom/mode only get
+      // the default city-centre framing if there's no saved state from a previous
+      // session to restore instead.
       this.renderer.setHomePosition(sp.x, sp.y)
+      if (!this.renderer.restoreCameraState()) this.renderer.focusCameraOn(sp.x, sp.y)
     }
   }
 

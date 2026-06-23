@@ -4,6 +4,19 @@ import FactionsPanel from './FactionsPanel.js'
 import GuildPanel from './GuildPanel.js'
 import GameAPI from '../api/GameAPI.js'
 
+// Tracks whether the Guild panel has ever auto-opened before, across reloads (see
+// showSetupPhase below) — same try/catch-guarded localStorage pattern as config.js's
+// stored()/persist() (private mode / no storage just means it auto-shows every time).
+const GUILD_PANEL_SHOWN_KEY = 'gw.guildPanelAutoShown'
+function hasAutoShownGuildPanel() {
+  try { return localStorage.getItem(GUILD_PANEL_SHOWN_KEY) === '1' }
+  catch { return false }
+}
+function markGuildPanelAutoShown() {
+  try { localStorage.setItem(GUILD_PANEL_SHOWN_KEY, '1') }
+  catch { /* ignore */ }
+}
+
 const STAGES = [
   { step: 'Terrain',         label: 'Terrain Setup',       event: 'TERRAIN_COMPLETE' },
   { step: 'CitySubdivision', label: 'City District Setup', event: 'SUBDIVISION_COMPLETE' },
@@ -191,7 +204,13 @@ export default class UIManager {
     } else if (step === 'GuildCreation' || step === 'Complete') {
       leftPanel.style.display = 'none'
       if (guildBtn) guildBtn.style.display = ''
-      this.guildPanel.show()
+      // Auto-open only the first time the player ever reaches this phase — every later
+      // page reload (still in/past GuildCreation) leaves it closed; the Guild button
+      // above stays available to reopen it manually.
+      if (!hasAutoShownGuildPanel()) {
+        this.guildPanel.show()
+        markGuildPanelAutoShown()
+      }
     }
   }
 

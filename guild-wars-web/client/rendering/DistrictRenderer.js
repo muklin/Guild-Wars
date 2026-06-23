@@ -2,27 +2,36 @@ import * as THREE from 'three'
 import PolylineRenderer from './utils/PolylineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, centroid } from './utils/renderUtils.js'
+import { DISTRICTS, DEFAULTS } from '../../shared/districtConfig.js'
 
+// Sub-class colours ('Noble', 'Monarchy', etc., as looked up via DISTRICT_COLORS.get())
+// and plain district-type colours ('Market', 'Military', ...) are derived from
+// shared/districtConfig.js, so a district's colour only needs editing in one place
+// alongside its generation/building tuning. A few entries here are NOT per-district
+// game data at all — city edge kinds (Wall/MainRoad/Canal/Docks), Agricultural (a
+// terrain region type, not a city district), and the Neutral/unassigned/generic-
+// Residential/generic-Leadership fallbacks (used before a sub-class is chosen) — those
+// stay defined locally.
 export const DISTRICT_COLORS = {
-  Neutral:       0xDAD2AC,
-  Market:        0xffd700,
-  Military:      0x8b0000,
-  Magical:       0xc39bef,
-  Religious:     0xffff00,
-  Residential:   0xb8956a,
-  Noble:         0x9C62CC,
-  Middle:        0xFFF385,
-  Slums:         0xa08860,
-  Entertainment: 0xff69b4,
-  Industry:      0xbdb76b,
+  Neutral:       DEFAULTS.color,
+  Market:        DISTRICTS.Market.color,
+  Military:      DISTRICTS.Military.color,
+  Magical:       DISTRICTS.Magical.color,
+  Religious:     DISTRICTS.Religious.color,
+  Residential:   0xb8956a,   // generic/fallback — no sub-class chosen yet
+  Noble:         DISTRICTS['Residential-Noble'].color,
+  Middle:        DISTRICTS['Residential-Middle'].color,
+  Slums:         DISTRICTS['Residential-Slums'].color,
+  Entertainment: DISTRICTS.Entertainment.color,
+  Industry:      DISTRICTS.Industry.color,
   Agricultural:  0x228b22,
-  Leadership:    0x4a1a6a,
-  Monarchy:      0xdaa520,
-  Republic:      0x2878b5,
-  Tyrant:        0x8b1515,
-  Oligarchy:     0x4b7c59,
-  Theocracy:     0xd4c17f,
-  Anarchist:     0xcc4400,
+  Leadership:    0x4a1a6a,   // generic/fallback — no ruling body chosen yet
+  Monarchy:      DISTRICTS['Leadership-Monarchy'].color,
+  Republic:      DISTRICTS['Leadership-Republic'].color,
+  Tyrant:        DISTRICTS['Leadership-Tyrant'].color,
+  Oligarchy:     DISTRICTS['Leadership-Oligarchy'].color,
+  Theocracy:     DISTRICTS['Leadership-Theocracy'].color,
+  Anarchist:     DISTRICTS['Leadership-Anarchist'].color,
   Wall:          0x555555,
   MainRoad:      0x70717C,
   Canal:         0x3399cc,
@@ -485,8 +494,8 @@ export default class DistrictRenderer {
     // At gate/barbican junctions the wall body is inset by half the gate footprint so the
     // wall ends exactly at the edge of the gate model.  All segments still render — no gaps.
     const gateInset = (p) =>
-      p?.wallFeature === 'barbican' ? 0.15 :   // footprint 0.30 / 2
-      p?.wallFeature === 'gate'     ? 0.11 : 0  // footprint 0.22 / 2
+      p?.wallFeature === 'barbican' ? 0.08:   // footprint 0.30 / 2
+      p?.wallFeature === 'gate'     ? 0.08: 0  // footprint 0.22 / 2
 
     const wv = [], wi = []
     for (let i = 0; i < pts.length - 1; i++) {

@@ -6,15 +6,14 @@ import LandmarkPlacer from './CityGenerator/buildings/LandmarkPlacer.js'
 import BuildingTemplateGenerator from './CityGenerator/buildings/BuildingTemplateGenerator.js'
 import TextureTemplateGenerator from './CityGenerator/buildings/TextureTemplateGenerator.js'
 import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
+import { getDistrictConfig, districtConfigKey } from '../../shared/districtConfig.js'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
-const TOWNHOUSE_PROB = {
-  'Residential-Noble':  0.95,
-  'Residential-Middle': 0.95,
-  'Residential-Slums':  0.95,
-}
+// Townhouse probability per district now lives in shared/districtConfig.js
+// (DISTRICTS[key].townhouseProb) — every district type builds townhouses (was
+// Residential-only), alongside every other per-district-type table.
 
 function _seededRand(seed) {
   let s = ((seed | 0) * 2654435761) >>> 0
@@ -32,9 +31,8 @@ function markTownhouseBlocks(blocks, plots, districts) {
   for (const block of blocks) {
     if (block.blockType === 'square') continue
     const district = districtById.get(block.districtId)
-    if (district?.assignedType !== 'Residential') continue
-    const key = `Residential-${district.residentialClass ?? 'Middle'}`
-    const prob = TOWNHOUSE_PROB[key] ?? 0
+    if (!districtConfigKey(district)) continue   // unassigned/untyped — skip
+    const prob = getDistrictConfig(district).townhouseProb
     if (prob <= 0 || _seededRand(block.id * 7919 + 42) >= prob) continue
     block.blockType = 'townhouse'
     for (const plot of (plotsByBlock.get(block.id) || [])) {
@@ -926,12 +924,42 @@ export default class SetupPhase {
     return { ok: true, log: this.log }
   }
 
-  // Advancing to Guild Creation: auto-assign + lock any still-untyped districts
-  // (seeded Residential), then finalize the whole-city geometry.
+  // The full set of player-selectable district types (excludes Leadership, which is
+  // reserved to the one designated Leadership district) — matches DistrictTypePanel.js's
+  // selectable list on the client exactly.
+  static ALL_DISTRICT_TYPES = ['Residential', 'Market', 'Religious', 'Military', 'Magical', 'Entertainment', 'Industry']
+
+  // Seeded Fisher-Yates — deterministic per city (not re-rolled if finishSubdivision
+  // were somehow invoked twice), unlike Math.random().
+  static _shuffleSeeded(arr, seed) {
+    const a = [...arr]
+    for (let i = a.length - 1; i > 0; i--) {
+      let s = (((seed + i * 104729) >>> 0) * 2654435761) >>> 0
+      s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+      const j = (s >>> 0) % (i + 1)
+      ;[a[i], a[j]] = [a[j], a[i]]
+    }
+    return a
+  }
+
+  // Advancing to Guild Creation: auto-assign + lock any still-untyped districts, then
+  // finalize the whole-city geometry. Auto-assigned types are spread across every
+  // selectable district type (not just Residential) — districts left blank by the
+  // player are handed out from a shuffled queue of whichever types the city doesn't
+  // have yet, so a small city heavily favours getting one of each type represented;
+  // once every type is covered, any further blanks fall back to uniform-random.
+  // Resource production/consumption for non-Residential/Leadership auto-assignments use
+  // placeholder values for now (real per-type balancing is a separate pass).
   finishSubdivision() {
     const cityData = this.gameStateManager.cityDistrictData
     const RESIDENTIAL_CLASSES = ['Slums', 'Middle', 'Noble']
-    for (const district of (cityData?.districts || [])) {
+    const districts = cityData?.districts || []
+
+    const usedTypes = new Set(districts.filter(d => d.assignedType && d.assignedType !== 'Leadership').map(d => d.assignedType))
+    const missingTypes = SetupPhase.ALL_DISTRICT_TYPES.filter(t => !usedTypes.has(t))
+    const typeQueue = SetupPhase._shuffleSeeded(missingTypes, 1337)
+
+    for (const district of districts) {
       if (!district.assignedType && district.isLeadershipDistrict) {
         // The Leadership district defaults to a Monarchy if left untyped.
         district.assignedType = 'Leadership'
@@ -942,16 +970,43 @@ export default class SetupPhase {
         district.description = ''
         this.log.push(`Auto-assigned Leadership (Monarchy) to district ${district.id}`)
       } else if (!district.assignedType && !district.isLeadershipDistrict) {
-        let s = (district.id * 2654435761) >>> 0
-        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
-        const cls = RESIDENTIAL_CLASSES[(s >>> 0) % RESIDENTIAL_CLASSES.length]
-        district.assignedType = 'Residential'
-        district.residentialClass = cls
-        district.producedResource = cls !== 'Noble' ? 'Labour' : null
-        district.secondProducedResource = null
-        district.consumedResources = ['Water', 'Basic Food']
-        district.description = ''
-        this.log.push(`Auto-assigned Residential (${cls}) to district ${district.id}`)
+        // Prefer a still-missing type (heavy coverage bias); once the queue is empty
+        // every type is already represented somewhere in the city, so fall back to a
+        // uniform-random pick among all of them.
+        let districtType
+        if (typeQueue.length) {
+          districtType = typeQueue.shift()
+        } else {
+          let s = (district.id * 2654435761) >>> 0
+          s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+          districtType = SetupPhase.ALL_DISTRICT_TYPES[(s >>> 0) % SetupPhase.ALL_DISTRICT_TYPES.length]
+        }
+        usedTypes.add(districtType)
+
+        if (districtType === 'Residential') {
+          let s = (district.id * 2654435761) >>> 0
+          s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+          const cls = RESIDENTIAL_CLASSES[(s >>> 0) % RESIDENTIAL_CLASSES.length]
+          district.assignedType = 'Residential'
+          district.residentialClass = cls
+          district.producedResource = cls !== 'Noble' ? 'Labour' : null
+          district.secondProducedResource = null
+          district.consumedResources = ['Water', 'Basic Food']
+          district.description = ''
+          this.log.push(`Auto-assigned Residential (${cls}) to district ${district.id}`)
+        } else {
+          district.assignedType = districtType
+          district.residentialClass = null
+          district.LeadershipClass = null
+          // Nonsense placeholder values — unique per district id so the producedResource
+          // dupe-check (see assignDistrictType) never collides; real per-type resource
+          // balancing is a separate pass.
+          district.producedResource = `Placeholder Good ${district.id}`
+          district.secondProducedResource = null
+          district.consumedResources = [`Placeholder Input ${district.id}A`, `Placeholder Input ${district.id}B`, 'Water', 'Basic Food']
+          district.description = ''
+          this.log.push(`Auto-assigned ${districtType} (placeholder resources) to district ${district.id}`)
+        }
       }
       if (district.streetSeed == null) district.streetSeed = district.id
       district.locked = true

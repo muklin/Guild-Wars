@@ -272,10 +272,21 @@ export default class InputHandler {
       e.preventDefault()
       return
     }
+    if (e.code === 'KeyB' && e.altKey) {
+      const roofsOn = this.renderer.toggleRoofs()
+      console.log(`Roofs ${roofsOn ? 'ON' : 'OFF'}`)
+      e.preventDefault()
+      return
+    }
     if (this._isTyping()) return
     if (e.code === 'Space') {
       this.renderer.isPaused = !this.renderer.isPaused
       console.log(`Render loop ${this.renderer.isPaused ? 'PAUSED' : 'RESUMED'}`)
+      e.preventDefault()
+    }
+    if (e.code === 'KeyT') {
+      const topDown = this.renderer.toggleTopDownMode()
+      console.log(`Top-down mode ${topDown ? 'ON' : 'OFF'}`)
       e.preventDefault()
     }
   }

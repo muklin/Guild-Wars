@@ -3,6 +3,7 @@ import { GUILD_TRAITS, TRAIT_BY_ID } from '../../shared/guildTraits.js'
 import { HQ_UPGRADES, UPGRADE_BY_ID } from '../../shared/hqUpgrades.js'
 import GameAPI from '../api/GameAPI.js'
 import { DISTRICT_COLORS } from '../rendering/DistrictRenderer.js'
+import * as ViewStack from './ViewStack.js'
 
 function _factionCssColor(faction) {
   let n
@@ -14,7 +15,7 @@ function _factionCssColor(faction) {
   return '#' + (n >>> 0).toString(16).padStart(6, '0')
 }
 
-const TABS = ['Characters', 'Headquarters', 'Special', 'Resources', 'Diplomacy', 'Overview']
+const TABS = ['Overview', 'Headquarters', 'Guild Traits', 'Roster', 'Resources', 'Diplomacy']
 
 const inputCss  = 'width:100%;padding:6px;margin-bottom:8px;background:#111;border:1px solid #555;color:#fff;border-radius:3px;font-size:12px;box-sizing:border-box'
 const labelCss  = 'display:block;font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:1px;margin:6px 0 2px'
@@ -44,10 +45,6 @@ function sortChars(chars) {
   })
 }
 
-// Module-level z-counter shared with CharacterSheet.
-export let _zTop = 50
-export function bringToFront(el) { el.style.zIndex = ++_zTop }
-
 export default class GuildPanel {
   constructor(eventBus) {
     this.eventBus = eventBus
@@ -58,7 +55,7 @@ export default class GuildPanel {
     this.hq = null
     this.tokens = { veto: 0, guild: 0, character: 0, round: 0 }
     this.playerName = ''
-    this.tab = 'Characters'
+    this.tab = 'Roster'
     this.guildName = ''
     this._traitPickMode = false   // false | 'pick'
     this._expandedTraitId = null
@@ -92,9 +89,10 @@ export default class GuildPanel {
       'left:calc(50% - 400px)',
       'top:calc(50% - 300px)',
     ].join(';')
-    el.addEventListener('mousedown', () => bringToFront(el))
+    this._view = { el, close: () => this.hide() }
+    el.addEventListener('mousedown', () => ViewStack.bringToFront(this._view))
     el.addEventListener('wheel', e => e.stopPropagation(), { passive: true })
-    el.addEventListener('keydown', e => e.stopPropagation())
+    el.addEventListener('keydown', e => { if (e.key !== 'Escape') e.stopPropagation() })
     this._makeDraggable(el)
     document.body.appendChild(el)
     this.el = el
@@ -104,11 +102,12 @@ export default class GuildPanel {
   show() {
     if (!this.el) this.render()
     this.el.style.display = 'flex'
-    bringToFront(this.el)
+    ViewStack.bringToFront(this._view)
   }
 
   hide() {
     if (this.el) this.el.style.display = 'none'
+    ViewStack.remove(this._view)
     const tt = document.getElementById('gp-ability-tooltip')
     if (tt) tt.style.display = 'none'
   }
@@ -123,7 +122,7 @@ export default class GuildPanel {
     this.guild = null
     this.hq = null
     this.guildName = ''
-    this.tab = 'Characters'
+    this.tab = 'Roster'
     this.tokens = { veto: 0, guild: 0, character: 0, round: 0 }
     this.hide()
     if (this.el) this._render()
@@ -158,7 +157,7 @@ export default class GuildPanel {
 
   setPreviewDistrict(districtId) {
     this._previewDistrictId = districtId
-    if (this.el && this.tab === 'Special') this._render()
+    if (this.el && this.tab === 'Guild Traits') this._render()
   }
 
   setHeadquarters(hq) {
@@ -257,17 +256,17 @@ export default class GuildPanel {
     body.style.cssText = 'flex:1;overflow-y:auto;padding:16px;font-size:12px'
     el.appendChild(body)
 
-    if (this.tab !== 'Special') this._traitPickMode = false
+    if (this.tab !== 'Guild Traits') this._traitPickMode = false
 
     const tabFns = {
-      Overview:     () => this._tabOverview(body),
-      Diplomacy:    () => this._tabDiplomacy(body),
-      Characters:   () => this._tabCharacters(body),
-      Resources:    () => this._tabResources(body),
-      Headquarters: () => this._tabHeadquarters(body),
-      Special:      () => this._tabSpecial(body),
+      Overview:        () => this._tabOverview(body),
+      Diplomacy:       () => this._tabDiplomacy(body),
+      Roster:          () => this._tabCharacters(body),
+      Resources:       () => this._tabResources(body),
+      Headquarters:    () => this._tabHeadquarters(body),
+      'Guild Traits':  () => this._tabSpecial(body),
     }
-    ;(tabFns[this.tab] || tabFns.Characters)()
+    ;(tabFns[this.tab] || tabFns.Roster)()
 
     body.scrollTop = savedScroll
   }
@@ -330,7 +329,7 @@ export default class GuildPanel {
     body.appendChild(dash)
 
     // ── Traits ────────────────────────────────────────────────────────────────
-    const traitsBox = mkBox('Special Traits', 'Special')
+    const traitsBox = mkBox('Special Traits', 'Guild Traits')
     const traits = this.guild.traits || []
     if (traits.length === 0) {
       traitsBox.innerHTML += '<span style="color:#333;font-style:italic;font-size:11px">No traits purchased yet.</span>'

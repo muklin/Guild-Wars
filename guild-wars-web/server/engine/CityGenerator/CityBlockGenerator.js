@@ -1,5 +1,5 @@
 import { distToSegSq, ptOnSeg, pip } from '../voronoi/VoronoiUtils.js'
-import { STREET_HALF_WIDTH, getDistrictParams } from './StreetVoronoiGenerator.js'
+import { STREET_HALF_WIDTH, getDistrictParams, halfWidthForDistrict } from './StreetVoronoiGenerator.js'
 
 
 // Street priority for tie-breaking (paved hierarchy: Stone > Brick > Mud).
@@ -69,16 +69,36 @@ export default class CityBlockGenerator {
 
     const blocks = []
     let blockId = 0
+    const districtById = new Map(districts.map(d => [d.id, d]))
 
     const allFaces = this._traceFaces(gutterNodes, gutterEdges)
     const roadFacePolys = []
 
-    for (const vertices of allFaces) {
-      if (vertices.length < 3) continue
-      if (this._isRoadFace(vertices, streetNodes, streetEdges)) {
-        roadFacePolys.push(vertices)
+    for (const rawVertices of allFaces) {
+      if (rawVertices.length < 3) continue
+      if (this._isRoadFace(rawVertices, streetNodes, streetEdges)) {
+        roadFacePolys.push(rawVertices)
         continue
       }
+
+      // High-valence junctions (4+ roads meeting at a sharp angle) sometimes bevel a
+      // miter instead of spiking it (StreetVoronoiGenerator.buildJunctions, MITER_LIMIT)
+      // — correct for the street/gutter mesh itself, but it leaves a small reflex
+      // (concave) vertex right at the junction that _traceFaces then bakes into the
+      // BLOCK polygon, propagating into every plot/wing built from it as a notch. Strip
+      // those out here — junction-scale relative to the LOCAL street width (districts
+      // can now have very different street_width values — see halfWidthForDistrict —
+      // so a fixed STREET_HALF_WIDTH-based threshold missed notches at a wide-street
+      // district's junctions entirely, letting the road visibly bend into the block/
+      // plot there) — so a genuine large-scale concave block shape (e.g. an L-shaped
+      // block from the street layout itself) is left untouched. This only affects
+      // blockCorners, not the underlying junction/gutter data, so street/gutter
+      // rendering is unaffected. District is found from the RAW vertices first since
+      // the notch limit needs to know which district this block belongs to.
+      const districtId = this._findDistrict(rawVertices, districts)
+      const notchLimit = Math.max(halfWidthForDistrict(districtById.get(districtId)), STREET_HALF_WIDTH) * 2.5
+      const vertices = this._simplifyReflexNotches(rawVertices, notchLimit)
+      if (vertices.length < 3) continue
 
       let area = 0
       for (let i = 0; i < vertices.length; i++) {
@@ -88,7 +108,6 @@ export default class CityBlockGenerator {
       area = Math.abs(area) / 2
       if (area < 1e-6) continue
 
-      const districtId = this._findDistrict(vertices, districts)
       blocks.push({
         id: blockId++,
         districtId,
@@ -101,7 +120,6 @@ export default class CityBlockGenerator {
     // Mark squares before merging so _mergeSquareClusters can identify them.
     // markSquareBlocks() in PlotVoronoiGenerator is still called from SetupPhase
     // for any remaining small blocks; it is a no-op on already-marked blocks.
-    const districtById = new Map(districts.map(d => [d.id, d]))
     for (const block of blocks) {
       const params = getDistrictParams(districtById.get(block.districtId))
       if (block.area < params.square_threshhold) block.blockType = 'square'
@@ -111,6 +129,42 @@ export default class CityBlockGenerator {
 
     console.log(`CityBlockGenerator: ${blocks.length} blocks traced`)
     return { blocks, roadEdges }
+  }
+
+  // Removes shallow reflex (concave) vertices from a traced block polygon — see the
+  // call site comment in generate() for why these appear. A vertex is dropped (bridging
+  // directly between its neighbours) only if it's BOTH reflex AND shallow (its
+  // perpendicular distance from the chord between its neighbours is small relative to
+  // `notchLimit`, the calling district's own actual street half-width — districts can
+  // have very different street_width values now, so this is NOT just STREET_HALF_WIDTH
+  // anymore) — a genuine large-scale concave block shape stays untouched. Iterative:
+  // removing one vertex changes the local geometry around its former neighbours, so
+  // each pass re-scans from scratch until nothing more qualifies.
+  _simplifyReflexNotches(vertices, notchLimit = STREET_HALF_WIDTH * 2.5) {
+    const NOTCH_DEPTH_LIMIT = notchLimit
+    let verts = vertices
+    let changed = true
+    let guard = 0
+    while (changed && verts.length > 3 && guard++ < 20) {
+      changed = false
+      const n = verts.length
+      for (let i = 0; i < n; i++) {
+        const A = verts[(i - 1 + n) % n], B = verts[i], C = verts[(i + 1) % n]
+        // Z-component of (B-A)×(C-B): positive = left turn = reflex, for the CW
+        // (negative-area) winding _traceFaces produces.
+        const cross = (B.x - A.x) * (C.y - B.y) - (B.y - A.y) * (C.x - B.x)
+        if (cross <= 0) continue
+        const acx = C.x - A.x, acy = C.y - A.y
+        const acLen = Math.hypot(acx, acy) || 1
+        const dist = Math.abs((B.x - A.x) * acy - (B.y - A.y) * acx) / acLen
+        if (dist < NOTCH_DEPTH_LIMIT) {
+          verts = verts.slice(0, i).concat(verts.slice(i + 1))
+          changed = true
+          break
+        }
+      }
+    }
+    return verts
   }
 
   // Returns true if the face is road surface (junction fill or road strip).

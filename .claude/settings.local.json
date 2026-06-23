@@ -22,7 +22,28 @@
       "Bash(Get-Item \"K:\\\\UnityProjects\\\\Guild-Wars\\\\guild-wars-web\\\\server\\\\engine\\\\SetupPhase.js\")",
       "Bash(Select-Object -ExpandProperty Length)",
       "PowerShell(\\(Get-Content \"K:\\\\UnityProjects\\\\Guild-Wars\\\\guild-wars-web\\\\server\\\\engine\\\\SetupPhase.js\" | Measure-Object -Line\\).Lines)",
-      "PowerShell(\\(Get-Content \"K:\\\\UnityProjects\\\\Guild-Wars\\\\GW-Unity\\\\Assets\\\\Scripts\\\\Phases\\\\SetupPhase.cs\" | Measure-Object -Line\\).Lines)"
+      "PowerShell(\\(Get-Content \"K:\\\\UnityProjects\\\\Guild-Wars\\\\GW-Unity\\\\Assets\\\\Scripts\\\\Phases\\\\SetupPhase.cs\" | Measure-Object -Line\\).Lines)",
+      "Bash(node --check client/rendering/buildings/ParametricBuilding.js)",
+      "Bash(node --check client/rendering/utils/BuildingRenderer.js)",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5183/)",
+      "Bash(curl -s http://localhost:5183/client/preview/blockpreview.js)",
+      "Bash(node --check -)",
+      "Bash(kill %1)",
+      "Bash(pkill -f \"vite --port 5183\")",
+      "Bash(npx --no-install playwright --version)",
+      "Bash(node --check client/input/CameraController.js)",
+      "Bash(cd /k/UnityProjects/Guild-Wars/guild-wars-web && grep -n \"addFloor\\(wallsGroup\" client/rendering/buildings/ParametricBuilding.js)",
+      "Read(//k/k/UnityProjects/Guild-Wars/guild-wars-web/client/rendering/buildings/**)",
+      "Bash(cd /k/UnityProjects/Guild-Wars/guild-wars-web && grep -n \"if \\(raw.length === 0\\) return null\\\\|// Pass 2 —\" client/rendering/utils/BuildingRenderer.js)",
+      "Read(//k/k/UnityProjects/Guild-Wars/guild-wars-web/client/rendering/utils/**)",
+      "Bash(cd /k/UnityProjects/Guild-Wars/guild-wars-web && grep -n \"STREET_HALF_WIDTH\\\\s*=\" server/engine/CityGenerator/StreetVoronoiGenerator.js | head -3)",
+      "Read(//k/k/UnityProjects/Guild-Wars/guild-wars-web/server/engine/CityGenerator/**)",
+      "Bash(node --check server/engine/CityGenerator/StreetVoronoiGenerator.js)",
+      "Bash(node --check client/rendering/GroundRenderer.js)",
+      "Bash(cd /k/UnityProjects/Guild-Wars/guild-wars-web && grep -n \"_buildFences\\\\|_ensureLib\\(\\).then\" client/rendering/GroundRenderer.js)",
+      "Read(//k/k/UnityProjects/Guild-Wars/guild-wars-web/client/rendering/**)"
     ]
   }
 }
