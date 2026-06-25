@@ -298,8 +298,9 @@ function clipHalfPlane(poly, nx, ny, d) {
 }
 
 // Robust Euclidean Voronoi via half-plane intersection. Each seed's cell is
-// `clipPolygon` (must be convex — e.g. a bbox) clipped by the perpendicular
-// bisector against every other seed. Unlike computeVoronoiCells (Delaunay
+// `clipPolygon` clipped by the perpendicular bisector against every other seed.
+// `clipPolygon` may be convex or concave — clipHalfPlane is a single half-plane
+// S-H step that works on any input polygon. Unlike computeVoronoiCells (Delaunay
 // circumcenters), this is exact for collinear / near-collinear seeds and always
 // tiles clipPolygon with no gaps or dropped cells — ideal for boundary-seeded
 // plot subdivision. O(n²) per diagram; intended for small seed counts.
@@ -331,4 +332,169 @@ export function computeVoronoiCellsHalfPlane(seeds, clipPolygon) {
     if (cell) cells.push({ seedPoint: s, polygon: cell })
   }
   return cells
+}
+
+// ── Shared polygon clipping utilities (used by PlotVoronoiGenerator + TerrainPlotConverter) ──
+
+// True if any edge of `poly` properly crosses segment (c,d) — interior
+// crossing only (shared endpoints / grazing touches don't count).
+export function polygonCrossesSegment(poly, c, d) {
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length]
+    const r1x = b.x - a.x, r1y = b.y - a.y, r2x = d.x - c.x, r2y = d.y - c.y
+    const den = r1x * r2y - r1y * r2x
+    if (Math.abs(den) < 1e-12) continue
+    const sx = c.x - a.x, sy = c.y - a.y
+    const t = (sx * r2y - sy * r2x) / den
+    const u = (sx * r1y - sy * r1x) / den
+    if (t > 0.02 && t < 0.98 && u > 0.02 && u < 0.98) return true
+  }
+  return false
+}
+
+// Clip `poly` to the half-plane bounded by the infinite line through (la, lb)
+// that contains `ref`. Works on convex or concave polygons. Returns the clipped
+// polygon (≥3 verts) or null.
+export function clipPolygonToSide(poly, la, lb, ref) {
+  const nx = -(lb.y - la.y), ny = (lb.x - la.x)
+  const side = (p) => nx * (p.x - la.x) + ny * (p.y - la.y)
+  const sRef = side(ref)
+  if (sRef === 0) return poly
+  const out = []
+  for (let i = 0; i < poly.length; i++) {
+    const A = poly[i], B = poly[(i + 1) % poly.length]
+    const dA = side(A), dB = side(B)
+    const inA = dA * sRef >= -1e-9
+    if (inA) out.push(A)
+    if ((dA < 0) !== (dB < 0)) {
+      const t = dA / (dA - dB)
+      out.push({ x: A.x + t * (B.x - A.x), y: A.y + t * (B.y - A.y) })
+    }
+  }
+  return out.length >= 3 ? out : null
+}
+
+// Clip a (possibly concave) subject polygon by a convex clip polygon.
+// Unlike Sutherland–Hodgman, concave splits produce SEPARATE pieces rather than
+// being bridged across the notch — the only correct behaviour for concave subjects.
+// convexClip must be convex (any winding; centroid determines inside).
+// Returns an array of polygon pieces (may be empty). Slivers (area < 1e-6) are discarded.
+export function clipPolygonByConvex(subject, convexClip) {
+  const nc = convexClip.length
+  if (nc < 3 || subject.length < 3) return []
+
+  const ccx = convexClip.reduce((s, v) => s + v.x, 0) / nc
+  const ccy = convexClip.reduce((s, v) => s + v.y, 0) / nc
+
+  let pieces = [subject]
+
+  for (let e = 0; e < nc && pieces.length > 0; e++) {
+    const A = convexClip[e], B = convexClip[(e + 1) % nc]
+    const ABx = B.x - A.x, ABy = B.y - A.y
+    const cSide = ABx * (ccy - A.y) - ABy * (ccx - A.x)
+    if (Math.abs(cSide) < 1e-12) continue
+
+    const next = []
+    for (const piece of pieces) {
+      const clipped = _clipByHalfEdge(piece, A, ABx, ABy, cSide)
+      for (const c of clipped) next.push(c)
+    }
+    pieces = next
+  }
+
+  const MIN_AREA = 1e-6
+  return pieces.filter(p => {
+    let a = 0
+    for (let i = 0; i < p.length; i++) {
+      const pi = p[i], qi = p[(i + 1) % p.length]
+      a += pi.x * qi.y - qi.x * pi.y
+    }
+    return Math.abs(a) * 0.5 >= MIN_AREA
+  })
+}
+
+// Clip one simple polygon by one half-plane edge; returns 0–many polygon pieces.
+// "Inside" is the side of the line through A with direction (ABx,ABy) that contains the
+// clip centroid (cSide > 0 → left side, cSide < 0 → right side).
+//
+// The inside boundary breaks into one or more arcs (entry-crossing → inside verts →
+// exit-crossing). They must be stitched back together ALONG the clip line: each exit
+// connects to the entry that is adjacent along the line and whose joining segment lies
+// inside the polygon (the inside line-run). Closing each arc by its OWN chord instead
+// (exit→entry of the same arc) is wrong whenever a notch makes the crossings interleave
+// along the line — the chord then runs outside the block, leaking the plot across the
+// gutter. With a single arc the chord IS the only inside line-run, so that case is exact.
+function _clipByHalfEdge(poly, A, ABx, ABy, cSide) {
+  const EPS = 1e-9
+  const n = poly.length
+  if (n < 3) return []
+
+  const score = p => { const s = ABx * (p.y - A.y) - ABy * (p.x - A.x); return cSide > 0 ? s : -s }
+  const tAlong = (x, y) => ABx * (x - A.x) + ABy * (y - A.y)   // param along the clip line
+  const sc = poly.map(score)
+  const ins = sc.map(s => s >= -EPS)
+
+  if (ins.every(Boolean)) return [poly]
+  if (ins.every(v => !v)) return []
+
+  // Collect inside arcs. Starting at an outside vertex makes every arc a clean
+  // entry → inside-verts → exit run.
+  let start = 0
+  for (let i = 0; i < n; i++) { if (!ins[i]) { start = i; break } }
+  const arcs = []   // { pts:[...], entryT, exitT }
+  let arc = null
+  for (let k = 0; k < n; k++) {
+    const i = (start + k) % n, j = (start + k + 1) % n
+    const Av = poly[i], Bv = poly[j]
+    const inA = ins[i], inB = ins[j]
+    if (!inA && inB) {                                   // entry crossing → new arc
+      const t = sc[i] / (sc[i] - sc[j])
+      const e = { x: Av.x + t * (Bv.x - Av.x), y: Av.y + t * (Bv.y - Av.y) }
+      arc = { pts: [e], entryT: tAlong(e.x, e.y), exitT: 0 }
+    } else if (inA && !inB) {                            // exit crossing → close arc
+      if (arc) {
+        arc.pts.push({ x: Av.x, y: Av.y })
+        const t = sc[i] / (sc[i] - sc[j])
+        const e = { x: Av.x + t * (Bv.x - Av.x), y: Av.y + t * (Bv.y - Av.y) }
+        arc.pts.push(e); arc.exitT = tAlong(e.x, e.y)
+        arcs.push(arc); arc = null
+      }
+    } else if (inA && inB && arc) {                      // interior vertex
+      arc.pts.push({ x: Av.x, y: Av.y })
+    }
+  }
+  if (!arcs.length) return []
+  if (arcs.length === 1) return arcs[0].pts.length >= 3 ? [arcs[0].pts] : []
+
+  // Stitch: each arc's exit joins the entry adjacent along the clip line whose midpoint
+  // segment lies inside the polygon (the inside line-run) — robust to interleaving.
+  const ends = []
+  arcs.forEach((a, ai) => {
+    ends.push({ t: a.entryT, kind: 0, ai, x: a.pts[0].x, y: a.pts[0].y })
+    ends.push({ t: a.exitT,  kind: 1, ai, x: a.pts[a.pts.length - 1].x, y: a.pts[a.pts.length - 1].y })
+  })
+  ends.sort((p, q) => p.t - q.t)
+  const nextArc = new Map()
+  for (let i = 0; i < ends.length; i++) {
+    if (ends[i].kind !== 1) continue                     // start from an exit
+    for (const ni of [i + 1, i - 1]) {
+      const c = ends[ni]
+      if (!c || c.kind !== 0) continue
+      if (pip((ends[i].x + c.x) / 2, (ends[i].y + c.y) / 2, poly)) { nextArc.set(ends[i].ai, c.ai); break }
+    }
+  }
+
+  const used = new Set(), out = []
+  for (let s = 0; s < arcs.length; s++) {
+    if (used.has(s)) continue
+    const loop = []
+    let ai = s, guard = 0
+    while (ai != null && !used.has(ai) && guard++ <= arcs.length) {
+      used.add(ai)
+      for (const p of arcs[ai].pts) loop.push(p)
+      ai = nextArc.get(ai)
+    }
+    if (loop.length >= 3) out.push(loop)
+  }
+  return out
 }

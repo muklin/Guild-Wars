@@ -1,4 +1,4 @@
-import { distToSegSq, ptOnSeg, pip } from '../voronoi/VoronoiUtils.js'
+import { distToSegSq, ptOnSeg, pip, segIntersect } from '../voronoi/VoronoiUtils.js'
 import { STREET_HALF_WIDTH, getDistrictParams, halfWidthForDistrict } from './StreetVoronoiGenerator.js'
 
 
@@ -46,6 +46,51 @@ export function findStreetFacingEdges(vertices, roadEdges) {
   return result
 }
 
+// Extract the outer gutter boundary polygon from the city blocks — the closed ring
+// formed by all block-boundary edges that are NOT shared with any other block.
+// Returns [{x,y}] ordered polygon, or null if extraction fails.
+export function extractOuterGutterPolygon(blocks) {
+  if (!blocks?.length) return null
+  const pk  = (p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
+  const hek = (a, b) => `${pk(a)}_${pk(b)}`
+
+  const fwdSet  = new Set()
+  const edgeMap = new Map()  // key → {a, b}
+
+  for (const block of blocks) {
+    const c = block.blockCorners, n = c.length
+    for (let i = 0; i < n; i++) {
+      const a = c[i], b = c[(i + 1) % n]
+      const k = hek(a, b)
+      if (!edgeMap.has(k)) edgeMap.set(k, { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } })
+      fwdSet.add(k)
+    }
+  }
+
+  // Outer edges: A→B appears in some block but B→A appears in no block
+  const outerEdges = []
+  for (const [, edge] of edgeMap) {
+    if (!fwdSet.has(hek(edge.b, edge.a))) outerEdges.push(edge)
+  }
+  if (outerEdges.length < 3) return null
+
+  // Chain into a closed polygon by following endpoint adjacency
+  const outgoing = new Map()
+  for (const edge of outerEdges) outgoing.set(pk(edge.a), edge)
+
+  const poly = []
+  let cur = outerEdges[0]
+  const start = pk(cur.a)
+  for (let i = 0; i <= outerEdges.length; i++) {
+    poly.push({ x: cur.a.x, y: cur.a.y })
+    const next = outgoing.get(pk(cur.b))
+    if (!next || pk(next.a) === start) break
+    cur = next
+  }
+
+  return poly.length >= 3 ? poly : null
+}
+
 export default class CityBlockGenerator {
   // Returns { blocks, roadEdges }.
   // blocks: [{id, districtId, vertices, area, streetEdges}]
@@ -54,6 +99,7 @@ export default class CityBlockGenerator {
     const junctions = streetGraph?.junctions || []
 
     const { gutterNodes, gutterEdges, roadEdges } = this._gutterGraphFromJunctions(junctions)
+    const { nodes: planarNodes, edges: planarEdges } = this._planarizeGutterGraph(gutterNodes, gutterEdges)
 
     const streetNodes = junctions.map(j => ({ id: j.id, x: j.x, y: j.y }))
     const streetEdges = []
@@ -71,15 +117,49 @@ export default class CityBlockGenerator {
     let blockId = 0
     const districtById = new Map(districts.map(d => [d.id, d]))
 
-    const allFaces = this._traceFaces(gutterNodes, gutterEdges)
+    const allFaces = this._traceFaces(planarNodes, planarEdges)
     const roadFacePolys = []
+    let rejectedRoad = 0, rejectedArea = 0, rejectedNotch = 0
 
+    // Pass 1: reject road strips + junction fills (interior point close to centreline).
+    const faceCandidates = []
     for (const rawVertices of allFaces) {
       if (rawVertices.length < 3) continue
       if (this._isRoadFace(rawVertices, streetNodes, streetEdges)) {
         roadFacePolys.push(rawVertices)
-        continue
+        rejectedRoad++
+      } else {
+        faceCandidates.push(rawVertices)
       }
+    }
+
+    // Pass 2: reject junction corner triangles that slipped through pass 1.
+    // At acute-angle junctions the corner triangle's interior sits ~STREET_HALF_WIDTH
+    // from the nearest centreline — just outside the radius test — so pass 1 misses
+    // it.  But these triangles are completely surrounded by road surface: every edge is
+    // shared (in reverse) with an already-identified road face.  A real block always
+    // has at least one edge adjacent to another block, not all road.
+    const pk = p => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
+    const roadEdgeSet = new Set()
+    for (const poly of roadFacePolys) {
+      const n = poly.length
+      for (let i = 0; i < n; i++) roadEdgeSet.add(`${pk(poly[i])}_${pk(poly[(i + 1) % n])}`)
+    }
+    const blockFaces = []
+    for (const rawVertices of faceCandidates) {
+      const n = rawVertices.length
+      const surroundedByRoad = rawVertices.every((_, i) =>
+        roadEdgeSet.has(`${pk(rawVertices[(i + 1) % n])}_${pk(rawVertices[i])}`)
+      )
+      if (surroundedByRoad) {
+        roadFacePolys.push(rawVertices)
+        rejectedRoad++
+      } else {
+        blockFaces.push(rawVertices)
+      }
+    }
+
+    for (const rawVertices of blockFaces) {
 
       // High-valence junctions (4+ roads meeting at a sharp angle) sometimes bevel a
       // miter instead of spiking it (StreetVoronoiGenerator.buildJunctions, MITER_LIMIT)
@@ -97,24 +177,28 @@ export default class CityBlockGenerator {
       // the notch limit needs to know which district this block belongs to.
       const districtId = this._findDistrict(rawVertices, districts)
       const notchLimit = Math.max(halfWidthForDistrict(districtById.get(districtId)), STREET_HALF_WIDTH) * 2.5
-      const vertices = this._simplifyReflexNotches(rawVertices, notchLimit)
-      if (vertices.length < 3) continue
-
+      const vertices = rawVertices
+      //const vertices = this._simplifyReflexNotches(rawVertices, notchLimit)
+      //if (vertices.length < 3) { rejectedNotch++; continue }
+      
       let area = 0
       for (let i = 0; i < vertices.length; i++) {
         const a = vertices[i], b = vertices[(i + 1) % vertices.length]
         area += a.x * b.y - b.x * a.y
       }
       area = Math.abs(area) / 2
-      if (area < 1e-6) continue
+      if (area < 1e-6) { rejectedArea++; continue }
 
-      blocks.push({
+      const block = {
         id: blockId++,
         districtId,
         blockCorners: vertices,
         area,
         streetEdges: findStreetFacingEdges(vertices, roadEdges),
-      })
+      }
+      // B3: quarantine self-intersecting blocks so the plotter never subdivides garbage geometry.
+      if (!this._isSimplePolygon(vertices)) block.blockType = 'single'
+      blocks.push(block)
     }
 
     // Mark squares before merging so _mergeSquareClusters can identify them.
@@ -127,7 +211,7 @@ export default class CityBlockGenerator {
 
     this._mergeSquareClusters(blocks, roadFacePolys, roadEdges)
 
-    console.log(`CityBlockGenerator: ${blocks.length} blocks traced`)
+    console.log(`CityBlockGenerator: ${blocks.length} blocks traced from ${allFaces.length} faces (road=${rejectedRoad}, degenerate-area=${rejectedArea}, over-notched=${rejectedNotch})`)
     return { blocks, roadEdges }
   }
 
@@ -211,6 +295,83 @@ export default class CityBlockGenerator {
       return { x: cx, y: cy }
     }
     return { x: bestMid, y: cy }
+  }
+
+  // Resolve all pairwise edge crossings in the gutter graph by splitting each pair of
+  // crossing edges at their intersection and inserting a new node. O(n²) — fine at city scale.
+  // Crossing edges arise from per-district variable street widths. After planarization
+  // _traceFaces produces only simple, non-self-intersecting face polygons.
+  _planarizeGutterGraph(nodes, edges) {
+    const nodeById = new Map(nodes.map(n => [n.id, n]))
+
+    // Collect split points per edge: [{t along edge, x, y}]
+    const splits = edges.map(() => [])
+
+    for (let i = 0; i < edges.length; i++) {
+      const ei = edges[i]
+      const a1 = nodeById.get(ei.nodeA), a2 = nodeById.get(ei.nodeB)
+      if (!a1 || !a2) continue
+      for (let j = i + 1; j < edges.length; j++) {
+        const ej = edges[j]
+        const b1 = nodeById.get(ej.nodeA), b2 = nodeById.get(ej.nodeB)
+        if (!b1 || !b2) continue
+        const ix = segIntersect(a1, a2, b1, b2)
+        if (!ix) continue
+        splits[i].push({ t: ix.t, x: ix.x, y: ix.y })
+        splits[j].push({ t: ix.s, x: ix.x, y: ix.y })
+      }
+    }
+
+    if (splits.every(s => s.length === 0)) return { nodes, edges }
+
+    // Build augmented node list; deduplicate by position at 1e-6 tolerance.
+    const allNodes = [...nodes]
+    const nodeIndex = new Map(nodes.map(n => [`${n.x.toFixed(6)},${n.y.toFixed(6)}`, n.id]))
+    const getOrCreateNode = (x, y) => {
+      const key = `${x.toFixed(6)},${y.toFixed(6)}`
+      if (nodeIndex.has(key)) return nodeIndex.get(key)
+      const id = allNodes.length
+      allNodes.push({ id, x, y })
+      nodeIndex.set(key, id)
+      return id
+    }
+
+    const seenEdges = new Set()
+    const newEdges = []
+    const addEdge = (a, b) => {
+      if (a === b) return
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`
+      if (!seenEdges.has(key)) { seenEdges.add(key); newEdges.push({ nodeA: a, nodeB: b }) }
+    }
+
+    let crossingCount = 0
+    for (let i = 0; i < edges.length; i++) {
+      const e = edges[i], sp = splits[i]
+      if (!sp.length) { addEdge(e.nodeA, e.nodeB); continue }
+      sp.sort((a, b) => a.t - b.t)
+      crossingCount += sp.length
+      let prev = e.nodeA
+      for (const s of sp) { const nid = getOrCreateNode(s.x, s.y); addEdge(prev, nid); prev = nid }
+      addEdge(prev, e.nodeB)
+    }
+
+    console.log(`_planarizeGutterGraph: resolved ${crossingCount} crossings, added ${allNodes.length - nodes.length} nodes`)
+    return { nodes: allNodes, edges: newEdges }
+  }
+
+  // Returns true if polygon has no self-intersecting edges (non-adjacent edge pairs).
+  _isSimplePolygon(vertices) {
+    const n = vertices.length
+    if (n < 3) return false
+    for (let i = 0; i < n; i++) {
+      const a = vertices[i], b = vertices[(i + 1) % n]
+      for (let j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue  // share endpoint
+        const c = vertices[j], d = vertices[(j + 1) % n]
+        if (segIntersect(a, b, c, d)) return false
+      }
+    }
+    return true
   }
 
   // Reconstruct a planar gutter graph (nodes + edges) from the junction structure
@@ -376,7 +537,10 @@ export default class CityBlockGenerator {
   // margin from every edge). Nodes on the face's own boundary sit at distance ~0
   // and are naturally excluded by the margin.
   _enclosesNode(poly, nodes) {
-    const MARGIN_SQ = 0.01 // 0.1 units
+    // Boundary nodes of this face sit at dist ≈ 0; use a small epsilon that's well
+    // above floating-point noise but well below STREET_HALF_WIDTH (~0.044) so that
+    // a nearby-but-genuinely-interior node in a narrow block isn't falsely excluded.
+    const MARGIN_SQ = 1e-5   // ~0.003 world units
     for (const nd of nodes) {
       if (!pip(nd.x, nd.y, poly)) continue
       let minD2 = Infinity

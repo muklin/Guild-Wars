@@ -19,15 +19,7 @@ const COLLINEAR_NODE_MARGIN = 0.4  // a node within this perpendicular distance 
 const STREET_PRIORITY = { Wall: 4, Canal: 3, Stone: 2, Brick: 1, Mud: 0 }
 
 function streetTypeForDistrict(district) {
-  if (!district) return 'Mud'
-  const t = district.assignedType
-  if (t === 'Military') return 'Stone'
-  if (t === 'Leadership' || t === 'Market') return 'Brick'
-  if (t === 'Residential') {
-    const cls = district.residentialClass
-    if (cls === 'Noble' || cls === 'Middle') return 'Brick'
-  }
-  return 'Mud'
+  return getDistrictConfig(district).streetType ?? 'Mud'
 }
 
 function betterStreetType(a, b) {
@@ -35,13 +27,11 @@ function betterStreetType(a, b) {
 }
 
 // Per-district street/block/plot generation tuning now lives in
-// shared/districtConfig.js (DISTRICTS[key].params), alongside every other
-// per-district-type table (building styles, townhouse probability, landmarks, UI
-// colour) — see that file's header for the full field-by-field breakdown and the
-// rationale for consolidating them. getDistrictParams() stays as a thin wrapper so
-// this file's many internal call sites don't all need to change.
+// shared/districtConfig.js, alongside every other per-district-type table (building
+// styles, townhouse probability, landmarks, UI colour) — all fields are now top-level
+// on the config object. getDistrictParams() is a thin alias so call sites don't change.
 export function getDistrictParams(district) {
-  return getDistrictConfig(district).params
+  return getDistrictConfig(district)
 }
 
 // Half road width for a district's streets — STREET_HALF_WIDTH scaled by that
@@ -580,7 +570,7 @@ export default class StreetVoronoiGenerator {
     for (const district of districts) {
       const streetType = streetTypeForDistrict(district)
       const params = getDistrictParams(district)
-      const metric = params.metric ?? 'euclidean'
+      const metric = params.street_alignment ?? 'euclidean'
 
       // Collect Wall/Canal/MainRoad boundary segments adjacent to this district so
       // _samplePerimeter skips intermediate seeds on them. The boundary-node loop

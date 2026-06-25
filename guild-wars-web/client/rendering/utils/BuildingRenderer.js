@@ -5,14 +5,14 @@ import { DISTRICTS, DEFAULTS, districtConfigKey } from '../../../shared/district
 import PartLibrary from '../buildings/PartLibrary.js'
 import { assemble } from '../buildings/ParametricBuilding.js'
 
-export const PARA_SCALE = MODEL_SCALE / 2.3   // parametric model-unit → world-unit scale
+export const PARA_SCALE = MODEL_SCALE / 1.5   // parametric model-unit → world-unit scale
 const PARA_LIB_PATH = '/resources/buildingparts/default'
 const STONE_MATS = new Set(['stone', 'granite', 'brick'])
 // ≈ StreetVoronoiGenerator.STREET_HALF_WIDTH — keep in sync. Townhouse front walls sit
 // back from the plot's street edge by this much (a small yard/sidewalk strip); a jettied
 // upper floor can push forward into that strip but never past the original street line.
 // Global default — per-district override goes on DISTRICT_BUILDING_STYLES[key].frontSetback.
-const FRONT_SETBACK = 0.04375
+const FRONT_SETBACK = 0.04
 const frontSetbackFor = (style) => style.frontSetback ?? FRONT_SETBACK
 
 // Model catalogue notes (which GLB goes with which style):
@@ -45,7 +45,7 @@ const FIT_TOLERANCE = 0.12    // models within this coverage of the best fit are
 // recorded streetEdges to find the frontage. Every plot gets a GLB model (closest
 // fit); there are no procedural box houses.
 
-export const GROUND_Y = 0.075   // plot-fill surface height (see PlotRenderer); buildings seat here
+export const GROUND_Y = 0   // ground surface is Y=0; buildings seat here
 
 // Back-yard trees: plots whose building leaves empty space behind it get small trees
 // scattered in the back (never on the street-facing front).
@@ -599,7 +599,7 @@ export default class BuildingRenderer {
     const distKey = this._districtKey(district)
     const style = DISTRICT_BUILDING_STYLES[distKey] ?? DEFAULT_BUILDING_STYLE
     const wingDepths = style.wingDepths ?? [2, 3, 4, 5]
-    const floorOptions = style.floorOptions ?? [2, 3]
+    const floorWeights = style.floors ?? { 2: 0.5, 3: 0.5 }
 
     // Polygon centroid for inward-normal checks
     let pcx = 0, pcy = 0
@@ -658,7 +658,13 @@ export default class BuildingRenderer {
       const worldD = Math.min(setback + depthBays * PARA_SCALE, maxD * 0.92)
       if (worldD < 0.04) { dropEarly(wi, se, `no depth available behind frontage (worldD ${worldD.toFixed(4)} < 0.04, maxD ${maxD.toFixed(4)})`); continue }
 
-      const wingFloorCount = floorOptions[Math.floor(this._rand(hash + 3 + wi * 7) * floorOptions.length)]
+      const r_wing = this._rand(hash + 3 + wi * 7)
+      let wingFloorCount = 2, wingFloorCum = 0
+      for (const [f, w] of Object.entries(floorWeights)) {
+        wingFloorCum += w
+        wingFloorCount = parseInt(f)
+        if (r_wing < wingFloorCum) break
+      }
       const Ap = { x: A.x + nx * worldD, y: A.y + nz * worldD }
       const Bp = { x: B.x + nx * worldD, y: B.y + nz * worldD }
       raw.push({

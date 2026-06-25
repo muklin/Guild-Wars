@@ -1,11 +1,12 @@
 import TerrainVoronoiGenerator from './CityGenerator/TerrainVoronoiGenerator.js'
 import StreetVoronoiGenerator from './CityGenerator/StreetVoronoiGenerator.js'
-import CityBlockGenerator, { majorityStreetType } from './CityGenerator/CityBlockGenerator.js'
+import CityBlockGenerator, { majorityStreetType, extractOuterGutterPolygon } from './CityGenerator/CityBlockGenerator.js'
 import PlotVoronoiGenerator, { markSquareBlocks } from './CityGenerator/PlotVoronoiGenerator.js'
 import LandmarkPlacer from './CityGenerator/buildings/LandmarkPlacer.js'
 import BuildingTemplateGenerator from './CityGenerator/buildings/BuildingTemplateGenerator.js'
 import TextureTemplateGenerator from './CityGenerator/buildings/TextureTemplateGenerator.js'
 import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
+import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
 import { getDistrictConfig, districtConfigKey } from '../../shared/districtConfig.js'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
@@ -1104,8 +1105,38 @@ export default class SetupPhase {
     const townhouseCount = blocks.filter(b => b.blockType === 'townhouse').length
     console.log(`[perf]   plots: ${(performance.now()-tPlots).toFixed(1)}ms (${plots.length} plots, ${townhouseCount} townhouse blocks)`)
 
+    // Convert world terrain fine cells to plot objects, clipped to the city gutter boundary.
+    const tTerrain = performance.now()
+    const outerGutterPoly = extractOuterGutterPolygon(blocks)
+    const wt = this.gameStateManager.worldTerrainData
+    const terrainFineCells = wt?.fineCells || []
+    const tradeRoadWaypoints = (this.tradingDestinations || [])
+      .map(td => this._tradeRoadWaypoints(td.roadPath || []))
+      .filter(Boolean)
+    cityData.terrainPlots = convertTerrainCellsToPlots(terrainFineCells, outerGutterPoly, tradeRoadWaypoints, wt?.regions || [])
+    console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${cityData.terrainPlots.length} plots)`)
+
     console.log(`[perf]   _generateBuildings total: ${(performance.now()-t0).toFixed(1)}ms`)
-    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares`)
+    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares, ${cityData.terrainPlots.length} terrain plots`)
+  }
+
+  // Re-derive terrain plots from the current world fine cells — run on save-load so
+  // that saved terrain plots always reflect the latest conversion code.
+  regenerateTerrainPlots() {
+    const cityData = this.gameStateManager.cityDistrictData
+    if (!cityData?.blocks?.length) return 0
+    const wt = this.gameStateManager.worldTerrainData
+    const cityRegion = (wt?.regions || []).find(r => r.assignedType === 'City')
+    const terrainFineCells = cityRegion
+      ? (wt?.fineCells || []).filter(c => c.parentRegionId !== cityRegion.id)
+      : (wt?.fineCells || [])
+    if (!terrainFineCells.length) return 0
+    const outerGutterPoly = extractOuterGutterPolygon(cityData.blocks)
+    const tradeRoadWaypoints = (this.tradingDestinations || [])
+      .map(td => this._tradeRoadWaypoints(td.roadPath || []))
+      .filter(Boolean)
+    cityData.terrainPlots = convertTerrainCellsToPlots(terrainFineCells, outerGutterPoly, tradeRoadWaypoints, wt?.regions || [])
+    return cityData.terrainPlots.length
   }
 
   assignTerrainDistrict(regionId, districtType, description = '', producedResource = '', consumedResources = []) {

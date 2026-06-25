@@ -61,6 +61,15 @@ try {
     await autoSave()
     console.log('Migrated save: generated missing street graph')
   }
+  // Migrate terrain plots: always regenerate from current fine cells so older saves
+  // (with S-H clipping gaps or null assignedType) are fixed on load.
+  if (gameStateManager.cityDistrictData?.plots?.length) {
+    const count = setupPhase.regenerateTerrainPlots()
+    if (count) {
+      await autoSave()
+      console.log(`Migrated terrain plots: ${count} plots regenerated`)
+    }
+  }
 } catch {
   console.log('No auto-save found, starting fresh')
 }

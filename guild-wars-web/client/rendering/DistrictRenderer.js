@@ -144,8 +144,8 @@ export default class DistrictRenderer {
     this.districtMeshes.forEach(mesh => this.scene.remove(mesh))
     this.districtMeshes.clear()
 
-    console.log(`renderDistricts: ${districts.length} districts`, new Error().stack.split('\n')[2]?.trim())
     for (const district of districts) {
+      if (district.assignedType) continue   // assigned districts are covered by streets + plots; no polygon needed
       const mesh = this.buildDistrictMesh(district)
       if (mesh) {
         this.scene.add(mesh)
@@ -159,7 +159,7 @@ export default class DistrictRenderer {
     if (!rawPoly || rawPoly.length < 3) return null
 
     const polygon = [...rawPoly]
-    const vertices = polygon.map(v => [v.x, 0.05, v.y]).flat()   // flush with terrain (see TerrainRenderer)
+    const vertices = polygon.map(v => [v.x, 0, v.y]).flat()
 
     const triangles = []
     for (let i = 1; i < polygon.length - 1; i++) {
@@ -287,7 +287,7 @@ export default class DistrictRenderer {
       }
     }
 
-    this.cityPolylines = new PolylineRenderer(this.scene, { thickness: 0.0875, stripY: 0.077, fillY: 0.08 })
+    this.cityPolylines = new PolylineRenderer(this.scene, { thickness: 0.0875, stripY: 0.002, fillY: 0.003 })
     this.cityPolylines.render(nonWallEdges, this.cityEdgePointsById,
       (edge) => edge.assignedType ? DISTRICT_COLORS.get(edge.assignedType) : DISTRICT_COLORS.unassigned
     )
@@ -378,9 +378,9 @@ export default class DistrictRenderer {
       else if (e.feature === 'gate') gatePositions.push(pos)
       else towerPositions.push(pos)
     }
-    if (towerPositions.length)   this.wallTowers.spawnTowers(towerPositions, 0.075)
-    if (gatePositions.length)    this.wallTowers.spawnFeature('wallGate', gatePositions, 0.075)
-    if (barbicanPositions.length) this.wallTowers.spawnFeature('barbican', barbicanPositions, 0.075)
+    if (towerPositions.length)   this.wallTowers.spawnTowers(towerPositions, 0)
+    if (gatePositions.length)    this.wallTowers.spawnFeature('wallGate', gatePositions, 0)
+    if (barbicanPositions.length) this.wallTowers.spawnFeature('barbican', barbicanPositions, 0)
   }
 
   // Compute mitered left/right corner points for a polyline at a given half-width.
@@ -418,8 +418,8 @@ export default class DistrictRenderer {
     const W          = 0.0875   // normal full street width
     const halfWater  = W          // canal water half-width (total = 2W)
     const halfStone  = W * 1.25  // stone lining extends 0.25W beyond water on each side
-    const stoneY     = 0.052     // stone banks just above district ground (0.05)
-    const waterY     = 0.056     // water above stone so it shows through in the centre
+    const stoneY     = 0.002     // stone banks just above ground (Y=0)
+    const waterY     = 0.006     // water above stone so it shows through in the centre
     const stoneColor = 0x888888
     const waterColor = DISTRICT_COLORS.Canal
 
@@ -482,15 +482,15 @@ export default class DistrictRenderer {
     const halfWall  = bothSides ? G * 0.45 : G * 0.70   // internal narrower; external fills gutter
     const wallH     = bothSides ? G * 3.0  : G * 4.5    // internal 2×; external 1.5× original heights
     const alleyW    = bothSides ? G * 0.20 : G * 0.30   // alley strip; total stays ≤ G per side
-    // group.position.y = 0.075 (street level) is the scale-animation pivot.
-    // All local Y coords are relative to that base: wall body 0..wallH, alley floor at -0.022.
-    const wallBase  = 0        // local Y where wall body starts (world 0.075)
-    const alleyLY   = 0.053 - 0.075  // local Y for alley floor → world 0.053
+    // group.position.y = 0 (ground level) is the scale-animation pivot.
+    // All local Y coords are relative to that base.
+    const wallBase  = 0        // local Y where wall body starts (world 0)
+    const alleyLY   = 0.002    // local Y for alley floor — just above ground
 
     const { left: wallL, right: wallR } = this._getMiteredCorners(pts, halfWall)
     const { left: alleyL, right: alleyR } = this._getMiteredCorners(pts, halfWall + alleyW)
 
-    // ── Wall body (extruded strip, local Y 0..wallH, world Y 0.075..0.075+wallH) ──
+    // ── Wall body (extruded strip, local Y 0..wallH, world Y 0..wallH) ──
     // At gate/barbican junctions the wall body is inset by half the gate footprint so the
     // wall ends exactly at the edge of the gate model.  All segments still render — no gaps.
     const gateInset = (p) =>
@@ -564,7 +564,7 @@ export default class DistrictRenderer {
     }
 
     const group = new THREE.Group()
-    group.position.y = 0.075   // scale-animation pivot at street level
+    group.position.y = 0   // scale-animation pivot at ground level
     group.userData = { cityEdgeId: edgeId }
     const wallMesh  = makeMesh(wv, wi, wallColor)
     const alleyMesh = makeMesh(av, ai, alleyColor, 0.9)
@@ -805,7 +805,7 @@ export default class DistrictRenderer {
       const sp = d.seedPoint || centroid(d.polygon || d.boundary || [])
       if (!sp) continue
       const mesh = new THREE.Mesh(geo, mat)
-      mesh.position.set(sp.x, 0.15, sp.y)
+      mesh.position.set(sp.x, 0.075, sp.y)
       mesh.visible = this.showDebug && this._districtCentersVisible
       mesh.userData = { kind: 'districtCenter', id: d.id, assignedType: d.assignedType, residentialClass: d.residentialClass }
       this.scene.add(mesh)

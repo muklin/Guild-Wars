@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { pointInPolygon } from './utils/renderUtils.js'
 
-const GROUND_Y     = 0.075
+const GROUND_Y     = 0
 const PARA_SCALE   = 0.13 / 2.3         // matches BuildingRenderer
 const CHAR_HEIGHT  = 1 * PARA_SCALE  // ≈ 0.063 world units (80% of one floor)
 const CHAR_RADIUS  = 0.18 * PARA_SCALE  // ≈ 0.014 world units

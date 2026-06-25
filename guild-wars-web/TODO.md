@@ -1,17 +1,29 @@
 
 
 # Bugs:
+- party walls should NOT be removed between buildings.  They should have walls added.  No Windows or doors on those walls.  
+- coming out of Debug mode doesn't revert terrain colours to normal.
+- sometimes Terrain Regions fine voronois are not adjacent.  This results in missing edges.  
 - Fix rooves. Make sure they Gable correctly on the ends of wings.  
-- Squares not rendering texture
-- party walls should NOT be removed between buildings.  No Windows or doors. 
-
 
 # Baby Features:
-- allow walls to use building generation, to allow for turrets, gates?? 
+
 
 # Features:
 
 ## City Setup 
+
+### Terrain plots
+move the plot conversion for terrain to happen when a terrain is defined.  this can happen either: 
+- when the user specifes the terrain in Terrain mode.  
+- when the terrain is auto assigned (plain) when leaving terrain mode.  
+
+The reason is, we want to let users define plots, not whole terrains as forrestry / fishing / mining / agriculture / trade / threat, etc, and follow rules to add infrastructure (roads / buildings, etc.) at that time, during city setup.  
+
+### Walls as buildings. 
+change wall generation to use building generation, to allow for turrets, gates, walls to have internal rooms.  Need to add some standard capabilities: wall pieces.  Crenelations, etc.  
+
+
 ### Resources.  
 When players go to create a new resource, we will popup a dialogue to help them name, choose an icon for, set the initial value of (in gold)
 
@@ -63,10 +75,10 @@ During Terrain setup players define
 
 
 
-## Groundplane changes or Z-height implementation.  HUGE
+## Groundplane Z-height implementation.  HUGE
 - the ground plane is currently a single plane at z=0.
 
-- Terrain centres, and edgepoints then District centres and boundaries, then Streets, all get a z-height.
+- Terrain centres, and edgepoints then District centres and boundaries, then Junctions, Gutter points, plotcorners will all render a z-height.  
 - when city and Terrain are fine voronois are generated z-heights of all points are randomized in a thin band.  
 - Terrain types set, and drag adjacent parts of the map up or down, proportional to the type, 
   - sea - a lot, and all fine voronoi z-heights are set to the same value.
@@ -85,7 +97,8 @@ During Terrain setup players define
 - plots are unaffected and run along the z-heights too.  
 - buidings are generated in the same ways as currently, with wings, unaffected by z-height. 
 - Wings will will quantize their ground level height to be the first level where the highest vert is above ground.
-- wings merge to buidings as normal.  
+- wings merge to buidings as normal. 
+- When The difference between a gutter and the junction centre is above a certain value, the gutter and the Plot boundary are separated and a berm wall is added.  Some plots may also have a maximum gradient value, that also enforces that.
 
 
 

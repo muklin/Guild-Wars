@@ -1,4 +1,4 @@
-import { computeVoronoiCellsHalfPlane, clipToPolygon, intersectPolygons, polygonBBox } from '../voronoi/VoronoiUtils.js'
+import { computeVoronoiCellsHalfPlane, polygonCrossesSegment, clipPolygonToSide, polygonBBox, clipPolygonByConvex } from '../voronoi/VoronoiUtils.js'
 import { STREET_HALF_WIDTH } from './StreetVoronoiGenerator.js'
 import { findStreetFacingEdges } from './CityBlockGenerator.js'
 import { getDistrictParams } from './StreetVoronoiGenerator.js'
@@ -81,22 +81,35 @@ export default class PlotVoronoiGenerator {
         continue
       }
 
-      const bbox = polygonBBox(blockCorners)
-      const roughCells = computeVoronoiCellsHalfPlane(seeds, bbox)
+      // Convex bbox → each Voronoi cell is convex; no S-H self-intersection from
+      // non-convex initial clip polygons.
+      const roughCells = computeVoronoiCellsHalfPlane(seeds, polygonBBox(blockCorners))
+
       const plotCells = roughCells.reduce((acc, cell) => {
-        // intersectPolygons (convex cell ∩ block) is robust for non-convex blocks
-        // with thin fingers (dead-end notches); clipToPolygon can emit a
-        // self-intersecting spike. Correct arg order is (convex subject, clip).
-        let poly = intersectPolygons(cell.polygon, blockCorners)
-                ?? clipToPolygon(blockCorners, cell.polygon)
-        if (!poly) return acc
+        // clipPolygonByConvex: clip the (possibly concave) block by each half-plane of
+        // the CONVEX Voronoi cell. Unlike Sutherland–Hodgman, disconnected results
+        // produce separate pieces rather than bridging across concave notches (which was
+        // the root cause of plots leaking into the street on concave blocks).
+        // We pick the largest-area piece — seeds sit on the block boundary so pip is ambiguous.
+        const pieces = clipPolygonByConvex(blockCorners, cell.polygon)
+        if (!pieces.length) {
+          console.error('[PlotVoronoiGenerator] plot clipped to zero — seed', cell.seedPoint, 'block', block.id)
+          return acc
+        }
+        let poly = pieces[0]
+        if (pieces.length > 1) {
+          let bestA = 0
+          for (const p of pieces) {
+            let a = 0
+            for (let i = 0; i < p.length; i++) { const pi = p[i], qi = p[(i + 1) % p.length]; a += pi.x * qi.y - qi.x * pi.y }
+            if (Math.abs(a) > bestA) { bestA = Math.abs(a); poly = p }
+          }
+        }
         // A thin block finger can still leave a plot spiking across a road. Clip
-        // the cell to its seed's side of every road centreline it crosses, so no
-        // plot spans a road. (The seed sits on the block boundary, one side of
-        // the road; we keep that side.)
+        // the cell to its seed's side of every road centreline it crosses.
         for (const r of roadLines) {
-          if (this._polygonCrossesSegment(poly, r[0], r[1])) {
-            const clipped = this._clipPolygonToSide(poly, r[0], r[1], cell.seedPoint)
+          if (polygonCrossesSegment(poly, r[0], r[1])) {
+            const clipped = clipPolygonToSide(poly, r[0], r[1], cell.seedPoint)
             if (clipped) poly = clipped
           }
         }
@@ -131,59 +144,29 @@ export default class PlotVoronoiGenerator {
       }
     }
 
-    // Drop the ground under Landmarks: any non-square plot overlapping a Landmark
-    // footprint is removed wholesale (ADR-0005). Squares (the paved plaza the Landmark
-    // sits on) are kept.
-    let kept = plots
+    // Pave the ground under Landmarks: any non-square plot overlapping a Landmark
+    // footprint is CONVERTED to a square (paved plaza) rather than dropped (ADR-0005).
+    // A Landmark's bodyFootprint is offset behind the model's front door and overhangs
+    // its plaza onto adjacent subdivided blocks; dropping those plots left bare world-
+    // colour ground, so instead we pave them — a 'square' plot renders as stone, grows no
+    // building (BuildingRenderer skips it), and is skipped by markTownhouseBlocks.
+    let paved = 0
     if (landmarkFootprints.length) {
-      kept = plots.filter(p =>
-        p.blockType === 'square' || !landmarkFootprints.some(f => polysOverlap(p.blockCorners, f.polygon))
-      )
+      for (const p of plots) {
+        if (p.blockType === 'square') continue
+        if (landmarkFootprints.some(f => polysOverlap(p.blockCorners, f.polygon))) {
+          p.blockType = 'square'
+          paved++
+        }
+      }
     }
 
     const sq = blocks.filter(b => b.blockType === 'square').length
     const si = blocks.filter(b => b.blockType === 'single').length
     const sd = blocks.filter(b => b.blockType === 'subdivided').length
-    console.log(`PlotVoronoiGenerator: ${blocks.length} blocks (${sq} square, ${si} single, ${sd} subdivided), ${kept.length} plots (${plots.length - kept.length} dropped under Landmarks)`)
+    console.log(`PlotVoronoiGenerator: ${blocks.length} blocks (${sq} square, ${si} single, ${sd} subdivided), ${plots.length} plots (${paved} paved under Landmarks)`)
 
-    return { plots: kept }
-  }
-
-  // True if any edge of `poly` properly crosses segment (c,d) — interior
-  // crossing only (shared endpoints / grazing don't count).
-  _polygonCrossesSegment(poly, c, d) {
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i], b = poly[(i + 1) % poly.length]
-      const r1x = b.x - a.x, r1y = b.y - a.y, r2x = d.x - c.x, r2y = d.y - c.y
-      const den = r1x * r2y - r1y * r2x
-      if (Math.abs(den) < 1e-12) continue
-      const sx = c.x - a.x, sy = c.y - a.y
-      const t = (sx * r2y - sy * r2x) / den
-      const u = (sx * r1y - sy * r1x) / den
-      if (t > 0.02 && t < 0.98 && u > 0.02 && u < 0.98) return true
-    }
-    return false
-  }
-
-  // Clip `poly` to the half-plane bounded by the infinite line through (la,lb)
-  // that contains `ref`. Returns the clipped polygon (≥3 verts) or null.
-  _clipPolygonToSide(poly, la, lb, ref) {
-    const nx = -(lb.y - la.y), ny = (lb.x - la.x)
-    const side = (p) => nx * (p.x - la.x) + ny * (p.y - la.y)
-    const sRef = side(ref)
-    if (sRef === 0) return poly
-    const out = []
-    for (let i = 0; i < poly.length; i++) {
-      const A = poly[i], B = poly[(i + 1) % poly.length]
-      const dA = side(A), dB = side(B)
-      const inA = dA * sRef >= -1e-9
-      if (inA) out.push(A)
-      if ((dA < 0) !== (dB < 0)) {
-        const t = dA / (dA - dB)
-        out.push({ x: A.x + t * (B.x - A.x), y: A.y + t * (B.y - A.y) })
-      }
-    }
-    return out.length >= 3 ? out : null
+    return { plots }
   }
 
   // Walk the block boundary placing a seed on every corner (so corners become
@@ -252,12 +235,18 @@ export default class PlotVoronoiGenerator {
       seedLens.push(c.L); prev = c.L
     }
 
+    // No inset: seeds sit exactly on the block boundary (the gutter). clipToPolygon
+    // clips every cell to the block regardless of seed position, so cells can't leak
+    // into the street; and a seed on the gutter is still on the block's side of the
+    // road centreline, so the road-centreline clip keeps the correct half. Insetting
+    // was the old guard against cell leak — now redundant (clipToPolygon does it), and
+    // it punched seeds on thin blocks clean through to the opposite gutter, out into the
+    // far street, so it's dropped entirely.
     return seedLens.map(l => {
       for (let i = 0; i < n; i++) {
         if (arcLen[i + 1] >= l - 1e-10) {
           const seg = arcLen[i + 1] - arcLen[i]
-          if (seg < 1e-10) return { x: blockCorners[i].x, y: blockCorners[i].y }
-          const frac = (l - arcLen[i]) / seg
+          const frac = seg < 1e-10 ? 0 : (l - arcLen[i]) / seg
           const a = blockCorners[i], b = blockCorners[(i + 1) % n]
           return { x: a.x + frac * (b.x - a.x), y: a.y + frac * (b.y - a.y) }
         }

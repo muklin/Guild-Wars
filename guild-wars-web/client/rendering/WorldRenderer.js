@@ -511,6 +511,12 @@ export default class WorldRenderer {
     return this.groundRenderer.renderPlots(plots, districtData)
   }
 
+  renderTerrainPlots(terrainPlots) {
+    if (!terrainPlots?.length) return
+    this.terrainRenderer.deleteNonCityFineCells()
+    this.groundRenderer.renderTerrainPlots(terrainPlots)
+  }
+
   clearPlotLayer() {
     return this.groundRenderer.clearPlotLayer()
   }
@@ -535,6 +541,7 @@ export default class WorldRenderer {
     this.groundRenderer.clearGutterLayer()
     this.groundRenderer.clearBlockLayer()
     this.groundRenderer.clearPlotLayer()
+    this.groundRenderer.clearTerrainPlotLayer()
   }
 
 
@@ -755,7 +762,7 @@ export default class WorldRenderer {
       this.scene.children.forEach(child => {
         if (child.isMesh && child.material && !allDebug.has(child) && child.visible) {
           this.originalMaterials.set(child, child.material)
-          child.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6) })
+          child.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6), side: THREE.DoubleSide })
         }
       })
     } else {
@@ -786,6 +793,55 @@ export default class WorldRenderer {
       case 'streetSeeds':     this.groundRenderer.setStreetSeedsVisible(on); break
     }
     this.markDirty()
+  }
+
+  // Draw wing-pass debug lines for one plot — same visualisation as ?debugPlot= in
+  // blockpreview. Clears any previous debug group first so repeated "Go" calls are clean.
+  // white=pass1 quad, grey=setback strip, red=naive result, blue=post-subtraction, green=final.
+  debugPlotWings(plotId) {
+    if (this._plotDebugGroup) {
+      this._plotDebugGroup.clear()
+    } else {
+      this._plotDebugGroup = new THREE.Group()
+      this.scene.add(this._plotDebugGroup)
+    }
+
+    const cd = this.cityDistrictData
+    const plot = (cd?.plots || []).find(p => p.id === plotId)
+    if (!plot) {
+      console.warn(`[debugPlotWings] plot ${plotId} not found`)
+      this.markDirty()
+      return `Plot ${plotId} not found`
+    }
+    const district = (cd?.districts || []).find(d => d.id === plot.districtId)
+    const sink = this.groundRenderer.buildingRenderer.debugTownhouseWingPasses(plot, district)
+
+    const Y = BUILDING_GROUND_Y + 0.01
+    const mkLine = (corners, color, y) => {
+      if (!corners?.length) return
+      const pts = [...corners, corners[0]].map(c => new THREE.Vector3(c.x, y, c.y))
+      const geo = new THREE.BufferGeometry().setFromPoints(pts)
+      const mat = new THREE.LineBasicMaterial({ color, depthTest: false })
+      const line = new THREE.Line(geo, mat)
+      line.renderOrder = 999
+      this._plotDebugGroup.add(line)
+    }
+
+    for (const rec of sink) {
+      let y = Y
+      mkLine(rec.white, 0xffffff, y); y += 0.002
+      mkLine(rec.grey,  0x999999, y); y += 0.002
+      for (const piece of (rec.red || [])) mkLine(piece, 0xff2222, y)
+      y += 0.002
+      mkLine(rec.blue,  0x3355ff, y); y += 0.002
+      mkLine(rec.green, 0x22ff44, y)
+    }
+
+    const built = sink.filter(r => r.green).length
+    const msg = `plot ${plotId}: ${built}/${sink.length} wings built`
+    console.log(`[debugPlotWings] ${msg}`, sink)
+    this.markDirty()
+    return msg
   }
 
   // Returns current per-layer visibility so DebugPanel can initialise its checkboxes.

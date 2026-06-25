@@ -44,7 +44,7 @@ export default class PartLibrary {
     this.stoneColumnMaterial = makeWallMaterial({ stone: true, density: stoneDensity, grimeHeight, baseY, offset: [37.1, 11.7, -23.4] })
     // Brick base colour: the light grey, nudged 10% toward a very pale blue, with a
     // slight (0.2%) per-brick jitter so it isn't perfectly flat.
-    const brickBase = new THREE.Color(0xbcbcb6).lerp(new THREE.Color().setHSL(0.58, 0.35, 0.88), 0.1)
+    const brickBase = new THREE.Color(0x626C6D).lerp(new THREE.Color().setHSL(0.58, 0.35, 0.88), 0.1)
     const brickPalette = [[brickBase.getHex(), 1, 0.002]]
     // Brick: same procedural-wall treatment as stone (no atlas region needed), 2:1 (1:2)
     // brick aspect ratio — bricks twice as wide as tall. Sampled in LOCAL/model space now

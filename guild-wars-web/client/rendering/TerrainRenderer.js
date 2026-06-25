@@ -190,9 +190,9 @@ export default class TerrainRenderer {
 
     const cx = polygon.reduce((s, v) => s + v.x, 0) / polygon.length
     const cy = polygon.reduce((s, v) => s + v.y, 0) / polygon.length
-    const vertices = [cx, 0.05, cy]
+    const vertices = [cx, 0, cy]
     for (const v of polygon) {
-      vertices.push(v.x || 0, 0.05, v.y || 0)
+      vertices.push(v.x || 0, 0, v.y || 0)
     }
     if (vertices.some(v => !isFinite(v))) {
       console.warn(`Region ${region.id} has non-finite vertices after clip`)
@@ -238,7 +238,7 @@ export default class TerrainRenderer {
 
   renderEdges(edges) {
     if (!this.terrainPolylines) {
-      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.5, stripY: 0.06, priorityColor: TERRAIN_COLORS.River })
+      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.5, stripY: 0.01, priorityColor: TERRAIN_COLORS.River })
     }
     console.log(`Rendering ${Object.keys(edges).length} edges`)
     this.terrainPolylines.render(
@@ -551,8 +551,8 @@ export default class TerrainRenderer {
       const px = (-dy / len) * (thickness / 2), py = (dx / len) * (thickness / 2)
       const base = allVerts.length / 3
       allVerts.push(
-        p1.x - px, 0.09, p1.y - py, p1.x + px, 0.09, p1.y + py,
-        p2.x + px, 0.09, p2.y + py, p2.x - px, 0.09, p2.y - py
+        p1.x - px, 0.04, p1.y - py, p1.x + px, 0.04, p1.y + py,
+        p2.x + px, 0.04, p2.y + py, p2.x - px, 0.04, p2.y - py
       )
       allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
     }
@@ -600,6 +600,21 @@ export default class TerrainRenderer {
     this.regionFineCells.delete(cityRegion.id)
     const regionMesh = this.regionMeshes.get(cityRegion.id)
     if (regionMesh) { this.scene.remove(regionMesh); this.regionMeshes.delete(cityRegion.id) }
+  }
+
+  // Remove all non-city terrain fine cell meshes — called when terrain plots take over
+  // rendering of the terrain outside the city with gutter-aligned boundaries.
+  deleteNonCityFineCells() {
+    const cityRegion = this.terrainData?.regions?.find(r => r.assignedType === 'City')
+    const cityRegionId = cityRegion?.id ?? -1
+    for (const [regionId, cellIds] of this.regionFineCells) {
+      if (regionId === cityRegionId) continue
+      for (const cellId of cellIds) {
+        const mesh = this.fineCellMeshes.get(cellId)
+        if (mesh) { this.scene.remove(mesh); this.fineCellMeshes.delete(cellId) }
+      }
+      this.regionFineCells.delete(regionId)
+    }
   }
 
   // ── Hit testing ─────────────────────────────────────────────────────────────

@@ -495,7 +495,7 @@ export function assemble(spec, lib) {
         // jettied wall's pushed-forward edge — both read as a hole if left uncovered.
         const A = wingPoly[frontEdge], Bw = wingPoly[j], Aj = jettyPoly[frontEdge], Bj = jettyPoly[j]
         const shelfY = jettyBaseTopH
-        const floorReg = lib.regions.wood ?? lib.regions.woodtrim
+        const floorReg = lib.regions.wood ?? lib.regions.bridge.glb 
         const stepReg = lib.regions.woodtrim
         wallsGroup.add(trisMesh(quadTris(
           [A.x, shelfY, A.y], [Bw.x, shelfY, Bw.y], [Bj.x, shelfY, Bj.y], [Aj.x, shelfY, Aj.y],

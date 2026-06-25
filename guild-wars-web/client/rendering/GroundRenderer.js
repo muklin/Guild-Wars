@@ -24,13 +24,13 @@ export const STREET_COLORS = {
 
 const PLOT_FILL_MAT   = { roughness: 0.75, emissiveIntensity: 0.0}
 
-// Streets, junction fill caps, plot fills, and square fills all sit flush at this height —
-// matches BuildingRenderer.js's GROUND_Y, the height buildings seat at.
-const GROUND_Y = 0.075
+// Ground surface is Y=0. No layering — every (X,Z) point is covered by exactly one polygon.
+// Matches BuildingRenderer.js's GROUND_Y.
+const GROUND_Y = 0
 
 const FENCE_FRACTION = 0.5
 const FENCE_HEIGHT   = 0.03
-const FENCE_BASE_Y   = 0.0755
+const FENCE_BASE_Y   = 0
 // "Head height" matches WalkMode's own PIVOT_Y (camera/head pivot) above ground:
 // BODY_HEIGHT (0.60 * CHAR_HEIGHT) + HEAD_RADIUS (0.22 * CHAR_HEIGHT) = 0.82 * CHAR_HEIGHT,
 // where CHAR_HEIGHT = 1 * PARA_SCALE. "Waist" is 60% of that.
@@ -249,6 +249,7 @@ export default class GroundRenderer {
     this.buildingRenderer      = new BuildingRenderer()
     this.blockMeshes           = []
     this.plotMeshes            = []
+    this._terrainPlotMeshes    = []
     this._blockById            = new Map()
     this._hoveredBlockMesh     = null
     this.hoveredBlockId        = null
@@ -521,7 +522,7 @@ export default class GroundRenderer {
     const junctions = streetGraph?.junctions
     if (!junctions?.length) return
 
-    const Y = 0.077
+    const Y = GROUND_Y + 0.002
     const verts = []
     const junctionById = new Map(junctions.map(j => [j.id, j]))
 
@@ -656,7 +657,7 @@ export default class GroundRenderer {
     if (len === 0) return
     const r = (0.0875 * 1.2) / 2
     const px = (-dy / len) * r, py = (dx / len) * r
-    const Y = 0.078
+    const Y = GROUND_Y + 0.003
     const verts = new Float32Array([
       a.x - px, Y, a.y - py,
       a.x + px, Y, a.y + py,
@@ -684,7 +685,7 @@ export default class GroundRenderer {
     const geo = new THREE.CylinderGeometry(r, r, 0.002, 16)
     const mat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
     const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(junction.x, 0.085, junction.y)
+    mesh.position.set(junction.x, GROUND_Y + 0.010, junction.y)
     this.scene.add(mesh)
     this._junctionHoverMesh = mesh
     this.hoveredJunctionId = junctionId
@@ -761,7 +762,7 @@ export default class GroundRenderer {
       if (!poly?.length) continue
       for (let i = 0; i < poly.length; i++) {
         const a = poly[i], b = poly[(i + 1) % poly.length]
-        blockLineVerts.push(a.x, 0.08, a.y, b.x, 0.08, b.y)
+        blockLineVerts.push(a.x, GROUND_Y + 0.005, a.y, b.x, GROUND_Y + 0.005, b.y)
       }
     }
     if (blockLineVerts.length === 0) return
@@ -785,7 +786,7 @@ export default class GroundRenderer {
     const verts = []
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i], b = poly[(i + 1) % poly.length]
-      verts.push(a.x, 0.085, a.y, b.x, 0.085, b.y)
+      verts.push(a.x, GROUND_Y + 0.010, a.y, b.x, GROUND_Y + 0.010, b.y)
     }
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
@@ -837,19 +838,6 @@ export default class GroundRenderer {
 
     const plotBase = (districtId) => this.finishedGround ? GRASSY_BROWN : getColor(districtId)
 
-    // District-coloured underlays beneath plots (fills gaps left by no-road-crossing trim).
-    for (const block of (districtData?.blocks || [])) {
-      const poly = block.blockCorners
-      if (!poly?.length || block.blockType === 'square') continue
-      const seed = this._polySeed(poly)
-      const mesh = this._makeFill(poly, this._jitterColor(plotBase(block.districtId), seed), GROUND_Y, PLOT_FILL_MAT)
-      if (mesh) {
-        mesh.userData = { districtId: block.districtId }
-        this._plotFills.push({ mesh, districtId: block.districtId, districtColor: getColor(block.districtId), seed })
-        this.scene.add(mesh); this.plotMeshes.push(mesh)
-      }
-    }
-
     for (const plot of plots) {
       const isSquare = plot.blockType === 'square'
       const seed = this._polySeed(plot.blockCorners)
@@ -867,20 +855,19 @@ export default class GroundRenderer {
         const mat = makeStreetMaterial(type, this._atlas, STREET_COLORS.get(type) || fallback, undefined, angle)
         mesh = this._makeFill(plot.blockCorners, 0, GROUND_Y, PLOT_FILL_MAT, mat)
       }
-        
-      // _makeFill can return null (degenerate/non-simple polygon triangulation failure)
-      // — guard before touching it, so one bad plot can't throw and abort the rest of
-      // this loop (every plot/fence/building after it in the same renderPlots() call).
-      if (mesh) {
-        mesh.userData = { districtId: plot.districtId }
-        this._plotFills.push({ mesh, districtId: plot.districtId, districtColor: getColor(plot.districtId), seed })
-        if (this.showDebug) {
-          this.originalMaterials.set(mesh, mesh.material)
-          mesh.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6) })
-        }
-        this.scene.add(mesh)
-        this.plotMeshes.push(mesh)
+
+      if (!mesh) {
+        console.error('[GroundRenderer] triangulation failed — data bug, plot must be fixed server-side', plot.id, JSON.stringify(plot.blockCorners))
+        continue
       }
+      mesh.userData = { districtId: plot.districtId }
+      this._plotFills.push({ mesh, districtId: plot.districtId, districtColor: getColor(plot.districtId), seed })
+      if (this.showDebug) {
+        this.originalMaterials.set(mesh, mesh.material)
+        mesh.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6), side: THREE.DoubleSide })
+      }
+      this.scene.add(mesh)
+      this.plotMeshes.push(mesh)
     }
 
     // Buildings are placed first (synchronous part of render() — mesh assembly is async
@@ -1206,6 +1193,35 @@ export default class GroundRenderer {
     this.buildingRenderer.clear(this.scene)
   }
 
+  // Render terrain fine Voronoi cells as plot fills, replacing TerrainRenderer's
+  // fine-cell meshes at the city boundary with gutter-aligned polygons.
+  renderTerrainPlots(terrainPlots) {
+    this.clearTerrainPlotLayer()
+    if (!terrainPlots?.length) return
+    const TERRAIN_FILL_COLORS = {
+      Plains:   0xb2de69, Desert:  0xedca72, Mountains: 0x8d8d8d,
+      Forest:   0x218c21, Lake:    0x1a5abf, Sea:       0x0e6e6c,
+      Hills:    0x699B4F, Swamp:   0x4a6b4a, unassigned: 0xb8a680,
+    }
+    let terrainFailed = 0
+    for (const plot of terrainPlots) {
+      const color = TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
+      const mesh = this._makeFill(plot.blockCorners, color, GROUND_Y - 0.001, { roughness: 0.6, emissiveIntensity: 0.2 })
+      if (!mesh) { terrainFailed++; continue }
+      this.scene.add(mesh)
+      if (this.showDebug) {
+        mesh.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6), side: THREE.DoubleSide })
+      }
+      this._terrainPlotMeshes.push(mesh)
+    }
+    if (terrainFailed > 0) console.warn(`[GroundRenderer] terrain plot _makeFill failures: ${terrainFailed} / ${terrainPlots.length}`)
+  }
+
+  clearTerrainPlotLayer() {
+    for (const m of this._terrainPlotMeshes) this.scene.remove(m)
+    this._terrainPlotMeshes = []
+  }
+
   // Switch plot bases between per-district colours (during setup) and uniform grassy brown.
   setFinishedGround(finished) {
     this.finishedGround = !!finished
@@ -1228,7 +1244,7 @@ export default class GroundRenderer {
     const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 })
     for (const j of junctions) {
       const m = new THREE.Mesh(geo, mat)
-      m.position.set(j.x, 0.18, j.y)
+      m.position.set(j.x, GROUND_Y + 0.105, j.y)
       m.visible = this.showDebug && this._streetSeedsVisible
       m.userData = { kind: 'streetSeed', id: j.id, type: j.type, districtId: j.districtId, connections: j.connections?.length ?? 0, x: j.x, y: j.y }
       this.scene.add(m)
@@ -1251,7 +1267,7 @@ export default class GroundRenderer {
       if (!poly?.length) continue
       const c = { x: poly.reduce((s, v) => s + v.x, 0) / poly.length, y: poly.reduce((s, v) => s + v.y, 0) / poly.length }
       const mesh = new THREE.Mesh(blockGeo, blockMat)
-      mesh.position.set(c.x, 0.09, c.y)
+      mesh.position.set(c.x, GROUND_Y + 0.015, c.y)
       mesh.userData = { kind: 'block', id: b.id, blockType: b.blockType, districtId: b.districtId }
       mesh.visible = this.showDebug && this._blockCentersVisible
       this.scene.add(mesh)
@@ -1260,7 +1276,7 @@ export default class GroundRenderer {
 
       for (const s of (b.seeds || [])) {
         const sm = new THREE.Mesh(seedGeo, seedMat)
-        sm.position.set(s.x, 0.092, s.y)
+        sm.position.set(s.x, GROUND_Y + 0.017, s.y)
         sm.visible = this.showDebug && this._blockCentersVisible
         this.scene.add(sm)
         this.debugObjects.push(sm)
@@ -1279,7 +1295,7 @@ export default class GroundRenderer {
       const cx = poly.reduce((s, v) => s + v.x, 0) / poly.length
       const cy = poly.reduce((s, v) => s + v.y, 0) / poly.length
       const m = new THREE.Mesh(geo, mat)
-      m.position.set(cx, 0.091, cy)
+      m.position.set(cx, GROUND_Y + 0.016, cy)
       m.visible = this.showDebug && this._plotCentersVisible
       m.userData = { kind: 'plot', id: p.id, blockId: p.blockId, districtId: p.districtId, blockType: p.blockType ?? 'normal', streetEdges: p.streetEdges?.length ?? 0 }
       this.scene.add(m)

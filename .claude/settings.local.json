@@ -43,7 +43,10 @@
       "Bash(node --check server/engine/CityGenerator/StreetVoronoiGenerator.js)",
       "Bash(node --check client/rendering/GroundRenderer.js)",
       "Bash(cd /k/UnityProjects/Guild-Wars/guild-wars-web && grep -n \"_buildFences\\\\|_ensureLib\\(\\).then\" client/rendering/GroundRenderer.js)",
-      "Read(//k/k/UnityProjects/Guild-Wars/guild-wars-web/client/rendering/**)"
+      "Read(//k/k/UnityProjects/Guild-Wars/guild-wars-web/client/rendering/**)",
+      "Bash(node -e ' *)",
+      "Bash(node --check server/engine/voronoi/VoronoiUtils.js)",
+      "Bash(node --input-type=module -e ' *)"
     ]
   }
 }

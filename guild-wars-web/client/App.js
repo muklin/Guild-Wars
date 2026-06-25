@@ -305,8 +305,9 @@ export default class App {
     this.renderer.renderGutters(cityData.streetGraph)
     this.renderer.renderBlocks(cityData.blocks)
     this.renderer.renderPlots(cityData.plots, cityData)
+    this.renderer.renderTerrainPlots(cityData.terrainPlots)
     this.renderer.drawBlockCenters(cityData.blocks)
-    this.renderer.drawPlotCenters(cityData.plots)
+    this.renderer.drawPlotCenters([...(cityData.plots || []), ...(cityData.terrainPlots || [])])
     this.renderer.drawStreetSeeds(cityData.streetGraph)
   }
 

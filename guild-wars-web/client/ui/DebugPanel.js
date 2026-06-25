@@ -52,10 +52,66 @@ export default class DebugPanel {
       if (typeof window.__setPerfLog === 'function') window.__setPerfLog(on)
     }))
 
+    const sep2 = document.createElement('div')
+    sep2.style.cssText = 'border-top:1px solid #444;margin:7px 0'
+    el.appendChild(sep2)
+
+    el.appendChild(this._plotDebugRow())
+
     el.addEventListener('click',     e => e.stopPropagation())
     el.addEventListener('mousedown', e => e.stopPropagation())
     document.body.appendChild(el)
     this._el = el
+  }
+
+  _plotDebugRow() {
+    const wrap = document.createElement('div')
+    wrap.style.cssText = 'display:flex;align-items:center;gap:5px;padding:2px 0'
+
+    const label = document.createElement('span')
+    label.textContent = 'Plot ID'
+    label.style.cssText = 'font-size:11px;color:#ccc;flex-shrink:0'
+
+    const input = document.createElement('input')
+    input.type = 'number'
+    input.placeholder = 'id'
+    input.style.cssText = [
+      'width:60px', 'background:#222', 'border:1px solid #555', 'border-radius:3px',
+      'color:#eee', 'font:11px monospace', 'padding:2px 4px', 'outline:none',
+    ].join(';')
+
+    const btn = document.createElement('button')
+    btn.textContent = 'Go'
+    btn.style.cssText = [
+      'background:#2a5', 'border:none', 'border-radius:3px', 'color:#fff',
+      'font:11px monospace', 'padding:2px 8px', 'cursor:pointer',
+    ].join(';')
+
+    const status = document.createElement('span')
+    status.style.cssText = 'font-size:10px;color:#aaa;margin-left:2px'
+
+    const run = () => {
+      const id = parseInt(input.value)
+      if (isNaN(id)) { status.textContent = '?'; return }
+      const msg = this.renderer.debugPlotWings(id)
+      status.textContent = msg ?? ''
+    }
+
+    btn.addEventListener('click', run)
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') run() })
+
+    wrap.appendChild(label)
+    wrap.appendChild(input)
+    wrap.appendChild(btn)
+
+    const statusRow = document.createElement('div')
+    statusRow.style.cssText = 'font-size:10px;color:#aaa;margin-top:1px;min-height:14px'
+    statusRow.appendChild(status)
+
+    const container = document.createElement('div')
+    container.appendChild(wrap)
+    container.appendChild(statusRow)
+    return container
   }
 
   _row(label, initialOn, onChange) {

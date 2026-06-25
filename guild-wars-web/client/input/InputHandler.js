@@ -13,6 +13,20 @@ export default class InputHandler {
     document.addEventListener('click', (e) => this.onMouseClick(e))
     document.addEventListener('mousemove', (e) => this.onMouseMove(e))
     document.addEventListener('keydown',  (e) => this.onkeypress(e))
+    this._coordDisplay = this._buildCoordDisplay()
+  }
+
+  _buildCoordDisplay() {
+    const el = document.createElement('div')
+    el.style.cssText = [
+      'position:fixed', 'top:10px', 'left:10px', 'z-index:50',
+      'background:#111c', 'border:1px solid #555', 'border-radius:5px',
+      'padding:6px 10px', 'color:#4ade80', 'font:12px/1.4 monospace',
+      'pointer-events:none', 'display:none',
+      'box-shadow:0 4px 16px #0008', 'letter-spacing:0.04em',
+    ].join(';')
+    document.body.appendChild(el)
+    return el
   }
 
   setTerrainData(data) {
@@ -106,8 +120,29 @@ export default class InputHandler {
     }
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
     const debug = this.renderer.showDebug
+    const isTopDown = this.renderer.cameraController?._topDown
+    if (this._coordDisplay) {
+      if (debug && isTopDown) {
+        this._coordDisplay.textContent = `X: ${worldPos.x.toFixed(3)}  Y: ${worldPos.y.toFixed(3)}`
+        this._coordDisplay.style.display = 'block'
+      } else {
+        this._coordDisplay.style.display = 'none'
+      }
+    }
 
     if (this.renderer.mode === 'city') {
+      // Non-debug city hover (district/region selection)
+      const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
+      if (district) { 
+        this.renderer.setDistrictHover(district.id); this._hideTooltip(); 
+      }
+      const guildSetup = this.renderer.guildSetupActive
+      if (!guildSetup) {
+        const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
+        if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); this._hideTooltip(); }
+        const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+        if (region) { this.renderer.setRegionHover(region.id); this._hideTooltip(); }
+      }
       if (debug) {
         // Debug dot priority: block > plot > street junction seed > district center
         // Thresholds are ~1.5× the sphere visual radius so hovering is responsive
@@ -188,18 +223,7 @@ export default class InputHandler {
         return
       }
 
-      // Non-debug city hover (district/region selection)
-      const guildSetup = this.renderer.guildSetupActive
-      if (!guildSetup) {
-        const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
-        if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); this._hideTooltip(); return }
-      }
-      const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
-      if (district) { this.renderer.setDistrictHover(district.id); this._hideTooltip(); return }
-      if (!guildSetup) {
-        const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-        if (region) { this.renderer.setRegionHover(region.id); this._hideTooltip(); return }
-      }
+      
       this.renderer.clearHover()
       this._hideTooltip()
       return
