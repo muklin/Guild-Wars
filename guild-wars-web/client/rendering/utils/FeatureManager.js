@@ -40,26 +40,6 @@ const FEATURES = {
     scaleVariation: 0.15,
     minScale: 0.10
   },
-  sea: {
-    glbPath: '/resources/Models/sea.glb',
-    strategy: 'scatter',
-    count: 20,
-    baseScale: 0.3,
-    scaleVariation: 0.5,
-    minScale: 0.3,
-    leanMax: 0.1 ,
-    billboardY: true,   // Y rotation tracks camera azimuth each frame
-  },
-  lake: {
-    glbPath: '/resources/Models/lake.glb',
-    strategy: 'scatter',
-    count: 5,
-    baseScale: 1,
-    scaleVariation: 1,
-    minScale: 1 ,
-    leanMax: 0 ,
-    billboardY: true,   // Y rotation tracks camera azimuth each frame
-  },
   bridge: {
     glbPath: '/resources/Models/bridge.glb',
     strategy: 'absolute',

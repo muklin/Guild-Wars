@@ -6,6 +6,7 @@ import EventBus from './core/EventBus.js'
 import { preloadModels } from './rendering/utils/FeatureManager.js'
 import LiveSync from './net/LiveSync.js'
 import MultiplayerUI from './ui/MultiplayerUI.js'
+import EventCardManager from './ui/EventCardManager.js'
 import config from './config.js'
 import DebugPanel from './ui/DebugPanel.js'
 export default class App {
@@ -60,7 +61,9 @@ export default class App {
 
       // Networked play: a live-sync channel re-pulls state whenever the server
       // broadcasts, and the connect screen lets the player Join or Play Solo.
-      this.liveSync = new LiveSync(() => this.refreshFromServer())
+      this.eventCardManager = new EventCardManager()
+      this.eventCardManager.mount()
+      this.liveSync = new LiveSync((event) => this.refreshFromServer(event))
       this.liveSync.connect()
       this.multiplayerUI = new MultiplayerUI(this)
       this.multiplayerUI.mount()
@@ -83,28 +86,10 @@ export default class App {
     this.eventBus.on('EDGE_APPLY',           (data) => this._handleEdgeApply(data))
 
     this.eventBus.on('TERRAIN_COMPLETE', async () => {
-      const customized = this._countCustomizedTerrain()
-      if (customized < this.playerCount) {
-        this.uiManager.showConfirm(
-          `Less than the recommended terrain Types defined (${this.playerCount} per player)`,
-          'Continue',
-          () => this._doFinishTerrain()
-        )
-        return
-      }
       await this._doFinishTerrain()
     })
 
     this.eventBus.on('SUBDIVISION_COMPLETE', async () => {
-      const assigned = this._countAssignedDistricts()
-      if (assigned < this.playerCount) {
-        this.uiManager.showConfirm(
-          `Only ${assigned} district${assigned !== 1 ? 's' : ''} assigned (minimum ${this.playerCount} per player). Continue anyway?`,
-          'Ignore',
-          () => this._doFinishSubdivision()
-        )
-        return
-      }
       await this._doFinishSubdivision()
     })
 
@@ -186,6 +171,10 @@ export default class App {
 
     this.eventBus.on('FACTION_HOVER', (faction) => this.renderer.highlightFaction(faction))
     this.eventBus.on('FACTION_HOVER_END', () => this.renderer.clearFactionHighlight())
+    this.eventBus.on('GUILD_FACTION_HOVER', (hq) => this.renderer.setHQHover(hq.kind, hq.refId))
+    this.eventBus.on('GUILD_FACTION_HOVER_END', () => this.renderer.clearHQHover())
+    this.eventBus.on('GUILD_FACTION_CLICK', (hq) => this.renderer.focusOnHQ(hq))
+    this.eventBus.on('GUILD_FACTION_DBLCLICK', () => this.uiManager.guildPanel.toggle())
 
     // ── Guild setup ──
     // Close the panel and enter pick mode; cursor + hover handled by InputHandler.
@@ -216,6 +205,12 @@ export default class App {
       } catch (e) {
         console.warn('setGuildHeadquarters failed:', e)
       }
+    })
+
+    // Panel requesting snapshot re-render after reload (snapshot not persisted).
+    this.eventBus.on('HQ_SNAPSHOT_REQUEST', (hq) => {
+      const dataUrl = this.renderer.captureHQSnapshot(hq)
+      if (dataUrl) this.uiManager.guildPanel.setHQSnapshot(dataUrl)
     })
 
     // User cancelled pick mode without applying — just close pick mode.
@@ -353,15 +348,15 @@ export default class App {
     this._refreshTerrainPanel()
   }
 
-  async _handleTerrainApply({ description }) {
+  async _handleTerrainApply({ name, description }) {
     if (this.selectedRegionId === null || !this.pendingTerrainType) return
     const regionId = this.selectedRegionId
     const terrainType = this.pendingTerrainType
     try {
-      const response = await GameAPI.assignTerrain(regionId, terrainType, description)
+      const response = await GameAPI.assignTerrain(regionId, terrainType, description, name)
       if (response.ok) {
         const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
-        if (region) { region.assignedType = terrainType; region.description = description }
+        if (region) { region.assignedType = terrainType; region.name = name; region.description = description }
         this.renderer.updateRegionColor(regionId, terrainType)
         this.renderer.deselectRegion(regionId)
         this.renderer.clearHover()
@@ -490,16 +485,16 @@ export default class App {
     this._refreshTerrainPanel()
   }
 
-  async _handleEdgeApply({ description }) {
+  async _handleEdgeApply({ name, description }) {
     if (this.selectedEdgeIds.size === 0 || !this.pendingEdgeType) return
     const edgeIds = [...this.selectedEdgeIds]
     const edgeType = this.pendingEdgeType
     try {
       for (const edgeId of edgeIds) {
-        const response = await GameAPI.assignEdge(edgeId, edgeType, description)
+        const response = await GameAPI.assignEdge(edgeId, edgeType, description, name)
         if (response.ok) {
           const edge = this.renderer.terrainData?.edges?.[edgeId]
-          if (edge) { edge.assignedType = edgeType; edge.description = description }
+          if (edge) { edge.assignedType = edgeType; edge.name = name; edge.description = description }
           this.renderer.updateEdgeColor(edgeId, edgeType)
         } else {
           this.uiManager.showError(response.error)
@@ -629,24 +624,47 @@ export default class App {
   }
 
   _refreshTerrainPanel() {
+    const panel = this.uiManager.terrainTypePanel
+    if (!panel) return
+
     if (this.selectedRegionId !== null) {
       const region = this.renderer.terrainData?.regions?.find(r => r.id === this.selectedRegionId)
-      this.uiManager.terrainTypePanel?.showContext('region', {
+      if (region?.vertices?.length) panel.setAnchorPoints(region.vertices)
+      else if (region?.seedPoint) panel.setAnchorPoints([{ x: region.seedPoint.x, y: region.seedPoint.y }])
+      panel.showContext('region', {
         pendingType: this.pendingTerrainType,
         isEdge: region?.isEdge ?? false,
         adjacentTypes: this._getAdjacentTypes(this.selectedRegionId)
       })
     } else if (this.selectedEdgeIds.size > 0) {
-      const firstEdgeId = [...this.selectedEdgeIds][0]
-      this.uiManager.terrainTypePanel?.showContext('edge', {
+      const edgePts = this._getEdgeWorldPoints()
+      if (edgePts.length) panel.setAnchorPoints(edgePts)
+      panel.showContext('edge', {
         edgeCount: this.selectedEdgeIds.size,
         pendingType: this.pendingEdgeType,
-        adjacentTypes: firstEdgeId ? this._getEdgeAdjacentTypes(firstEdgeId) : [],
+        adjacentTypes: this._getFirstEdgeAdjacentTypes(),
         riverDisabledReason: this._getRiverDisabledReason(this.selectedEdgeIds)
       })
     } else {
-      this.uiManager.terrainTypePanel?.showContext('none')
+      panel.showContext('none')
     }
+  }
+
+  _getEdgeWorldPoints() {
+    const pts = []
+    for (const edgeId of this.selectedEdgeIds) {
+      const edge = this.renderer.terrainData?.edges?.[edgeId]
+      for (const ptId of edge?.pointIds || []) {
+        const p = this.renderer.edgePointsById.get(ptId)
+        if (p) pts.push({ x: p.x, y: p.y })
+      }
+    }
+    return pts
+  }
+
+  _getFirstEdgeAdjacentTypes() {
+    const firstEdgeId = [...this.selectedEdgeIds][0]
+    return firstEdgeId ? this._getEdgeAdjacentTypes(firstEdgeId) : []
   }
 
   // ── City district ───────────────────────────────────────────────────────────
@@ -728,13 +746,14 @@ export default class App {
     this._refreshDistrictPanel()
   }
 
-  async _handleTerrainDistrictAssign(regionId, districtType, description = '', producedResource = '', consumedResources = []) {
+  async _handleTerrainDistrictAssign(regionId, districtType, description = '', producedResource = '', consumedResources = [], name = '') {
     try {
-      const response = await GameAPI.assignTerrainDistrict(regionId, districtType, description, producedResource, consumedResources)
+      const response = await GameAPI.assignTerrainDistrict(regionId, districtType, description, producedResource, consumedResources, name)
       if (response.ok) {
         const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
         if (region) {
           region.terrainDistrict = districtType
+          region.terrainDistrictName = name || ''
           region.terrainDistrictProducedResource = producedResource || null
         }
         this.renderer.deselectRegion(regionId)
@@ -788,16 +807,17 @@ export default class App {
   }
 
   // Apply = lock the district in. Validates + commits resources server-side.
-  async _handleDistrictApply({ description, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass }) {
+  async _handleDistrictApply({ name, description, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass }) {
     if (this.selectedDistrictId === null || !this.pendingDistrictType) return
     const districtId = this.selectedDistrictId
     const districtType = this.pendingDistrictType
     try {
-      const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource)
+      const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource, name)
       if (response.ok) {
         const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === districtId)
         if (district) {
           district.assignedType = districtType
+          district.name = name || ''
           district.residentialClass = residentialClass || null
           district.LeadershipClass = LeadershipClass || null
           district.description = description
@@ -887,20 +907,20 @@ export default class App {
     this._refreshDistrictPanel()
   }
 
-  async _handleCityEdgeApply({ description }) {
+  async _handleCityEdgeApply({ name, description }) {
     if (this.selectedCityEdgeIds.size === 0 || !this.pendingCityEdgeType) return
     const edgeIds = [...this.selectedCityEdgeIds]
     const edgeType = this.pendingCityEdgeType
     try {
       let lastCityData = null
       for (const edgeId of edgeIds) {
-        const response = await GameAPI.assignCityEdge(edgeId, edgeType, description)
+        const response = await GameAPI.assignCityEdge(edgeId, edgeType, description, name)
         if (response.ok) {
           if (response.cityDistrictData) {
             lastCityData = response.cityDistrictData
           } else {
             const edge = this.renderer.cityDistrictData?.edges?.[edgeId]
-            if (edge) { edge.assignedType = edgeType; edge.description = description }
+            if (edge) { edge.assignedType = edgeType; edge.name = name; edge.description = description }
             this.renderer.updateCityEdgeColor(edgeId, edgeType)
           }
         } else {
@@ -996,13 +1016,17 @@ export default class App {
   }
 
   _refreshDistrictPanel() {
+    const panel = this.uiManager.districtTypePanel
+    if (!panel) return
     const shared = {
       threats: this.threats,
       tradingDestinations: this.tradingDestinations
     }
     if (this.selectedTerrainRegionId !== null) {
       const region = this.renderer.terrainData?.regions?.find(r => r.id === this.selectedTerrainRegionId)
-      this.uiManager.districtTypePanel?.showContext('terrainRegion', {
+      if (region?.vertices?.length) panel.setAnchorPoints(region.vertices)
+      else if (region?.seedPoint) panel.setAnchorPoints([{ x: region.seedPoint.x, y: region.seedPoint.y }])
+      panel.showContext('terrainRegion', {
         regionType: region?.assignedType,
         isEdge: region?.isEdge ?? false,
         hasDistrict: !!region?.terrainDistrict,
@@ -1015,7 +1039,11 @@ export default class App {
       return
     }
     if (this.selectedDistrictId !== null) {
-      this.uiManager.districtTypePanel?.showContext('district', {
+      const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === this.selectedDistrictId)
+      const poly = district?.polygon || district?.boundary
+      if (poly?.length) panel.setAnchorPoints(poly)
+      else if (district?.seedPoint) panel.setAnchorPoints([{ x: district.seedPoint.x, y: district.seedPoint.y }])
+      panel.showContext('district', {
         pendingType: this.pendingDistrictType,
         residentialClass: this.pendingResidentialClass,
         LeadershipClass: this.pendingLeadershipClass,
@@ -1024,15 +1052,24 @@ export default class App {
         ...shared
       })
     } else if (this.selectedCityEdgeIds.size > 0) {
+      const edgePts = []
+      for (const edgeId of this.selectedCityEdgeIds) {
+        const edge = this.renderer.cityDistrictData?.edges?.[edgeId]
+        for (const ptId of edge?.pointIds || []) {
+          const p = this.renderer.cityEdgePointsById.get(ptId)
+          if (p) edgePts.push({ x: p.x, y: p.y })
+        }
+      }
+      if (edgePts.length) panel.setAnchorPoints(edgePts)
       const nearWater = [...this.selectedCityEdgeIds].every(id => this._isCityEdgeNearWater(id))
-      this.uiManager.districtTypePanel?.showContext('cityEdge', {
+      panel.showContext('cityEdge', {
         edgeCount: this.selectedCityEdgeIds.size,
         pendingType: this.pendingCityEdgeType,
         nearWater,
         ...shared
       })
     } else {
-      this.uiManager.districtTypePanel?.showContext('none', shared)
+      panel.showContext('none', shared)
     }
   }
 
@@ -1059,13 +1096,15 @@ export default class App {
   // Re-pull and re-render from the server without ever auto-initialising a game.
   // Called on every live-sync nudge and after lobby/turn actions. Safe during the
   // Lobby (no world yet) — it just refreshes the multiplayer overlay.
-  async refreshFromServer() {
+  async refreshFromServer(event = null) {
     try {
       const state = await GameAPI.getState()
       this.multiplayerUI?.update(state.multiplayer, state.setupStep)
       // Solo play (no seat joined) drives rendering through the incremental action
       // handlers, exactly as before — ignore live-sync nudges for rendering.
       if (!config.seatKey) return
+      // Show Event Card for this declaration (all players, including the declaring player).
+      if (event) this.eventCardManager?.show(event, state.multiplayer?.meSeatId ?? null)
       // Don't clobber an in-progress local edit (a pending selection/form) with a
       // full re-render triggered by our own broadcast. Others (no pending edit) still
       // reconcile live.
@@ -1095,6 +1134,7 @@ export default class App {
     const setupStep = state.setupStep || 'Terrain'
     this.gameState = state
     this.currentPhase = setupStep
+    this.uiManager.setPlayerName(this._myPlayerName())
     this.renderer.setTerrainData(
       regions,
       state.worldTerrainData.edges || {},

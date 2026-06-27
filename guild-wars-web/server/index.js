@@ -35,7 +35,8 @@ const mp = new MultiplayerManager()
 let broadcast = () => {}
 
 // Auto-save after any mutation, then notify all clients to refetch.
-async function autoSave() {
+// Pass an event descriptor to broadcast it alongside the sync nudge.
+async function autoSave(event = null) {
   try {
     await saveGame('autosave', {
       gameState: gameStateManager.serialize(),
@@ -45,7 +46,7 @@ async function autoSave() {
   } catch (e) {
     console.error('Auto-save failed:', e.message)
   }
-  broadcast()
+  broadcast(event)
 }
 
 // Auto-load on startup
@@ -260,9 +261,10 @@ app.post('/api/setup/init', async (req, res) => {
 // POST /api/setup/terrain/assign - Assign terrain to region
 app.post('/api/setup/terrain/assign', requireActiveSeat, async (req, res) => {
   try {
-    const { regionId, terrainType, description } = req.body
-    const result = setupPhase.assignTerrainToRegion(regionId, terrainType, description)
-    await autoSave()
+    const { regionId, terrainType, description, name } = req.body
+    const result = setupPhase.assignTerrainToRegion(regionId, terrainType, description, name)
+    const seat = seatOf(req)
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Terrain', entityName: name?.trim() || terrainType, vetoable: true } : null)
     res.json({
       ok: result.ok,
       clearedEdgeIds: result.clearedEdgeIds,
@@ -280,9 +282,10 @@ app.post('/api/setup/terrain/assign', requireActiveSeat, async (req, res) => {
 
 app.post('/api/setup/terrain/edge', requireActiveSeat, async (req, res) => {
   try {
-    const { edgeId, edgeType, description } = req.body
-    const result = setupPhase.assignEdgeType(edgeId, edgeType, description)
-    await autoSave()
+    const { edgeId, edgeType, description, name } = req.body
+    const result = setupPhase.assignEdgeType(edgeId, edgeType, description, name)
+    const seat = seatOf(req)
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Edge', entityName: name?.trim() || edgeType, vetoable: true } : null)
     res.json({
       ok: result.ok,
       edges: gameStateManager.worldTerrainData.edges,
@@ -320,7 +323,8 @@ app.post('/api/setup/threat', requireActiveSeat, async (req, res) => {
   try {
     const { regionId, description, name } = req.body
     const result = setupPhase.addThreat(regionId, description, name)
-    await autoSave()
+    const seat = seatOf(req)
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Threat', entityName: name || 'Threat', vetoable: true } : null)
     res.json({ ok: true, threats: result.threats, factions: setupPhase.factions, log: result.log })
   } catch (error) {
     console.error('Add threat error:', error)
@@ -333,7 +337,8 @@ app.post('/api/setup/trade', requireActiveSeat, async (req, res) => {
   try {
     const { regionId, description, name, buys, sells } = req.body
     const result = setupPhase.addTradingDestination(regionId, description, name, buys, sells)
-    await autoSave()
+    const seat = seatOf(req)
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Trading Destination', entityName: name || 'Trade Route', vetoable: true } : null)
     res.json({ ok: true, tradingDestinations: result.tradingDestinations, trade: result.trade, factions: result.factions, resourceRegistry: result.resourceRegistry, log: result.log })
   } catch (error) {
     console.error('Add trade error:', error)
@@ -357,9 +362,11 @@ app.post('/api/setup/city/preview', requireActiveSeat, async (req, res) => {
 // POST /api/setup/city/assign - Apply (lock) a city district with its resources
 app.post('/api/setup/city/assign', requireActiveSeat, async (req, res) => {
   try {
-    const { districtId, districtType, description, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass } = req.body
-    const result = setupPhase.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource)
-    await autoSave()
+    const { districtId, districtType, description, name, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass } = req.body
+    const result = setupPhase.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource, name)
+    const seat = seatOf(req)
+    const entityName = name?.trim() || residentialClass || LeadershipClass || districtType
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'District', entityName, vetoable: true } : null)
     res.json({ ok: result.ok, resourceRegistry: result.resourceRegistry, factions: result.factions, cityDistrictData: gameStateManager.cityDistrictData, log: result.log })
   } catch (error) {
     console.error('District assign error:', error)
@@ -396,9 +403,10 @@ app.post('/api/setup/city/revert', requireActiveSeat, async (req, res) => {
 // POST /api/setup/city/edge - Assign type to a city edge
 app.post('/api/setup/city/edge', requireActiveSeat, async (req, res) => {
   try {
-    const { edgeId, edgeType, description } = req.body
-    const result = setupPhase.assignCityEdgeType(edgeId, edgeType, description)
-    await autoSave()
+    const { edgeId, edgeType, description, name } = req.body
+    const result = setupPhase.assignCityEdgeType(edgeId, edgeType, description, name)
+    const seat = seatOf(req)
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'City Edge', entityName: name?.trim() || edgeType, vetoable: true } : null)
     res.json({ ok: result.ok, cityDistrictData: gameStateManager.cityDistrictData, log: result.log })
   } catch (error) {
     console.error('City edge assign error:', error)
@@ -429,9 +437,10 @@ app.post('/api/setup/subdivision/assign', requireActiveSeat, async (req, res) =>
 // POST /api/setup/terrain-district - Assign a district type to a terrain region
 app.post('/api/setup/terrain-district', requireActiveSeat, async (req, res) => {
   try {
-    const { regionId, districtType, description, producedResource, consumedResources } = req.body
-    const result = setupPhase.assignTerrainDistrict(regionId, districtType, description, producedResource, consumedResources)
-    await autoSave()
+    const { regionId, districtType, description, name, producedResource, consumedResources } = req.body
+    const result = setupPhase.assignTerrainDistrict(regionId, districtType, description, producedResource, consumedResources, name)
+    const seat = seatOf(req)
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'District', entityName: name?.trim() || districtType, vetoable: true } : null)
     res.json({ ok: true, resourceRegistry: result.resourceRegistry, factions: result.factions, log: result.log })
   } catch (error) {
     console.error('Terrain district assign error:', error)
@@ -755,8 +764,8 @@ wss.on('connection', (socket) => {
   })
 })
 
-broadcast = () => {
-  const payload = JSON.stringify({ type: 'sync' })
+broadcast = (event = null) => {
+  const payload = JSON.stringify({ type: 'sync', event: event ?? null })
   for (const client of wss.clients) {
     if (client.readyState === 1 /* OPEN */) client.send(payload)
   }

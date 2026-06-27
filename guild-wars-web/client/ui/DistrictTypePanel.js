@@ -1,4 +1,5 @@
 import TerrainColors from '../rendering/TerrainColors.js'
+import NameDialog from './NameDialog.js'
 
 const DISTRICT_TYPES = [
   'Residential', 'Market',
@@ -27,44 +28,99 @@ const TERRAIN_EDGE_ACTIONS = [
   { action: 'Trade',   label: 'Trade Route', color: '#3a3010', border: '#998800' },
 ]
 
+const PANEL_GAP = 16
+const PANEL_WIDTH = 220
+
 export default class DistrictTypePanel {
-  constructor(eventBus) {
+  constructor(eventBus, renderer) {
     this.eventBus = eventBus
-    this.container = null
+    this.renderer = renderer
+    this._anchorPoints = []
+    this._el = null
+    this._cameraCB = null
+    this._build()
   }
 
-  render(container) {
-    this.container = container
-    container.style.cssText += ';display:flex;flex-direction:column;height:100%;box-sizing:border-box;overflow:hidden'
-    this.showContext('none')
+  _build() {
+    const el = document.createElement('div')
+    el.style.cssText = [
+      'position:fixed', 'z-index:25', `width:${PANEL_WIDTH}px`,
+      'background:#000', 'border:2px solid #444', 'border-radius:4px',
+      'color:#fff', 'font-family:Arial', 'padding:10px',
+      'box-sizing:border-box', 'display:none', 'pointer-events:auto',
+      'overflow-y:auto', 'max-height:80vh'
+    ].join(';')
+    el.addEventListener('click',     (e) => e.stopPropagation())
+    el.addEventListener('mousedown', (e) => e.stopPropagation())
+    document.body.appendChild(el)
+    this._el = el
+
+    this._cameraCB = () => this._reposition()
+    this.renderer.addCameraMoveCallback(this._cameraCB)
+  }
+
+  setAnchorPoints(pts) {
+    this._anchorPoints = pts
+  }
+
+  _reposition() {
+    if (this._el.style.display === 'none') return
+    if (!this._anchorPoints?.length) return
+
+    const pts = this._anchorPoints.map(p => this.renderer.worldToScreen(p.x, 0, p.y))
+    const minX = Math.min(...pts.map(p => p.x))
+    const maxX = Math.max(...pts.map(p => p.x))
+    const minY = Math.min(...pts.map(p => p.y))
+    const maxY = Math.max(...pts.map(p => p.y))
+    const midY = (minY + maxY) / 2
+    const midX = (minX + maxX) / 2
+
+    const panelH = this._el.offsetHeight || 300
+    const margin = 8
+
+    const rightLeft = maxX + PANEL_GAP
+    if (rightLeft + PANEL_WIDTH < window.innerWidth - margin) {
+      this._el.style.left = rightLeft + 'px'
+      this._el.style.top  = Math.max(margin, Math.min(midY - panelH / 2, window.innerHeight - panelH - margin)) + 'px'
+    } else {
+      this._el.style.left = Math.max(margin, Math.min(midX - PANEL_WIDTH / 2, window.innerWidth - PANEL_WIDTH - margin)) + 'px'
+      this._el.style.top  = Math.max(margin, minY - panelH - PANEL_GAP) + 'px'
+    }
   }
 
   showContext(type, options = {}) {
-    if (!this.container) return
-    this.container.innerHTML = ''
+    if (!this._el) return
+    this._el.innerHTML = ''
 
-    // ── Top section: main content (scrollable, fills space)
-    const section1 = document.createElement('div')
-    section1.style.cssText = 'flex:1;overflow-y:auto;min-height:0;padding-bottom:4px'
-
-    if (type === 'district') {
-      this._buildDistrictContent(section1, options)
-    } else if (type === 'cityEdge') {
-      this._buildCityEdgeContent(section1, options)
-    } else if (type === 'terrainRegion') {
-      this._buildTerrainRegionContent(section1, options)
+    if (type === 'none') {
+      this._el.style.display = 'none'
+      return
     }
 
-    this.container.appendChild(section1)
+    const main = document.createElement('div')
+    if (type === 'district') {
+      this._buildDistrictContent(main, options)
+    } else if (type === 'cityEdge') {
+      this._buildCityEdgeContent(main, options)
+    } else if (type === 'terrainRegion') {
+      this._buildTerrainRegionContent(main, options)
+    }
+    this._el.appendChild(main)
 
-    // ── Bottom section: threats + trade lists (fixed, no Add buttons)
     const bottom = document.createElement('div')
-    bottom.style.cssText = 'flex-shrink:0;border-top:1px solid #444;padding-top:6px;overflow-y:auto;max-height:44%'
+    bottom.style.cssText = 'border-top:1px solid #444;padding-top:6px;margin-top:6px'
     this._buildThreatList(bottom, options)
     bottom.appendChild(this._divider())
     this._buildTradeList(bottom, options)
-    this.container.appendChild(bottom)
+    this._el.appendChild(bottom)
+
+    this._el.style.display = 'block'
+    this._reposition()
   }
+
+  // Legacy no-ops — kept so existing call sites don't crash
+  render() {}
+  addFinishButton() {}
 
   // ── Section builders ──────────────────────────────────────────────────────
 
@@ -130,47 +186,25 @@ export default class DistrictTypePanel {
 
     // ── Threat form ──
     if (pendingAction === 'Threat') {
-      const nameLabel = document.createElement('div')
-      nameLabel.textContent = 'Threat Name'
-      nameLabel.style.cssText = 'font-size:10px;color:#777;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px'
-      container.appendChild(nameLabel)
-
-      const nameInput = document.createElement('input')
-      nameInput.id = 'terrain-threat-name'
-      nameInput.type = 'text'
-      nameInput.placeholder = 'Name this threat...'
-      nameInput.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #994444;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:6px'
-      container.appendChild(nameInput)
-
-      const nameWarn = document.createElement('div')
-      nameWarn.style.cssText = 'font-size:10px;color:#ff6666;margin-bottom:4px;display:none'
-      nameWarn.textContent = 'A name is required.'
-      container.appendChild(nameWarn)
-
-      const descLabel = document.createElement('div')
-      descLabel.textContent = 'Description'
-      descLabel.style.cssText = 'font-size:10px;color:#777;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px'
-      container.appendChild(descLabel)
-
-      const textarea = document.createElement('textarea')
-      textarea.id = 'terrain-threat-description'
-      textarea.placeholder = 'Optional notes...'
-      textarea.style.cssText = 'width:100%;height:56px;background:#1a1a1a;color:#fff;border:1px solid #994444;border-radius:3px;padding:4px;font-size:11px;resize:none;box-sizing:border-box;margin-bottom:6px'
-      container.appendChild(textarea)
-
       const applyBtn = document.createElement('button')
       applyBtn.textContent = 'Apply Threat'
       applyBtn.style.cssText = 'width:100%;padding:7px;background:#6b1a1a;color:#fff;border:1px solid #994444;border-radius:3px;cursor:pointer;font-weight:bold;font-size:12px'
       applyBtn.addEventListener('click', () => {
-        const name = document.getElementById('terrain-threat-name')?.value?.trim() || ''
-        if (!name) { nameWarn.style.display = 'block'; return }
-        nameWarn.style.display = 'none'
-        const desc = document.getElementById('terrain-threat-description')?.value?.trim() || ''
         applyBtn.disabled = true
-        applyBtn.textContent = 'Applying...'
         applyBtn.style.opacity = '0.6'
         applyBtn.style.cursor = 'default'
-        this.eventBus.emit('TERRAIN_THREAT_APPLY', { name, description: desc })
+        const dialog = new NameDialog({
+          entityKind: 'threat', entityLabel: 'Threat', subType: 'Threat',
+          onApply: (name, description) => {
+            this.eventBus.emit('TERRAIN_THREAT_APPLY', { name, description })
+          },
+          onCancel: () => {
+            applyBtn.disabled = false
+            applyBtn.style.opacity = '1'
+            applyBtn.style.cursor = 'pointer'
+          }
+        })
+        dialog.open()
       })
       container.appendChild(applyBtn)
       return
@@ -180,18 +214,6 @@ export default class DistrictTypePanel {
     if (pendingAction === 'Trade') {
       const TRADE_RESOURCES = ['Gold', 'Labour', 'Security', 'Water', 'Basic Food',
         ...resourceRegistry.filter(r => !['gold', 'labour', 'security', 'water', 'basic food'].includes(r.toLowerCase()))]
-
-      const nameLabel = document.createElement('div')
-      nameLabel.textContent = 'Trade Route Name'
-      nameLabel.style.cssText = 'font-size:10px;color:#777;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px'
-      container.appendChild(nameLabel)
-
-      const nameInput = document.createElement('input')
-      nameInput.id = 'terrain-trade-name'
-      nameInput.type = 'text'
-      nameInput.placeholder = 'Name this trade route...'
-      nameInput.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #998800;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:6px'
-      container.appendChild(nameInput)
 
       // Buys / Sells: up to 3 each, ≥1 each. New resources can be typed in.
       const makeGroup = (kind, listId) => {
@@ -222,13 +244,6 @@ export default class DistrictTypePanel {
       makeGroup('buys', 'terrain-trade-buys-list')
       makeGroup('sells', 'terrain-trade-sells-list')
 
-      container.appendChild(this._fieldLabel('Description'))
-      const textarea = document.createElement('textarea')
-      textarea.id = 'terrain-trade-description'
-      textarea.placeholder = 'Optional notes...'
-      textarea.style.cssText = 'width:100%;height:40px;background:#1a1a1a;color:#fff;border:1px solid #998800;border-radius:3px;padding:4px;font-size:11px;resize:none;box-sizing:border-box;margin-bottom:6px'
-      container.appendChild(textarea)
-
       const warn = document.createElement('div')
       warn.style.cssText = 'font-size:10px;color:#ff6666;margin-bottom:4px;display:none'
       container.appendChild(warn)
@@ -237,18 +252,26 @@ export default class DistrictTypePanel {
       applyBtn.textContent = 'Apply Trade Route'
       applyBtn.style.cssText = 'width:100%;padding:7px;background:#6b5a1a;color:#fff;border:1px solid #998800;border-radius:3px;cursor:pointer;font-weight:bold;font-size:12px'
       applyBtn.addEventListener('click', () => {
-        const name = document.getElementById('terrain-trade-name')?.value?.trim() || ''
         const buys = [0, 1, 2].map(i => document.getElementById(`terrain-trade-buys-${i}`)?.value?.trim() || '').filter(Boolean)
         const sells = [0, 1, 2].map(i => document.getElementById(`terrain-trade-sells-${i}`)?.value?.trim() || '').filter(Boolean)
-        if (!name) { warn.textContent = 'A name is required.'; warn.style.display = 'block'; return }
         if (buys.length < 1) { warn.textContent = 'Select at least one resource or service to buy.'; warn.style.display = 'block'; return }
         if (sells.length < 1) { warn.textContent = 'Select at least one resource or service to sell.'; warn.style.display = 'block'; return }
         warn.style.display = 'none'
         applyBtn.disabled = true
-        applyBtn.textContent = 'Applying...'
         applyBtn.style.opacity = '0.6'
         applyBtn.style.cursor = 'default'
-        this.eventBus.emit('TERRAIN_TRADE_APPLY', { name, description: textarea.value.trim(), buys, sells })
+        const dialog = new NameDialog({
+          entityKind: 'trade', entityLabel: 'Trade Route', subType: 'Trade Route',
+          onApply: (name, description) => {
+            this.eventBus.emit('TERRAIN_TRADE_APPLY', { name, description, buys, sells })
+          },
+          onCancel: () => {
+            applyBtn.disabled = false
+            applyBtn.style.opacity = '1'
+            applyBtn.style.cursor = 'pointer'
+          }
+        })
+        dialog.open()
       })
       container.appendChild(applyBtn)
       return
@@ -325,13 +348,6 @@ export default class DistrictTypePanel {
     implicitNote.style.cssText = 'font-size:10px;color:#555;font-style:italic;margin-bottom:5px'
     container.appendChild(implicitNote)
 
-    container.appendChild(this._fieldLabel('Description'))
-    const descInput = document.createElement('textarea')
-    descInput.id = 'terrain-district-description'
-    descInput.placeholder = 'Optional notes...'
-    descInput.style.cssText = 'width:100%;height:40px;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:11px;resize:none;box-sizing:border-box;margin-bottom:6px'
-    container.appendChild(descInput)
-
     const validWarn = document.createElement('div')
     validWarn.style.cssText = 'font-size:10px;color:#ff6666;margin-bottom:4px;display:none'
     container.appendChild(validWarn)
@@ -347,16 +363,20 @@ export default class DistrictTypePanel {
       if (usedProducedResources.includes(produced.toLowerCase())) return
       validWarn.style.display = 'none'
       applyBtn.disabled = true
-      applyBtn.textContent = 'Applying...'
       applyBtn.style.opacity = '0.6'
       applyBtn.style.cursor = 'default'
-      this.eventBus.emit('TERRAIN_DISTRICT_ASSIGN', {
-        regionId,
-        districtType,
-        description: document.getElementById('terrain-district-description')?.value?.trim() || '',
-        producedResource: produced,
-        consumedResources: consumed
+      const dialog = new NameDialog({
+        entityKind: 'terrain-district', entityLabel: districtType, subType: districtType, producedResource: produced,
+        onApply: (name, description) => {
+          this.eventBus.emit('TERRAIN_DISTRICT_ASSIGN', { regionId, districtType, description, producedResource: produced, consumedResources: consumed, name })
+        },
+        onCancel: () => {
+          applyBtn.disabled = false
+          applyBtn.style.opacity = '1'
+          applyBtn.style.cursor = 'pointer'
+        }
       })
+      dialog.open()
     })
     container.appendChild(applyBtn)
   }
@@ -390,13 +410,6 @@ export default class DistrictTypePanel {
       container.appendChild(classGrid)
       if (!LeadershipClass) return
 
-      container.appendChild(this._fieldLabel('Description'))
-      const descInput = document.createElement('textarea')
-      descInput.id = 'district-description'
-      descInput.placeholder = 'Optional notes...'
-      descInput.style.cssText = 'width:100%;height:40px;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:11px;resize:none;box-sizing:border-box;margin-bottom:4px'
-      container.appendChild(descInput)
-
       container.appendChild(this._regenerateStreetsButton())
 
       const clsColor = TerrainColors.get(LeadershipClass)
@@ -406,16 +419,20 @@ export default class DistrictTypePanel {
       applyBtn.style.cssText = `width:100%;padding:7px;background:${applyHex};color:#fff;border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px`
       applyBtn.addEventListener('click', () => {
         applyBtn.disabled = true
-        applyBtn.textContent = 'Applying...'
         applyBtn.style.opacity = '0.6'
         applyBtn.style.cursor = 'default'
-        this.eventBus.emit('DISTRICT_APPLY', {
-          description: document.getElementById('district-description')?.value?.trim() || '',
-          producedResource: '',
-          consumedResources: [],
-          residentialClass: null,
-          LeadershipClass
+        const dialog = new NameDialog({
+          entityKind: 'district', entityLabel: 'Leadership', subType: 'Leadership',
+          onApply: (name, description) => {
+            this.eventBus.emit('DISTRICT_APPLY', { description, producedResource: '', consumedResources: [], residentialClass: null, LeadershipClass, name })
+          },
+          onCancel: () => {
+            applyBtn.disabled = false
+            applyBtn.style.opacity = '1'
+            applyBtn.style.cursor = 'pointer'
+          }
         })
+        dialog.open()
       })
       container.appendChild(applyBtn)
       return
@@ -557,13 +574,6 @@ export default class DistrictTypePanel {
     implicitNote.style.cssText = 'font-size:10px;color:#555;font-style:italic;margin-bottom:5px'
     container.appendChild(implicitNote)
 
-    container.appendChild(this._fieldLabel('Description'))
-    const descInput = document.createElement('textarea')
-    descInput.id = 'district-description'
-    descInput.placeholder = 'Optional notes...'
-    descInput.style.cssText = 'width:100%;height:40px;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:11px;resize:none;box-sizing:border-box;margin-bottom:4px'
-    container.appendChild(descInput)
-
     const color = TerrainColors.get(isResidential ? (residentialClass || 'Residential') : pendingType)
     const hex = '#' + color.toString(16).padStart(6, '0')
     const label = isResidential ? `Residential (${residentialClass})` : pendingType
@@ -596,16 +606,20 @@ export default class DistrictTypePanel {
       }
       validWarn.style.display = 'none'
       applyBtn.disabled = true
-      applyBtn.textContent = 'Applying...'
       applyBtn.style.opacity = '0.6'
       applyBtn.style.cursor = 'default'
-      this.eventBus.emit('DISTRICT_APPLY', {
-        description: document.getElementById('district-description')?.value?.trim() || '',
-        producedResource: produced,
-        secondProducedResource: produced2,
-        consumedResources: consumed,
-        residentialClass: isResidential ? residentialClass : null
+      const dialog = new NameDialog({
+        entityKind: 'district', entityLabel: label, subType: pendingType, producedResource: produced || produced2,
+        onApply: (name, description) => {
+          this.eventBus.emit('DISTRICT_APPLY', { description, producedResource: produced, secondProducedResource: produced2, consumedResources: consumed, residentialClass: isResidential ? residentialClass : null, name })
+        },
+        onCancel: () => {
+          applyBtn.disabled = false
+          applyBtn.style.opacity = '1'
+          applyBtn.style.cursor = 'pointer'
+        }
       })
+      dialog.open()
     })
     container.appendChild(applyBtn)
   }
@@ -639,13 +653,6 @@ export default class DistrictTypePanel {
     }
     container.appendChild(grid)
 
-    container.appendChild(this._fieldLabel('Description'))
-    const descInput = document.createElement('textarea')
-    descInput.id = 'city-edge-description'
-    descInput.placeholder = 'Optional notes...'
-    descInput.style.cssText = 'width:100%;height:48px;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px;font-size:11px;resize:none;box-sizing:border-box'
-    container.appendChild(descInput)
-
     if (pendingType) {
       const color = TerrainColors.get(pendingType)
       const hex = '#' + color.toString(16).padStart(6, '0')
@@ -655,12 +662,20 @@ export default class DistrictTypePanel {
       applyBtn.style.cssText = `width:100%;padding:7px;margin-top:6px;background:${hex};color:#fff;border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px`
       applyBtn.addEventListener('click', () => {
         applyBtn.disabled = true
-        applyBtn.textContent = 'Applying...'
         applyBtn.style.opacity = '0.6'
         applyBtn.style.cursor = 'default'
-        this.eventBus.emit('CITY_EDGE_APPLY', {
-          description: document.getElementById('city-edge-description')?.value?.trim() || ''
+        const dialog = new NameDialog({
+          entityKind: 'cityEdge', entityLabel: displayType, subType: pendingType,
+          onApply: (name, description) => {
+            this.eventBus.emit('CITY_EDGE_APPLY', { description, name })
+          },
+          onCancel: () => {
+            applyBtn.disabled = false
+            applyBtn.style.opacity = '1'
+            applyBtn.style.cursor = 'pointer'
+          }
         })
+        dialog.open()
       })
       container.appendChild(applyBtn)
     }
@@ -720,6 +735,4 @@ export default class DistrictTypePanel {
     el.style.cssText = 'margin-bottom:2px;margin-top:4px;font-size:10px;color:#777;text-transform:uppercase;letter-spacing:0.5px'
     return el
   }
-
-  addFinishButton() {}
 }

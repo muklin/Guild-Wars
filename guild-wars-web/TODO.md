@@ -1,8 +1,6 @@
 
 
 # Bugs:
-- party walls should NOT be removed between buildings.  They should have walls added.  No Windows or doors on those walls.  
-- coming out of Debug mode doesn't revert terrain colours to normal.
 - sometimes Terrain Regions fine voronois are not adjacent.  This results in missing edges.  
 - Fix rooves. Make sure they Gable correctly on the ends of wings.  
 
@@ -26,6 +24,20 @@ change wall generation to use building generation, to allow for turrets, gates, 
 
 ### Resources.  
 When players go to create a new resource, we will popup a dialogue to help them name, choose an icon for, set the initial value of (in gold)
+
+Implement a "resource market" system.  Each Resource has a "global current market value"  This value rises and falls, based on: the scarcity/availability of the resource at the start of the round, (more available, will drop the value, less, increases it, max shift of 10% per round.  When 2x or more as much is available as is needed, the value drops by 10% (capped)). 
+
+All Factions need a gold balance - starts at 100Gp per Faction. Factions will try to barter their goods, selling their goods to the most expensive buyer first, then the closest, if there are ties. 
+
+Buy price is a function of Standing.  50% influcence sets the buy price at the market value.  
+The function is linear, buy price is reduced by 30% when Standing is 100%, increased 30% when influence is 0%.
+
+Each round, during upkeep, the districts will 
+1. create the resources they produce.  The maximum resources a District can create is based on the initial resouce value set by the player.  That is set at 100Gp worth of goods, and saved to the Faction, at creation.  At the start of the round, the amount produced is the max produced multiplied by the current health of the District.  Factions must have the resources that are the inputs/requirements, in  order to do this, as defined by the Resource panel.  Trade Factions are exempt from this rule.  (They don't have resource stockpiles, and always produce their fuil health, no matter what.)
+2. trade with other factions, buying resources they need from factions who have the resource, and selling resources they hold, to factions who need them.  
+
+
+
 
 ### District Definition 
 - When players select a district, they will see a list of the building types, and subtypes available, based on the district type settings, and also sliders, set at the intial defaults, for the amount of those buildings in a district.   These sliders sum to 100% and increasing one slider reduces the others, proportinal to how much weight they all have.  (reducing one slider slowly to 100% would reduce all sliders to 0% at the same time) 

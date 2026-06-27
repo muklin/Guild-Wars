@@ -35,23 +35,27 @@ export default class LiveSync {
   }
 
   _open() {
+    let ws
     try {
-      this.ws = new WebSocket(this._wsUrl())
+      ws = new WebSocket(this._wsUrl())
     } catch {
       this._scheduleReconnect()
       return
     }
-    this.ws.addEventListener('open', () => {
-      if (config.seatKey) this.ws.send(JSON.stringify({ type: 'hello', seatKey: config.seatKey }))
+    this.ws = ws
+    ws.addEventListener('open', () => {
+      if (config.seatKey) ws.send(JSON.stringify({ type: 'hello', seatKey: config.seatKey }))
     })
-    this.ws.addEventListener('message', (ev) => {
+    ws.addEventListener('message', (ev) => {
+      // Discard messages from a socket that has since been superseded by reconnect().
+      if (ws !== this.ws) return
       try {
         const m = JSON.parse(ev.data)
-        if (m.type === 'sync') this.onSync?.()
+        if (m.type === 'sync') this.onSync?.(m.event ?? null)
       } catch { /* ignore malformed frames */ }
     })
-    this.ws.addEventListener('close', () => { if (!this.closed) this._scheduleReconnect() })
-    this.ws.addEventListener('error', () => { try { this.ws.close() } catch { /* noop */ } })
+    ws.addEventListener('close', () => { if (!this.closed && ws === this.ws) this._scheduleReconnect() })
+    ws.addEventListener('error', () => { try { ws.close() } catch { /* noop */ } })
   }
 
   // Re-send hello (e.g. after a join changes the seat key).

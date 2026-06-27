@@ -407,7 +407,7 @@ export default class SetupPhase {
     return false
   }
 
-  assignTerrainToRegion(regionId, terrainType, description = '') {
+  assignTerrainToRegion(regionId, terrainType, description = '', name = '') {
     const regions = this.gameStateManager.worldTerrainData.regions
     const region = regions.find(r => r.id === regionId)
     if (!region) throw new Error(`Region ${regionId} not found`)
@@ -434,7 +434,8 @@ export default class SetupPhase {
 
     region.assignedType = terrainType
     region.description = description
-    this.terrainPlacements.push({ regionId, terrainType, description })
+    region.name = name?.trim() || ''
+    this.terrainPlacements.push({ regionId, terrainType, description, name: region.name })
     this.log.push(`Assigned ${terrainType} to region ${regionId}`)
 
     const clearedEdgeIds = []
@@ -454,21 +455,22 @@ export default class SetupPhase {
     return { ok: true, clearedEdgeIds, log: this.log }
   }
 
-  assignEdgeType(edgeId, edgeType, description = '') {
+  assignEdgeType(edgeId, edgeType, description = '', name = '') {
     const edge = this.gameStateManager.worldTerrainData.edges[edgeId]
     if (!edge) throw new Error(`Edge ${edgeId} not found`)
     if (edge.assignedType) throw new Error(`Edge ${edgeId} is already assigned ${edge.assignedType}`)
 
     edge.assignedType = edgeType
     edge.description = description
-    this.edgePlacements.push({ edgeId, edgeType, description })
+    edge.name = name?.trim() || ''
+    this.edgePlacements.push({ edgeId, edgeType, description, name: edge.name })
     this.log.push(`Assigned ${edgeType} to edge ${edgeId}`)
     return { ok: true, log: this.log }
   }
 
   // Apply = lock the district in (final). The type may already have been set by
   // previewDistrictType; here we validate resources, commit them, and lock.
-  assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '') {
+  assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '') {
     const district = this.gameStateManager.cityDistrictData.districts.find(d => d.id === districtId)
     if (!district) throw new Error(`District ${districtId} not found`)
     if (district.locked) throw new Error(`District ${districtId} is already locked`)
@@ -531,6 +533,7 @@ export default class SetupPhase {
     district.residentialClass = isResidential ? (residentialClass || null) : null
     district.LeadershipClass = isLeadership ? (LeadershipClass || null) : null
     district.description = description
+    district.name = name?.trim() || ''
     district.producedResource = producedResource?.trim() || null
     district.secondProducedResource = secondProducedResource?.trim() || null
     const IMPLICIT_CONSUMED = isLeadership ? [] : ['Water', 'Basic Food']
@@ -556,11 +559,11 @@ export default class SetupPhase {
 
     if (isLeadership) {
       const insertIdx = this.factions.findIndex(f => f.type !== 'leadership')
-      const faction = { id: this.factions.length, health: 70, type:'leadership', name: 'Leadership', subclass: LeadershipClass || null, districtId, influence: {}, standing: {} }
+      const faction = { id: this.factions.length, health: 70, type:'leadership', typeName: 'Leadership', name: district.name, subclass: LeadershipClass || null, districtId, influence: {}, standing: {} }
       if (insertIdx === -1) this.factions.push(faction)
       else this.factions.splice(insertIdx, 0, faction)
     } else {
-      this.factions.push({ id: this.factions.length, health: 70, type:'district', name: districtType, subclass: residentialClass || null, districtId, standing: {} })
+      this.factions.push({ id: this.factions.length, health: 70, type:'district', typeName: districtType, name: district.name, subclass: residentialClass || null, districtId, standing: {} })
     }
 
     // Commit: freeze the street seed, lock the district, and regenerate.
@@ -635,7 +638,7 @@ export default class SetupPhase {
       if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
     }
 
-    this.factions.push({ id: this.factions.length, health: 70, type:'trade', name: tradeName, subclass: null, regionId, standing: {} })
+    this.factions.push({ id: this.factions.length, health: 70, type:'trade', typeName: region.assignedType || 'Trade Route', name: tradeName, subclass: null, regionId, standing: {} })
 
     return { ok: true, tradingDestinations: this.tradingDestinations, trade, factions: this.factions, resourceRegistry: this.resourceRegistry, log: this.log }
   }
@@ -761,7 +764,7 @@ export default class SetupPhase {
     return waypoints.length >= 2 ? waypoints : null
   }
 
-  assignCityEdgeType(edgeId, edgeType, description = '') {
+  assignCityEdgeType(edgeId, edgeType, description = '', name = '') {
     const edge = this.gameStateManager.cityDistrictData.edges?.[edgeId]
     if (!edge) throw new Error(`City edge ${edgeId} not found`)
     if (edge.assignedType) throw new Error(`City edge ${edgeId} is already assigned`)
@@ -772,7 +775,8 @@ export default class SetupPhase {
 
     edge.assignedType = edgeType
     edge.description = description
-    this.districtEdgePlacements.push({ edgeId, edgeType, description })
+    edge.name = name?.trim() || ''
+    this.districtEdgePlacements.push({ edgeId, edgeType, description, name: edge.name })
     this.log.push(`Assigned ${edgeType} to city edge ${edgeId}`)
     // Regenerate streets for any already-typed adjacent districts so the
     // boundary polyline is stamped with the correct type (Stone for Wall, etc.)
@@ -1045,8 +1049,38 @@ export default class SetupPhase {
       }
     }
 
-    const gen = new StreetVoronoiGenerator()
-    cityData.streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes)
+    const MAX_TOPOLOGY_RETRIES = 3
+    let streetGraph = null
+    for (let attempt = 0; attempt <= MAX_TOPOLOGY_RETRIES; attempt++) {
+      const gen = new StreetVoronoiGenerator()
+      streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes)
+      const issues = streetGraph.topologyIssues
+      if (!issues || issues.crossings === 0) break
+
+      if (attempt === MAX_TOPOLOGY_RETRIES) {
+        console.error(`[street-graph] Topology unrecoverable after ${MAX_TOPOLOGY_RETRIES} retries — ${issues.crossings} crossing(s) remain. Gutter generation may be incorrect.`)
+        break
+      }
+
+      // Increment seeds for non-locked districts involved in crossings.
+      // Locked district seeds are fixed — if all involved districts are locked we cannot
+      // fix the crossings by reseeding; the error above will fire on the final attempt.
+      const affectedIds = issues.affectedDistrictIds ?? new Set()
+      let reseeded = false
+      for (const d of districts) {
+        if (!affectedIds.has(d.id) || d.locked) continue
+        let s = ((d.streetSeed ?? d.id) * 2654435761) >>> 0
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        d.streetSeed = s >>> 0
+        reseeded = true
+        console.log(`[street-graph] Crossing in district ${d.id} — reseeding (attempt ${attempt + 1}/${MAX_TOPOLOGY_RETRIES})`)
+      }
+      if (!reseeded) {
+        console.error(`[street-graph] Crossing involves only locked districts [${[...affectedIds].join(', ')}] — cannot reseed. Gutter generation may be incorrect.`)
+        break
+      }
+    }
+    cityData.streetGraph = streetGraph
     console.log(`[perf]   streets: ${(performance.now()-t0).toFixed(1)}ms (${districts.length} districts → ${cityData.streetGraph.junctions.length} junctions, ${cityData.streetGraph.edges?.length ?? '?'} edges)`)
     this.log.push(`Generated street graph over ${districts.length} district(s): ${cityData.streetGraph.junctions.length} junctions, ${tradeRoutes.length} trade road(s) (final=${isFinal})`)
   }
@@ -1126,10 +1160,7 @@ export default class SetupPhase {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.blocks?.length) return 0
     const wt = this.gameStateManager.worldTerrainData
-    const cityRegion = (wt?.regions || []).find(r => r.assignedType === 'City')
-    const terrainFineCells = cityRegion
-      ? (wt?.fineCells || []).filter(c => c.parentRegionId !== cityRegion.id)
-      : (wt?.fineCells || [])
+    const terrainFineCells = wt?.fineCells || []
     if (!terrainFineCells.length) return 0
     const outerGutterPoly = extractOuterGutterPolygon(cityData.blocks)
     const tradeRoadWaypoints = (this.tradingDestinations || [])
@@ -1139,7 +1170,7 @@ export default class SetupPhase {
     return cityData.terrainPlots.length
   }
 
-  assignTerrainDistrict(regionId, districtType, description = '', producedResource = '', consumedResources = []) {
+  assignTerrainDistrict(regionId, districtType, description = '', producedResource = '', consumedResources = [], name = '') {
     const regions = this.gameStateManager.worldTerrainData.regions
     const region = regions.find(r => r.id === regionId)
     if (!region) throw new Error(`Region ${regionId} not found`)
@@ -1163,6 +1194,7 @@ export default class SetupPhase {
 
     region.terrainDistrict = districtType
     region.terrainDistrictDescription = description?.trim() || ''
+    region.terrainDistrictName = name?.trim() || ''
     region.terrainDistrictProducedResource = producedResource.trim()
     region.terrainDistrictConsumedResources = allConsumed
 
@@ -1174,7 +1206,7 @@ export default class SetupPhase {
       if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
     }
 
-    this.factions.push({ id: this.factions.length, health: 70, type:'terrain', name: districtType, subclass: null, regionId })
+    this.factions.push({ id: this.factions.length, health: 70, type:'terrain', typeName: districtType, name: region.terrainDistrictName, subclass: null, regionId })
 
     this.log.push(`Assigned ${districtType} district to ${region.assignedType} region ${regionId}`)
     return { ok: true, resourceRegistry: this.resourceRegistry, factions: this.factions, log: this.log }
@@ -1385,21 +1417,22 @@ export default class SetupPhase {
 
     for (const district of districts) {
       if (district.assignedType === 'Leadership') {
-        this.factions.push({ id: this.factions.length, health: 70, type:'leadership', name: 'Leadership', subclass: district.LeadershipClass || null, districtId: district.id, influence: {}, standing: {} })
+        this.factions.push({ id: this.factions.length, health: 70, type:'leadership', typeName: 'Leadership', name: district.name || '', subclass: district.LeadershipClass || null, districtId: district.id, influence: {}, standing: {} })
       }
     }
     for (const region of regions) {
       if (region.terrainDistrict) {
-        this.factions.push({ id: this.factions.length, health: 70, type:'terrain', name: region.terrainDistrict, subclass: null, regionId: region.id, standing: {} })
+        this.factions.push({ id: this.factions.length, health: 70, type:'terrain', typeName: region.terrainDistrict, name: region.terrainDistrictName || '', subclass: null, regionId: region.id, standing: {} })
       }
     }
     for (const district of districts) {
       if (district.assignedType && district.assignedType !== 'Leadership') {
-        this.factions.push({ id: this.factions.length, health: 70, type:'district', name: district.assignedType, subclass: district.residentialClass || null, districtId: district.id, standing: {} })
+        this.factions.push({ id: this.factions.length, health: 70, type:'district', typeName: district.assignedType, name: district.name || '', subclass: district.residentialClass || null, districtId: district.id, standing: {} })
       }
     }
     for (const trade of this.tradingDestinations) {
-      this.factions.push({ id: this.factions.length, health: 70, type:'trade', name: trade.name || trade.terrainType || 'Region', subclass: null, regionId: trade.regionId, standing: {} })
+      const region = regions.find(r => r.id === trade.regionId)
+      this.factions.push({ id: this.factions.length, health: 70, type:'trade', typeName: region?.assignedType || 'Trade Route', name: trade.name || '', subclass: null, regionId: trade.regionId, standing: {} })
     }
   }
 }

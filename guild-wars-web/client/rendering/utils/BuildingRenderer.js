@@ -49,7 +49,12 @@ export const GROUND_Y = 0   // ground surface is Y=0; buildings seat here
 
 // Back-yard trees: plots whose building leaves empty space behind it get small trees
 // scattered in the back (never on the street-facing front).
-const TREE_GLB = '/resources/Models/tree.glb'
+const TREE_GLBS = [
+  '/resources/Models/tree.glb',
+  '/resources/Models/tree1.glb',
+  '/resources/Models/tree2.glb',
+  '/resources/Models/tree3.glb',
+]
 const TREE_MIN_BACK_DEPTH = 0.08   // empty depth behind the building required to add trees
 const TREE_SPACING = 0.07   // back-yard scatter grid spacing
 const TREE_DENSITY = 0.6    // fraction of grid cells that get a tree
@@ -694,7 +699,7 @@ export default class BuildingRenderer {
         const grey = [{ x: A.x, y: A.y }, { x: B.x, y: B.y }, Bf, Af]
         debugSink.push({
           debugId: wi, edgeIndex: se.index,
-          white, grey, red: convexDifferencePieces(white, grey),
+          white, grey, red: convexDifferencePieces(white, grey).filter(p => polyAreaXY(p) > 1e-6),
           blue: null,   // pass 4 snapshot — filled in below once that pass runs
           green: null,  // pass 5 snapshot (final survivor) — stays null if dropped
         })
@@ -707,13 +712,16 @@ export default class BuildingRenderer {
     }
     if (raw.length === 0) return null
 
-    // Pass 2 — extrude one setback region per street edge, inward by FRONT_SETBACK, and
-    // boolean-subtract it from EVERY wing (not just the wing that owns that edge) — a
-    // single half-plane clip per street edge does exactly this, and two adjacent street
-    // edges' half-planes naturally intersect to carve the right L-shaped setback at a
-    // plot corner, instead of needing special-cased corner logic.
+    // Pass 2 — remove each wing's own street-edge setback strip. Cross-setbacks between
+    // ADJACENT street edges (sharing a corner vertex) are skipped — at acute corners they
+    // clip too aggressively; pass 3's wing-vs-wing subtraction handles that separation.
+    // Non-adjacent edges still cross-clip to keep distant wings clear of each other's yards.
     for (const rw of raw) {
       for (const edge of raw) {
+        if (edge !== rw) {
+          const diff = Math.abs(rw.edgeIndex - edge.edgeIndex)
+          if (diff === 1 || diff === n - 1) continue   // adjacent edge — skip cross-setback
+        }
         rw.poly = halfPlaneClip(rw.poly, edge.streetA.x, edge.streetA.y, edge.nx, edge.nz, edge.setback)
         if (rw.poly.length < 3) break
       }
@@ -1057,7 +1065,8 @@ export default class BuildingRenderer {
         const pz = my + ey * ll + ny * dd
         if (!pointInPolygon(px, pz, poly)) continue
         const scale = 0.13 + this._rand(seed + 3) * 0.08   // small
-        placements.push({ x: px, z: pz, rotY: this._rand(seed + 4) * Math.PI * 2, glbPath: TREE_GLB, scale })
+        const treeGlb = TREE_GLBS[Math.floor(this._rand(seed + 5) * TREE_GLBS.length)]
+        placements.push({ x: px, z: pz, rotY: this._rand(seed + 4) * Math.PI * 2, glbPath: treeGlb, scale })
         placed++
       }
     }

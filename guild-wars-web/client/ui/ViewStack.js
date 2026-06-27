@@ -37,7 +37,12 @@ function closeTop() {
   return true
 }
 
+export function isEmpty() { return stack.length === 0 }
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return
-  if (closeTop()) e.preventDefault()
+  if (closeTop()) {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+  }
 })

@@ -66,9 +66,9 @@ export const DISTRICTS = {
     xyRatio: 2.0,
     street_alignment: "manhattan",
     square_threshhold: 0.05,
-    plotSpacing: 0.15,
+    plotSpacing: 0.10,
     minPlotSize: 0.025,
-    townhouseProb: 0.95,
+    townhouseProb: 1.0,
     landmarks: { well1: 6 },
     buildingStyle: {
       floors: { 1: 1.0 },
@@ -103,7 +103,7 @@ export const DISTRICTS = {
     square_threshhold: 0.1,
     plotSpacing: 0.2,
     minPlotSize: 0.025,
-    townhouseProb: 0.95,
+    townhouseProb: 1.0,
     landmarks: { well1: 4 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
@@ -140,7 +140,7 @@ export const DISTRICTS = {
     square_threshhold: 0.3,
     plotSpacing: 0.5,
     minPlotSize: 0.07,
-    townhouseProb: 0.95,
+    townhouseProb: 1.0,
     landmarks: { t2: 2 },
     buildingStyle: {
       floors: { 2: 0.65, 3: 0.35 },

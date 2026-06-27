@@ -2,7 +2,8 @@ import TerrainTypePanel from './TerrainTypePanel.js'
 import DistrictTypePanel from './DistrictTypePanel.js'
 import FactionsPanel from './FactionsPanel.js'
 import GuildPanel from './GuildPanel.js'
-import GameAPI from '../api/GameAPI.js'
+import TutorialWindow from './TutorialWindow.js'
+import Settings from '../settings.js'
 
 // Tracks whether the Guild panel has ever auto-opened before, across reloads (see
 // showSetupPhase below) — same try/catch-guarded localStorage pattern as config.js's
@@ -29,18 +30,38 @@ const HIDDEN_RESOURCES = new Set(['Basic Food', 'Labour'])
 // Always shown even before districts produce them.
 const DEFAULT_RESOURCES = ['Gold', 'Security']
 
+// Help text shown in the bottom-right window per phase.
+const PHASE_HELP_TEXT = {
+  Terrain:         'Take turns to create the landscape, religions, history and larger world that the city exists in',
+  CitySubdivision: "Take turns to define the city's leadership, its districts, trade routes, specific threats, traded resources and in general its people.",
+  GuildCreation:   'Now design your guild; is it secretive or public, mighty or subversive, magical or mercantile or religious. Where are its headquarters, who does it ally with. Who are its people. What are its strategies to win?',
+}
+
+const HELP_POS_KEY = 'gw.helpWindow.pos'
+function loadHelpPos() {
+  try { return JSON.parse(localStorage.getItem(HELP_POS_KEY)) } catch { return null }
+}
+function saveHelpPos(x, y) {
+  try { localStorage.setItem(HELP_POS_KEY, JSON.stringify({ x, y })) } catch { /* ignore */ }
+}
+
 export default class UIManager {
   constructor(eventBus, renderer) {
     this.eventBus = eventBus
     this.renderer = renderer
     this.panels = new Map()
     this.currentStep = null
-    this.terrainTypePanel = new TerrainTypePanel(eventBus)
-    this.districtTypePanel = new DistrictTypePanel(eventBus)
+    this.terrainTypePanel = new TerrainTypePanel(eventBus, renderer)
+    this.districtTypePanel = new DistrictTypePanel(eventBus, renderer)
     this.factionsPanel = new FactionsPanel(eventBus)
     this.guildPanel = new GuildPanel(eventBus)
+    this.tutorialWindow = new TutorialWindow()
+    this._playerName = ''
     this._resourceRegistry = []
     this._guildResources = {}
+    this._advancePhaseBtn = null
+    this._helpWindow = null
+    this._helpTextEl = null
   }
 
   init() {
@@ -48,19 +69,28 @@ export default class UIManager {
     this.setupEventListeners()
   }
 
+  setPlayerName(name) {
+    this._playerName = name || ''
+  }
+
   createPanels() {
     const uiContainer = document.createElement('div')
     uiContainer.id = 'ui-container'
     uiContainer.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10'
     document.body.appendChild(uiContainer)
-    this.createTopBar(uiContainer)
+
     this.createResourceBar(uiContainer)
     this.createLeftPanels(uiContainer)
     this.createRightPanel(uiContainer)
     this.createCenterPanels(uiContainer)
     this.createErrorPopup(uiContainer)
-    // GuildPanel appends itself to document.body when first shown
+    this.createActionPanel()
+    this.createFactionsButton()
+    this.createHelpWindow()
+
+    // GuildPanel and FactionsPanel append themselves to document.body
     this.guildPanel.render()
+    this.factionsPanel.render()
   }
 
   setWalkMode(on) {
@@ -68,43 +98,10 @@ export default class UIManager {
     if (el) el.style.display = on ? 'none' : ''
   }
 
-  createTopBar(container) {
-    const topBar = document.createElement('div')
-    topBar.id = 'top-bar'
-    topBar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:80px;background:#000;border-bottom:2px solid #444;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;align-items:stretch'
-
-    const lifecycle = document.createElement('div')
-    lifecycle.id = 'lifecycle-bar'
-    lifecycle.style.cssText = 'flex:1;display:flex;align-items:stretch'
-    topBar.appendChild(lifecycle)
-
-    // Guild button (replaces Influence button)
-    const guildBtn = document.createElement('button')
-    guildBtn.id = 'guild-btn'
-    guildBtn.textContent = 'Guild'
-    guildBtn.style.cssText = 'margin:10px 0;padding:8px 14px;background:#2a3a55;color:#fff;border:1px solid #4a6a99;border-radius:3px;cursor:pointer;font-size:13px;white-space:nowrap;align-self:center;display:none'
-    guildBtn.addEventListener('click', () => this.guildPanel.toggle())
-    topBar.appendChild(guildBtn)
-
-    const newGameBtn = document.createElement('button')
-    newGameBtn.textContent = 'New Game'
-    newGameBtn.style.cssText = 'margin:10px;padding:8px 16px;background:#8b1a1a;color:#fff;border:1px solid #c44;border-radius:3px;cursor:pointer;font-size:13px;white-space:nowrap;align-self:center'
-    newGameBtn.addEventListener('click', () => {
-      if (confirm('Start a new game? All current terrain will be discarded.')) {
-        this.eventBus.emit('NEW_GAME')
-      }
-    })
-    topBar.appendChild(newGameBtn)
-
-    topBar.addEventListener('click',     (e) => e.stopPropagation())
-    topBar.addEventListener('mousedown', (e) => e.stopPropagation())
-    container.appendChild(topBar)
-  }
-
   createResourceBar(container) {
     const bar = document.createElement('div')
     bar.id = 'resource-bar'
-    bar.style.cssText = 'position:fixed;top:80px;left:0;right:0;height:32px;background:#111;border-bottom:1px solid #333;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;align-items:center;padding:0 12px;gap:0;overflow-x:auto'
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:32px;background:#111;border-bottom:1px solid #333;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;align-items:center;padding:0 12px;gap:0;overflow-x:auto'
     bar.addEventListener('click',     (e) => e.stopPropagation())
     bar.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(bar)
@@ -115,7 +112,7 @@ export default class UIManager {
   createLeftPanels(container) {
     const leftPanel = document.createElement('div')
     leftPanel.id = 'left-panel'
-    leftPanel.style.cssText = 'position:fixed;left:0;top:112px;width:200px;height:calc(100% - 112px);background:#000;border-right:2px solid #444;padding:10px;color:#fff;z-index:20;pointer-events:auto'
+    leftPanel.style.cssText = 'position:fixed;left:0;top:32px;width:200px;height:calc(100% - 32px);background:#000;border-right:2px solid #444;padding:10px;color:#fff;z-index:20;pointer-events:auto'
     leftPanel.addEventListener('click',     (e) => e.stopPropagation())
     leftPanel.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(leftPanel)
@@ -123,20 +120,18 @@ export default class UIManager {
   }
 
   createRightPanel(container) {
+    // Right panel retired — FactionsPanel is now a floating window (see createFactionsButton).
     const rightPanel = document.createElement('div')
     rightPanel.id = 'right-panel'
-    rightPanel.style.cssText = 'position:fixed;right:0;top:112px;width:200px;height:calc(100% - 112px);background:#000;border-left:2px solid #444;color:#fff;z-index:20;pointer-events:auto;box-sizing:border-box;overflow:hidden'
-    rightPanel.addEventListener('click',     (e) => e.stopPropagation())
-    rightPanel.addEventListener('mousedown', (e) => e.stopPropagation())
+    rightPanel.style.cssText = 'display:none'
     container.appendChild(rightPanel)
     this.panels.set('right', rightPanel)
-    this.factionsPanel.render(rightPanel)
   }
 
   createCenterPanels(container) {
     const centerPanel = document.createElement('div')
     centerPanel.id = 'center-panel'
-    centerPanel.style.cssText = 'position:fixed;left:200px;right:200px;top:112px;z-index:10'
+    centerPanel.style.cssText = 'position:fixed;left:200px;right:0;top:32px;z-index:10'
     container.appendChild(centerPanel)
     this.panels.set('center', centerPanel)
   }
@@ -183,67 +178,287 @@ export default class UIManager {
     container.appendChild(errorPopup)
   }
 
+  // ── Action panel (bottom-right) ───────────────────────────────────────────────
+  // Fixed panel that hosts the Done/advance-phase button and future action buttons.
+  // Blocks click and mousedown so interactions with it never reach the map.
+
+  createActionPanel() {
+    const panel = document.createElement('div')
+    panel.id = 'action-panel'
+    panel.style.cssText = [
+      'position:fixed', 'bottom:20px', 'right:20px', 'z-index:25',
+      'pointer-events:auto', 'display:none',
+      'background:#1a1a1a', 'border:1px solid #555', 'border-radius:8px',
+      'padding:10px 12px', 'box-shadow:0 4px 16px rgba(0,0,0,0.6)',
+      'font-family:Arial'
+    ].join(';')
+    panel.addEventListener('click',     (e) => e.stopPropagation())
+    panel.addEventListener('mousedown', (e) => e.stopPropagation())
+
+    const btn = document.createElement('button')
+    btn.id = 'advance-phase-btn'
+    btn.style.cssText = [
+      'display:block', 'width:100%', 'padding:9px 24px',
+      'background:#8b1a1a', 'border:2px solid #c44', 'border-radius:6px',
+      'color:#fff', 'font-size:13px', 'font-weight:bold',
+      'cursor:pointer', 'letter-spacing:0.5px',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.4)'
+    ].join(';')
+    btn.textContent = 'Done'
+    panel.appendChild(btn)
+
+    document.body.appendChild(panel)
+    this._advancePhaseBtn = btn
+    this._actionPanel = panel
+  }
+
+  // ── Factions button (bottom-left) ────────────────────────────────────────────
+  // Brown toggle button that opens/closes the floating FactionsPanel.
+  // Shown whenever the FactionsPanel is relevant (CitySubdivision onward).
+
+  createFactionsButton() {
+    const panel = document.createElement('div')
+    panel.id = 'factions-btn-panel'
+    panel.style.cssText = [
+      'position:fixed', 'bottom:20px', 'left:20px', 'z-index:25',
+      'pointer-events:auto', 'display:none',
+      'background:#1a1a1a', 'border:1px solid #555', 'border-radius:8px',
+      'padding:10px 12px', 'box-shadow:0 4px 16px rgba(0,0,0,0.6)',
+      'font-family:Arial'
+    ].join(';')
+    panel.addEventListener('click',     (e) => e.stopPropagation())
+    panel.addEventListener('mousedown', (e) => e.stopPropagation())
+
+    const btn = document.createElement('button')
+    btn.id = 'factions-toggle-btn'
+    btn.textContent = 'Factions'
+    btn.style.cssText = [
+      'display:block', 'width:100%', 'padding:9px 24px',
+      'background:#5a3a10', 'border:2px solid #a07030', 'border-radius:6px',
+      'color:#fff', 'font-size:13px', 'font-weight:bold',
+      'cursor:pointer', 'letter-spacing:0.5px',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.4)'
+    ].join(';')
+    btn.addEventListener('click', () => this.factionsPanel.toggle())
+    panel.appendChild(btn)
+
+    document.body.appendChild(panel)
+    this._factionsPanel = panel
+  }
+
+  _setFactionsButtonVisible(visible) {
+    if (this._factionsPanel) this._factionsPanel.style.display = visible ? 'block' : 'none'
+  }
+
+  _updateAdvancePhaseButton(step) {
+    const btn = this._advancePhaseBtn
+    const panel = this._actionPanel
+    if (!btn || !panel) return
+    const stage = STAGES.find(s => s.step === step)
+    if (stage?.event) {
+      panel.style.display = 'block'
+      btn.onclick = () => this.eventBus.emit(stage.event)
+    } else {
+      panel.style.display = 'none'
+      btn.onclick = null
+    }
+  }
+
+  // ── Help Text window ──────────────────────────────────────────────────────────
+
+  createHelpWindow() {
+    const el = document.createElement('div')
+    el.id = 'help-window'
+    el.style.cssText = [
+      'position:fixed', 'z-index:25', 'width:260px',
+      'background:#111', 'border:1px solid #444', 'border-radius:6px',
+      'color:#ccc', 'font-family:Arial', 'font-size:12px', 'line-height:1.5',
+      'display:none', 'pointer-events:auto', 'user-select:none'
+    ].join(';')
+
+    // Block map interactions — clicks inside the window must not reach the map.
+    el.addEventListener('click',     (e) => e.stopPropagation())
+    el.addEventListener('mousedown', (e) => e.stopPropagation())
+
+    // Title bar (drag handle) with close button
+    const titleBar = document.createElement('div')
+    titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:#1e1e1e;border-bottom:1px solid #333;border-radius:6px 6px 0 0;cursor:move'
+    const titleText = document.createElement('span')
+    titleText.textContent = 'Tutorial Information'
+    titleText.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:1px'
+    const closeBtn = document.createElement('button')
+    closeBtn.textContent = '×'
+    closeBtn.style.cssText = 'background:none;border:none;color:#777;font-size:18px;cursor:pointer;padding:0;line-height:1'
+    closeBtn.addEventListener('click', () => { el.style.display = 'none' })
+    titleBar.appendChild(titleText)
+    titleBar.appendChild(closeBtn)
+    el.appendChild(titleBar)
+
+    const textEl = document.createElement('div')
+    textEl.style.cssText = 'padding:10px 12px'
+    el.appendChild(textEl)
+    this._helpTextEl = textEl
+
+    // "Don't show tutorial information" checkbox
+    const footer = document.createElement('div')
+    footer.style.cssText = 'padding:6px 12px 10px;border-top:1px solid #222'
+    const checkLabel = document.createElement('label')
+    checkLabel.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:11px;color:#666;cursor:pointer'
+    const checkbox = document.createElement('input')
+    checkbox.type = 'checkbox'
+    checkbox.style.cssText = 'cursor:pointer;width:13px;height:13px'
+    checkbox.addEventListener('change', () => {
+      Settings.showTutorials = !checkbox.checked
+    })
+    checkLabel.appendChild(checkbox)
+    checkLabel.appendChild(document.createTextNode("Don't show tutorial information"))
+    this._helpCheckbox = checkbox
+    footer.appendChild(checkLabel)
+    el.appendChild(footer)
+
+    document.body.appendChild(el)
+    this._helpWindow = el
+    this._makeHelpDraggable(titleBar)
+  }
+
+  _makeHelpDraggable(handle) {
+    const el = this._helpWindow
+    let startX, startY, startLeft, startTop
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      startX = e.clientX; startY = e.clientY
+      startLeft = rect.left; startTop = rect.top
+      let didDrag = false
+      const onMove = (e) => {
+        didDrag = true
+        el.style.left = (startLeft + (e.clientX - startX)) + 'px'
+        el.style.top  = (startTop  + (e.clientY - startY)) + 'px'
+        el.style.right = 'auto'; el.style.bottom = 'auto'
+      }
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove)
+        document.removeEventListener('mouseup', onUp)
+        if (didDrag) {
+          saveHelpPos(parseInt(el.style.left), parseInt(el.style.top))
+          // Suppress the click event the browser synthesises after a drag release.
+          const suppressClick = (e) => {
+            e.stopPropagation()
+            document.removeEventListener('click', suppressClick, true)
+          }
+          document.addEventListener('click', suppressClick, true)
+        }
+      }
+      document.addEventListener('mousemove', onMove)
+      document.addEventListener('mouseup', onUp)
+    })
+  }
+
+  _showHelpWindow(step) {
+    const text = PHASE_HELP_TEXT[step]
+    if (!text || !this._helpWindow) return
+    if (!Settings.showTutorials) return
+    this._helpTextEl.textContent = text
+    if (this._helpCheckbox) this._helpCheckbox.checked = false
+
+    const saved = loadHelpPos()
+    if (saved) {
+      this._helpWindow.style.left   = saved.x + 'px'
+      this._helpWindow.style.top    = saved.y + 'px'
+      this._helpWindow.style.right  = 'auto'
+      this._helpWindow.style.bottom = 'auto'
+    } else {
+      // Default: bottom-right, above the Advance Phase button
+      this._helpWindow.style.right  = '20px'
+      this._helpWindow.style.bottom = '160px'
+      this._helpWindow.style.left   = 'auto'
+      this._helpWindow.style.top    = 'auto'
+    }
+    this._helpWindow.style.display = 'block'
+  }
+
+  _hideHelpWindow() {
+    if (this._helpWindow) this._helpWindow.style.display = 'none'
+  }
+
+  // ── Phase name splash ─────────────────────────────────────────────────────────
+
+  _showPhaseSplash(label) {
+    const splash = document.createElement('div')
+    splash.style.cssText = [
+      'position:fixed', 'top:0', 'left:0', 'width:100%', 'height:100%',
+      'display:flex', 'align-items:center', 'justify-content:center',
+      'pointer-events:none', 'z-index:80',
+      'animation:gwSplashFade 5s forwards'
+    ].join(';')
+
+    const text = document.createElement('div')
+    text.textContent = label
+    text.style.cssText = 'color:#fff;font-family:Arial;font-size:48px;font-weight:bold;text-shadow:0 2px 16px rgba(0,0,0,0.8);text-align:center'
+    splash.appendChild(text)
+    document.body.appendChild(splash)
+
+    // Inject keyframes once
+    if (!document.getElementById('gw-splash-style')) {
+      const style = document.createElement('style')
+      style.id = 'gw-splash-style'
+      style.textContent = '@keyframes gwSplashFade { 0%{opacity:1} 60%{opacity:1} 100%{opacity:0} }'
+      document.head.appendChild(style)
+    }
+
+    splash.addEventListener('animationend', () => splash.remove())
+  }
+
+  // ── Phase management ──────────────────────────────────────────────────────────
+
   showSetupPhase(step) {
+    const isNewPhase = step !== this.currentStep
     this.currentStep = step
-    this._renderLifecycleBar(step)
 
     const leftPanel = this.panels.get('left')
     leftPanel.innerHTML = ''
 
-    const guildBtn = document.getElementById('guild-btn')
     if (step === 'Terrain') {
-      leftPanel.style.display = ''
-      if (guildBtn) guildBtn.style.display = 'none'
+      // TerrainTypePanel is now floating — hide the left panel
+      leftPanel.style.display = 'none'
+      this._resourceBar.style.display = 'none'
       this.guildPanel.hide()
-      this.terrainTypePanel.render(leftPanel)
+      this.factionsPanel.hide()
+      this._setFactionsButtonVisible(false)
+      this._updateAdvancePhaseButton(step)
+      if (isNewPhase) {
+        this._showHelpWindow(step)
+        this._showPhaseSplash('Terrain Setup')
+      }
     } else if (step === 'CitySubdivision') {
-      leftPanel.style.display = ''
-      if (guildBtn) guildBtn.style.display = 'none'
+      leftPanel.style.display = 'none'
+      this._resourceBar.style.display = ''
       this.guildPanel.hide()
-      this.districtTypePanel.render(leftPanel)
+      this._setFactionsButtonVisible(true)
+      this._updateAdvancePhaseButton(step)
+      if (isNewPhase) {
+        this.factionsPanel.show()   // auto-open on entering City Subdivision
+        this._showHelpWindow(step)
+        this._showPhaseSplash('City District Setup')
+      }
     } else if (step === 'GuildCreation' || step === 'Complete') {
       leftPanel.style.display = 'none'
-      if (guildBtn) guildBtn.style.display = ''
-      // Auto-open only the first time the player ever reaches this phase — every later
-      // page reload (still in/past GuildCreation) leaves it closed; the Guild button
-      // above stays available to reopen it manually.
-      if (!hasAutoShownGuildPanel()) {
-        this.guildPanel.show()
-        markGuildPanelAutoShown()
+      this._resourceBar.style.display = ''
+      this._setFactionsButtonVisible(true)
+      this._updateAdvancePhaseButton(step)
+      if (step === 'GuildCreation') {
+        if (isNewPhase) {
+          this._showHelpWindow(step)
+          this._showPhaseSplash('Guild Design')
+          if (!hasAutoShownGuildPanel()) {
+            this.guildPanel.show()
+            markGuildPanelAutoShown()
+          }
+        }
+      } else {
+        this._hideHelpWindow()
       }
     }
-  }
-
-  _renderLifecycleBar(activeStep) {
-    const bar = document.getElementById('lifecycle-bar')
-    if (!bar) return
-    bar.innerHTML = ''
-
-    const currentIndex = STEP_ORDER.indexOf(activeStep)
-
-    STAGES.forEach((stage, i) => {
-      const stageIndex = STEP_ORDER.indexOf(stage.step)
-      const isActive = stage.step === activeStep
-      const isComplete = stageIndex < currentIndex
-
-      const cell = document.createElement('div')
-      cell.style.cssText = `flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px 4px;border-right:1px solid #333;background:${isActive ? 'rgba(74,124,89,0.3)' : isComplete ? 'rgba(255,255,255,0.05)' : 'transparent'};${isActive ? 'border-bottom:2px solid #4a7c59;' : ''}`
-
-      const name = document.createElement('div')
-      name.textContent = (isComplete ? '✓ ' : '') + stage.label
-      name.style.cssText = `font-size:12px;font-weight:${isActive ? 'bold' : 'normal'};color:${isActive ? '#fff' : isComplete ? '#777' : '#555'};text-align:center;margin-bottom:4px`
-      cell.appendChild(name)
-
-      if (isActive && stage.event) {
-        const doneBtn = document.createElement('button')
-        doneBtn.textContent = 'Done'
-        doneBtn.style.cssText = 'padding:3px 14px;background:#4a7c59;color:#fff;border:1px solid #6a9c79;border-radius:3px;cursor:pointer;font-size:11px'
-        doneBtn.addEventListener('click', () => this.eventBus.emit(stage.event))
-        cell.appendChild(doneBtn)
-      }
-
-      bar.appendChild(cell)
-    })
   }
 
   // ── Resource bar ──────────────────────────────────────────────────────────
@@ -283,16 +498,13 @@ export default class UIManager {
     }
   }
 
-  // ── Event listeners ────────────────────────────────────────────────────────
+  // ── Event listeners ────────────────────────────────────────────────────────────
 
   setupEventListeners() {
     document.addEventListener('keydown', (e) => {
-      // Skip if focus is in a text input / textarea
       const tag = document.activeElement?.tagName?.toLowerCase()
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return
-      if (e.key === 'g' || e.key === 'G') {
-        this.guildPanel.toggle()
-      }
+      if (e.key === 'g' || e.key === 'G') this.guildPanel.toggle()
     })
   }
 

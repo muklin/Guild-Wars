@@ -15,6 +15,7 @@ export const STREET_HALF_WIDTH = 0.04375  // half road width — must match Worl
 const MIN_STUB_ANGLE_DEG = 30  // dead-end stubs at <this angle to a neighbor are pruned
 const MIN_COMPONENT_NODES = 3  // disconnected components below this many nodes are deleted
 const COLLINEAR_NODE_MARGIN = 0.4  // a node within this perpendicular distance of an edge interior is absorbed onto that edge
+const BOUNDARY_SNAP_MARGIN  = 0.4  // interior node within this distance of a boundary edge interior is snapped onto it
 
 const STREET_PRIORITY = { Wall: 4, Canal: 3, Stone: 2, Brick: 1, Mud: 0 }
 
@@ -222,6 +223,167 @@ function absorbCollinearNodes(nodes, edges, margin = COLLINEAR_NODE_MARGIN) {
     console.log(`absorbCollinearNodes: chained ${chained} edges through interior nodes (margin=${margin})`)
   }
   return chained
+}
+
+// Final topology pass: run one more round of crossing removal and T-junction
+// absorption (both can be re-introduced by snapInteriorNodesToBoundary), then
+// report any issues that still remain so the caller can decide whether to retry.
+// Returns { crossings, nearDupes, tJunctions, affectedDistrictIds } where
+// `affectedDistrictIds` is a Set of district IDs whose edges are involved in
+// remaining crossings — useful for targeted re-seeding.
+// Mutates nodes/edges in place (repair passes). Pure O(n²) validation pass at end.
+function ensureTopology(nodes, edges) {
+  resolveStreetCrossings(nodes, edges)
+  absorbCollinearNodes(nodes, edges)
+
+  const nodeById = new Map(nodes.map(n => [n.id, n]))
+  const affectedDistrictIds = new Set()
+  let crossings = 0, nearDupes = 0, tJunctions = 0
+
+  // Crossing edges
+  for (let i = 0; i < edges.length; i++) {
+    const e1 = edges[i]
+    const a = nodeById.get(e1.nodeA), b = nodeById.get(e1.nodeB)
+    if (!a || !b) continue
+    for (let j = i + 1; j < edges.length; j++) {
+      const e2 = edges[j]
+      if (e1.nodeA === e2.nodeA || e1.nodeA === e2.nodeB ||
+          e1.nodeB === e2.nodeA || e1.nodeB === e2.nodeB) continue
+      const c = nodeById.get(e2.nodeA), d = nodeById.get(e2.nodeB)
+      if (!c || !d) continue
+      if (!segIntersect(a, b, c, d)) continue
+      crossings++
+      if (e1.districtId != null) affectedDistrictIds.add(e1.districtId)
+      if (e2.districtId != null) affectedDistrictIds.add(e2.districtId)
+      if (e1.left  != null) affectedDistrictIds.add(e1.left)
+      if (e1.right != null) affectedDistrictIds.add(e1.right)
+      if (e2.left  != null) affectedDistrictIds.add(e2.left)
+      if (e2.right != null) affectedDistrictIds.add(e2.right)
+    }
+  }
+
+  // Near-duplicate nodes (within SNAP_THRESHOLD — should already be merged)
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const dx = nodes[i].x - nodes[j].x, dy = nodes[i].y - nodes[j].y
+      if (dx * dx + dy * dy < SNAP_THRESHOLD * SNAP_THRESHOLD) nearDupes++
+    }
+  }
+
+  // T-junctions (node close to edge interior — should already be absorbed)
+  const marginSq = COLLINEAR_NODE_MARGIN * COLLINEAR_NODE_MARGIN
+  for (const e of edges) {
+    const a = nodeById.get(e.nodeA), b = nodeById.get(e.nodeB)
+    if (!a || !b) continue
+    const dx = b.x - a.x, dy = b.y - a.y
+    const lenSq = dx * dx + dy * dy
+    if (lenSq < 1e-12) continue
+    for (const n of nodes) {
+      if (n.id === e.nodeA || n.id === e.nodeB) continue
+      const t = ((n.x - a.x) * dx + (n.y - a.y) * dy) / lenSq
+      if (t <= 0.05 || t >= 0.95) continue
+      const px = a.x + t * dx, py = a.y + t * dy
+      if ((n.x - px) ** 2 + (n.y - py) ** 2 <= marginSq) tJunctions++
+    }
+  }
+
+  if (crossings || nearDupes || tJunctions) {
+    console.warn(`[topology] Remaining after repair: ${crossings} crossing(s), ${nearDupes} near-dup node(s), ${tJunctions} T-junction(s)`)
+  } else {
+    console.log('[topology] Street graph OK')
+  }
+  return { crossings, nearDupes, tJunctions, affectedDistrictIds }
+}
+
+// For each boundary street, find non-boundary nodes that lie close to the
+// edge's interior and snap them onto the boundary, splitting the boundary
+// edge at that point. Fixes interior streets whose endpoints almost-touch a
+// boundary edge but don't quite reach a boundary node — these pass through
+// `resolveStreetCrossings` undetected (near-endpoint t/s values) and leave
+// a visible gap at the junction. Runs after `absorbCollinearNodes` so that
+// the interior network is already cleaned up; runs before `pruneAcuteStubs`
+// so the new boundary nodes can participate in stub pruning.
+// Mutates `nodes` and `edges` in place. Returns the number of boundary edges split.
+function snapInteriorNodesToBoundary(nodes, edges, margin = BOUNDARY_SNAP_MARGIN) {
+  if (edges.length === 0 || nodes.length < 3) return 0
+
+  const nodeById = new Map(nodes.map(n => [n.id, n]))
+
+  const boundaryNodeIds = new Set()
+  const boundaryEdges = []
+  const interiorEdges = []
+  for (const e of edges) {
+    if (String(e.id).startsWith('street-boundary')) {
+      boundaryEdges.push(e)
+      boundaryNodeIds.add(e.nodeA)
+      boundaryNodeIds.add(e.nodeB)
+    } else {
+      interiorEdges.push(e)
+    }
+  }
+
+  const interiorNodes = nodes.filter(n => !boundaryNodeIds.has(n.id))
+  const marginSq = margin * margin
+
+  // For each boundary edge, collect interior nodes whose projection falls in the
+  // edge interior (t ∈ (0.05, 0.95)) and are within `margin` perpendicularly.
+  const edgeSplitMap = new Map()  // boundaryEdge index → [{t, nodeId, px, py}]
+  for (let i = 0; i < boundaryEdges.length; i++) {
+    const be = boundaryEdges[i]
+    const A = nodeById.get(be.nodeA), B = nodeById.get(be.nodeB)
+    if (!A || !B) continue
+    const dx = B.x - A.x, dy = B.y - A.y
+    const lenSq = dx * dx + dy * dy
+    if (lenSq < 1e-12) continue
+
+    const sp = []
+    for (const n of interiorNodes) {
+      const t = ((n.x - A.x) * dx + (n.y - A.y) * dy) / lenSq
+      if (t <= 0.05 || t >= 0.95) continue
+      const px = A.x + t * dx, py = A.y + t * dy
+      const ddx = n.x - px, ddy = n.y - py
+      if (ddx * ddx + ddy * ddy > marginSq) continue
+      sp.push({ t, nodeId: n.id, px, py })
+    }
+    if (sp.length > 0) edgeSplitMap.set(i, sp)
+  }
+
+  if (edgeSplitMap.size === 0) return 0
+
+  const edgeKey = (a, b) => a < b ? `${a}_${b}` : `${b}_${a}`
+  const existingKeys = new Set(edges.map(e => edgeKey(e.nodeA, e.nodeB)))
+  const newBoundaryEdges = []
+  let splitCount = 0
+
+  for (let i = 0; i < boundaryEdges.length; i++) {
+    const be = boundaryEdges[i]
+    const sp = edgeSplitMap.get(i)
+    if (!sp) { newBoundaryEdges.push(be); continue }
+
+    sp.sort((a, b) => a.t - b.t)
+    // Snap each interior node in-place to its projection on the boundary edge.
+    for (const s of sp) {
+      const n = nodeById.get(s.nodeId)
+      if (n) { n.x = s.px; n.y = s.py }
+    }
+
+    // Chain: nodeA → N₁ → N₂ → … → nodeB
+    const chain = [be.nodeA, ...sp.map(s => s.nodeId), be.nodeB]
+    for (let j = 0; j < chain.length - 1; j++) {
+      const nA = chain[j], nB = chain[j + 1]
+      if (nA === nB) continue
+      const k = edgeKey(nA, nB)
+      if (existingKeys.has(k)) continue
+      existingKeys.add(k)
+      newBoundaryEdges.push({ ...be, id: `${be.id}-s${j}`, nodeA: nA, nodeB: nB })
+    }
+    splitCount++
+  }
+
+  edges.length = 0
+  edges.push(...interiorEdges, ...newBoundaryEdges)
+  if (splitCount > 0) console.log(`snapInteriorNodesToBoundary: split ${splitCount} boundary edges through interior nodes (margin=${margin})`)
+  return splitCount
 }
 
 // Delete any connected component with fewer than `minSize` nodes. Catches
@@ -913,8 +1075,10 @@ export default class StreetVoronoiGenerator {
     snapPerimeterJunctionsToBoundary(finalNodes, finalEdges, districts)
     resolveStreetCrossings(finalNodes, finalEdges)
     absorbCollinearNodes(finalNodes, finalEdges)
+    snapInteriorNodesToBoundary(finalNodes, finalEdges)
     pruneAcuteStubs(finalNodes, finalEdges)
     removeOrphanComponents(finalNodes, finalEdges)
+    const topologyIssues = ensureTopology(finalNodes, finalEdges)
 
     // Trade roads are appended after cleanup so the long external run isn't pruned
     // as a stub/orphan; they link into the finished graph at the nearest junction.
@@ -955,7 +1119,7 @@ export default class StreetVoronoiGenerator {
     const byType = finalEdges.reduce((acc, e) => { acc[e.type] = (acc[e.type] || 0) + 1; return acc }, {})
     const typeStr = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(', ')
     console.log(`Street graph: ${junctions.length} junctions (${typeStr}), ${allCells.length} Voronoi cells`)
-    return { junctions, cells: allCells, seeds: allSeeds }
+    return { junctions, cells: allCells, seeds: allSeeds, topologyIssues }
   }
 
   // Perimeter seeds with canonical direction on each edge so shared district

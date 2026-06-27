@@ -1,5 +1,4 @@
 import * as THREE from 'three'
-import { pointInPolygon } from './utils/renderUtils.js'
 
 const GROUND_Y     = 0
 const PARA_SCALE   = 0.13 / 2.3         // matches BuildingRenderer
@@ -14,6 +13,8 @@ const MOUSE_SENS   = 0.0005             // radians / pixel
 const PITCH_MIN    = -20 * Math.PI / 180  // 20° below horizontal
 const PITCH_MAX    =  Math.PI / 2 - 0.01  // just under straight up
 const FENCE_CLEARANCE = 0.012             // world units, on top of CHAR_RADIUS
+const FLOOR_HEIGHT    = 1.4 * PARA_SCALE  // matches lib.grid.floorHeight default
+const HALF_FLOOR      = FLOOR_HEIGHT * 0.5
 
 // Shortest distance from (x,y) to segment a→b.
 function distToSegment(x, y, a, b) {
@@ -45,22 +46,6 @@ export default class WalkMode {
     this._head.castShadow = false
     scene.add(this._head)
 
-    // Building footprint polygons for collision — the ACTUAL built wing footprints (world
-    // space), not the full plot boundary, so the character can cross plot/yard space freely
-    // and only collides with real building walls.
-    this._collisionPolys = []
-    for (const { entry } of (buildingRenderer?._lastPolyWingEntries ?? [])) {
-      const wings = entry.spec?.footprint?.wings ?? []
-      const c = Math.cos(entry.rotY ?? 0), sn = Math.sin(entry.rotY ?? 0)
-      for (const w of wings) {
-        if (!w.vertices?.length) continue
-        this._collisionPolys.push(w.vertices.map(([vx, vz]) => {
-          const px = vx * PARA_SCALE, pz = vz * PARA_SCALE
-          return { x: entry.x + px * c + pz * sn, y: entry.z - px * sn + pz * c }
-        }))
-      }
-    }
-
     // Fence segments (world-space) for collision — treated as thin solid walls, blocked
     // whenever the candidate position comes within FENCE_CLEARANCE of one.
     this._fenceSegments = fenceSegments ?? []
@@ -74,20 +59,23 @@ export default class WalkMode {
     this._yaw     = initialYaw ?? 0
     this._pitch   = -0.10  // slight downward look on entry (within 20° floor)
     this._camDist = 0.08   // world units from head (orbit radius)
+    this._py      = 0      // vertical offset in world units (PgUp/PgDown)
 
     this._placeCharacter()
 
     // HUD overlay
     this._hud = document.createElement('div')
     this._hud.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:50;color:#fff;font:13px/1.4 monospace;text-shadow:1px 1px 3px #000;pointer-events:none;text-align:center'
-    this._hud.textContent = 'WALK MODE  —  WASD: move  |  CapsLock: sprint toggle  |  Mouse: look  |  Shift+W: exit'
+    this._hud.textContent = 'WALK MODE  —  WASD: move  |  PgUp/PgDn: floor  |  CapsLock: sprint toggle  |  Mouse: look  |  Shift+W: exit'
     document.body.appendChild(this._hud)
 
     // Input state
     this._keys = {}
     this._sprinting = false
     this._onKeyDown = (e) => {
-      if (e.code === 'CapsLock') { this._sprinting = !this._sprinting; e.preventDefault(); return }
+      if (e.code === 'CapsLock')  { this._sprinting = !this._sprinting; e.preventDefault(); return }
+      if (e.code === 'PageUp')   { this._py += HALF_FLOOR; e.preventDefault(); return }
+      if (e.code === 'PageDown') { this._py -= HALF_FLOOR; e.preventDefault(); return }
       this._keys[e.code] = true
     }
     this._onKeyUp   = (e) => { this._keys[e.code] = false }
@@ -132,8 +120,8 @@ export default class WalkMode {
   }
 
   _placeCharacter() {
-    this._char.position.set(this._px, GROUND_Y + BODY_HEIGHT / 2, this._pz)
-    this._head.position.set(this._px, PIVOT_Y, this._pz)
+    this._char.position.set(this._px, GROUND_Y + this._py + BODY_HEIGHT / 2, this._pz)
+    this._head.position.set(this._px, GROUND_Y + this._py + BODY_HEIGHT + HEAD_RADIUS, this._pz)
     this._head.rotation.y = this._yaw
   }
 
@@ -160,13 +148,8 @@ export default class WalkMode {
       const nz = this._pz + (dz / len) * speed
 
       let blocked = false
-      for (const poly of this._collisionPolys) {
-        if (pointInPolygon(nx, nz, poly)) { blocked = true; break }
-      }
-      if (!blocked) {
-        for (const { a, b } of this._fenceSegments) {
-          if (distToSegment(nx, nz, a, b) < CHAR_RADIUS + FENCE_CLEARANCE) { blocked = true; break }
-        }
+      for (const { a, b } of this._fenceSegments) {
+        if (distToSegment(nx, nz, a, b) < CHAR_RADIUS + FENCE_CLEARANCE) { blocked = true; break }
       }
       if (!blocked) {
         this._px = nx
@@ -181,8 +164,9 @@ export default class WalkMode {
   _updateCamera() {
     // Camera orbits around the head centre. Pitch=+π/2 puts the camera directly
     // above the head looking straight down; pitch=0 is level behind the character.
+    const pivotY = GROUND_Y + this._py + BODY_HEIGHT + HEAD_RADIUS
     const camX = this._px - Math.sin(this._yaw) * Math.cos(this._pitch) * this._camDist
-    const camY = Math.max(GROUND_Y + 0.005, PIVOT_Y + Math.sin(this._pitch) * this._camDist)
+    const camY = pivotY + Math.sin(this._pitch) * this._camDist
     const camZ = this._pz - Math.cos(this._yaw) * Math.cos(this._pitch) * this._camDist
     this._camera.position.set(camX, camY, camZ)
 
@@ -194,7 +178,7 @@ export default class WalkMode {
       Math.cos(this._yaw) * Math.sin(this._pitch)
     )
 
-    this._camera.lookAt(this._px, PIVOT_Y, this._pz)
+    this._camera.lookAt(this._px, pivotY, this._pz)
   }
 
   destroy() {

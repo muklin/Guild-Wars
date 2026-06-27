@@ -639,7 +639,7 @@ export default class TerrainRenderer {
 
   getEdgeAtWorldPos(worldX, worldY) {
     if (!this.terrainData || !this.terrainData.edges) return null
-    const threshold = 1.5
+    const threshold = 0.375
     let closestEdge = null
     let closestDistance = threshold
     for (const edgeId in this.terrainData.edges) {

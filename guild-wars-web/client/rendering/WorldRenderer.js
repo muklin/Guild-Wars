@@ -37,6 +37,7 @@ export default class WorldRenderer {
     this._walkMode = null
     this._walkModeOnExit = null
     this._hqHoverMesh = null
+    this._cameraMoveCallbacks = []
   }
 
 
@@ -125,6 +126,7 @@ export default class WorldRenderer {
     if (camMoved || this._needsRender || periodicRefresh) {
       this._lastCamPos = { x: p.x, y: p.y, z: p.z }
       this._needsRender = false
+      if (camMoved) this._cameraMoveCallbacks.forEach(fn => fn())
       this.renderer.render(this.scene, this.camera)
       if (this.showDebug) {
         this._debugEl.textContent = `triangles: ${this.renderer.info.render.triangles}  draws: ${this.renderer.info.render.calls}`
@@ -153,6 +155,30 @@ export default class WorldRenderer {
 
   focusCameraOn(x, z) {
     this.cameraController?.focusOn(x, z)
+  }
+
+  // Pan + zoom to an HQ location. No-op in walk mode.
+  focusOnHQ(hq) {
+    if (!hq || this._walkMode) return
+    const cc = this.cameraController
+    const cd = this.cityDistrictData
+    let x = 0, z = 0, found = false
+    if (hq.kind === 'plot') {
+      const plot = cd?.plots?.find(p => p.id === hq.refId)
+      if (plot?.blockCorners?.length) {
+        x = plot.blockCorners.reduce((s, c) => s + c.x, 0) / plot.blockCorners.length
+        z = plot.blockCorners.reduce((s, c) => s + c.y, 0) / plot.blockCorners.length
+        found = true
+      }
+    } else if (hq.kind === 'landmark') {
+      const lb = cd?.landmarkBuildings?.[hq.refId]
+      if (lb) { x = lb.x; z = lb.z; found = true }
+    }
+    if (!found) return
+    cc.focusOn(x, z)
+    this.camera.zoom = cc.maxZoom * 0.5
+    this.camera.updateProjectionMatrix()
+    this.markDirty()
   }
 
   setHomePosition(x, z) {
@@ -192,6 +218,23 @@ export default class WorldRenderer {
   }
 
 
+  // ── Camera helpers ──────────────────────────────────────────────────────────
+
+  // Convert a world-space point (x, y, z) to CSS pixel coordinates.
+  worldToScreen(x, y, z) {
+    const v = new THREE.Vector3(x, y ?? 0, z)
+    v.project(this.camera)
+    return {
+      x: (v.x * 0.5 + 0.5) * window.innerWidth,
+      y: (-v.y * 0.5 + 0.5) * window.innerHeight
+    }
+  }
+
+  addCameraMoveCallback(fn) { this._cameraMoveCallbacks.push(fn) }
+  removeCameraMoveCallback(fn) {
+    this._cameraMoveCallbacks = this._cameraMoveCallbacks.filter(f => f !== fn)
+  }
+
   // ── Getters ─────────────────────────────────────────────────────────────────
 
   get terrainData()         { return this.terrainRenderer.terrainData }
@@ -222,40 +265,40 @@ export default class WorldRenderer {
   }
 
   updateRegionColor(regionId, terrainType) {
-    return this.terrainRenderer.updateRegionColor(regionId, terrainType)
+    this.terrainRenderer.updateRegionColor(regionId, terrainType); this.markDirty()
   }
 
   selectRegion(regionId) {
-    return this.terrainRenderer.selectRegion(regionId)
+    this.terrainRenderer.selectRegion(regionId); this.markDirty()
   }
 
   deselectRegion(regionId) {
-    return this.terrainRenderer.deselectRegion(regionId)
+    this.terrainRenderer.deselectRegion(regionId); this.markDirty()
   }
 
   previewRegionType(regionId, terrainType) {
-    return this.terrainRenderer.previewRegionType(regionId, terrainType)
+    this.terrainRenderer.previewRegionType(regionId, terrainType); this.markDirty()
   }
 
   selectEdge(edgeId) {
-    return this.terrainRenderer.selectEdge(edgeId)
+    this.terrainRenderer.selectEdge(edgeId); this.markDirty()
   }
 
   deselectEdge(edgeId) {
-    return this.terrainRenderer.deselectEdge(edgeId)
+    this.terrainRenderer.deselectEdge(edgeId); this.markDirty()
   }
 
   previewEdgeType(edgeId, edgeType) {
-    return this.terrainRenderer.previewEdgeType(edgeId, edgeType)
+    this.terrainRenderer.previewEdgeType(edgeId, edgeType); this.markDirty()
   }
 
   updateEdgeColor(edgeId, terrainType) {
-    return this.terrainRenderer.updateEdgeColor(edgeId, terrainType)
+    this.terrainRenderer.updateEdgeColor(edgeId, terrainType); this.markDirty()
   }
 
   setEdgeHover(edgeId) {
     if (this.mode !== 'terrain') return
-    return this.terrainRenderer.setEdgeHover(edgeId)
+    this.terrainRenderer.setEdgeHover(edgeId); this.markDirty()
   }
 
   renderThreats(threats, regions) {
@@ -322,33 +365,35 @@ export default class WorldRenderer {
   }
 
   updateDistrictColor(districtId, districtType) {
-    return this.districtRenderer.updateDistrictColor(districtId, districtType)
+    this.districtRenderer.updateDistrictColor(districtId, districtType); this.markDirty()
   }
 
   selectDistrict(districtId) {
-    return this.districtRenderer.selectDistrict(districtId)
+    this.districtRenderer.selectDistrict(districtId); this.markDirty()
   }
 
   deselectDistrict(districtId) {
-    return this.districtRenderer.deselectDistrict(districtId)
+    this.districtRenderer.deselectDistrict(districtId); this.markDirty()
   }
 
   previewDistrictType(districtId, type) {
-    return this.districtRenderer.previewDistrictType(districtId, type)
+    this.districtRenderer.previewDistrictType(districtId, type); this.markDirty()
   }
 
   selectCityEdge(edgeId) {
     this.districtRenderer.selectCityEdge(edgeId)
     this._highlightBoundaryChain(edgeId, 0xffffff)
+    this.markDirty()
   }
 
   deselectCityEdge(edgeId) {
     this.districtRenderer.deselectCityEdge(edgeId)
     this.groundRenderer.clearBoundaryChainHighlight(edgeId)
+    this.markDirty()
   }
 
   previewCityEdgeType(edgeId, type) {
-    return this.districtRenderer.previewCityEdgeType(edgeId, type)
+    this.districtRenderer.previewCityEdgeType(edgeId, type); this.markDirty()
   }
 
   updateCityEdgeColor(edgeId, type) {
@@ -356,13 +401,14 @@ export default class WorldRenderer {
   }
 
   setDistrictHover(districtId) {
-    return this.districtRenderer.setDistrictHover(districtId)
+    this.districtRenderer.setDistrictHover(districtId); this.markDirty()
   }
 
   setCityEdgeHover(edgeId) {
     this.groundRenderer.clearBoundaryChainHighlight()
     this.districtRenderer.setCityEdgeHover(edgeId)
     this._highlightBoundaryChain(edgeId, 0xffff66)
+    this.markDirty()
   }
 
   // Recolor boundary-sampled streets for a district edge.
@@ -605,6 +651,7 @@ export default class WorldRenderer {
     this.districtRenderer.clearFactionDistrict()
     this.groundRenderer.clearDistrictHighlight()
     this.terrainRenderer.clearFactionRegion()
+    this.markDirty()
   }
 
   setRegionHover(regionId) {
@@ -626,6 +673,7 @@ export default class WorldRenderer {
     } else if (faction.regionId !== undefined) {
       this.terrainRenderer.highlightFactionRegion(faction.regionId)
     }
+    this.markDirty()
   }
 
   // Switch plot bases to/from the finished grassy-brown ground (leaving District Setup).
@@ -878,36 +926,54 @@ export default class WorldRenderer {
     if (!hq || !this.renderer || !this.scene) return null
     try {
       const cd = this.cityDistrictData
-      let wx = 0, wz = 0
+      const br = this.groundRenderer?.buildingRenderer
+
+      let cx = 0, cz = 0, halfW = 0.25, halfH = 0.25
 
       if (hq.kind === 'landmark') {
         const lb = cd?.landmarkBuildings?.[hq.refId]
-        if (lb) { wx = lb.x; wz = lb.z }
+        if (lb) { cx = lb.x; cz = lb.z }
       } else {
         const plot = cd?.plots?.find(p => p.id === hq.refId)
         if (plot?.blockCorners?.length) {
-          wx = plot.blockCorners.reduce((s, c) => s + c.x, 0) / plot.blockCorners.length
-          wz = plot.blockCorners.reduce((s, c) => s + c.y, 0) / plot.blockCorners.length
+          const xs = plot.blockCorners.map(c => c.x)
+          const zs = plot.blockCorners.map(c => c.y)
+          const minX = Math.min(...xs), maxX = Math.max(...xs)
+          const minZ = Math.min(...zs), maxZ = Math.max(...zs)
+          cx = (minX + maxX) / 2; cz = (minZ + maxZ) / 2
+          halfW = (maxX - minX) / 2; halfH = (maxZ - minZ) / 2
         }
       }
 
-      // Isometric-ish shot from above-and-south. Buildings sit at Y≈0.075 and
-      // are ~0.05-0.2 world units tall, so camera at Y=0.35 gives a clean view.
-      const snapCam = new THREE.PerspectiveCamera(45, 300 / 180, 0.001, 100)
-      snapCam.position.set(wx + 0.12, 0.35, wz + 0.30)
-      snapCam.lookAt(wx, 0.08, wz)
+      const pad = Math.max(halfW, halfH) * 0.25
+      const sz = Math.max(halfW + pad, halfH + pad)
 
-      // Resize renderer to snapshot dimensions, render, capture, restore
+      // Orthographic camera directly overhead — top-down ground-floor plan view
+      const snapCam = new THREE.OrthographicCamera(-sz, sz, sz, -sz, 0.01, 50)
+      snapCam.position.set(cx, 20, cz)
+      snapCam.lookAt(cx, 0, cz)
+      snapCam.up.set(0, 0, -1)
+
+      // Hide roofs so we see the building footprint/walls from above, not the roof surface
+      const roofsWere = br?._roofsVisible ?? true
+      if (br) br.setRoofsVisible(false)
+
       const origW = this.renderer.domElement.width
       const origH = this.renderer.domElement.height
       const origPixelRatio = this.renderer.getPixelRatio()
       const origBackground = this.scene.background
-      this.scene.background = new THREE.Color(0x0d1117)  // dark neutral for snapshot
+      const origClipPlanes = [...this.renderer.clippingPlanes]
+
+      this.renderer.clippingPlanes = []
+      this.scene.background = new THREE.Color(0x0d1117)
       this.renderer.setPixelRatio(1)
-      this.renderer.setSize(300, 180, false)
+      this.renderer.setSize(240, 240, false)
       this.renderer.render(this.scene, snapCam)
-      const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85)
+      const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.90)
+
       this.scene.background = origBackground
+      this.renderer.clippingPlanes = origClipPlanes
+      if (br) br.setRoofsVisible(roofsWere)
       this.renderer.setSize(origW / origPixelRatio, origH / origPixelRatio, false)
       this.renderer.setPixelRatio(origPixelRatio)
       this.markDirty()

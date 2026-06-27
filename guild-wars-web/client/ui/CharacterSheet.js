@@ -584,7 +584,9 @@ function _build(state) {
   const tb = document.createElement('div')
   tb.className = 'cs-title-bar'
   tb.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 10px;background:#4a3828;cursor:move;flex-shrink:0'
-  tb.innerHTML = '<span style="font-size:10px;color:#d4c4a0;user-select:none;letter-spacing:1px">Guild Member Dossier</span>'
+  const _tbRole  = ROLE_LABELS[ch.role] || ch.role || ''
+  const _tbTitle = `Guild Member Dossier: ${ch.name} - ${ch.class || '—'} - ${ch.level} - ${_tbRole}`
+  tb.innerHTML = `<span style="font-size:10px;color:#d4c4a0;user-select:none;letter-spacing:1px">${_esc(_tbTitle)}</span>`
   const closeBtn = document.createElement('button')
   closeBtn.textContent = '×'
   closeBtn.style.cssText = 'background:none;border:none;color:#d4c4a0;font-size:18px;cursor:pointer;line-height:1;padding:0 4px'

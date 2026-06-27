@@ -20,6 +20,9 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
 const WINDOWS = ['window', 'window-short', 'window-single', 'window-shutter', 'window-closed']
 const STONE_MATS = new Set(['stone', 'granite', 'brick'])
+// Material priority for lean-to party walls — only the higher-priority side draws.
+const MAT_PRIO = { stone: 3, granite: 3, brick: 3, plaster: 2, wood: 1 }
+const matPrio = m => MAT_PRIO[m] ?? 1
 const RENDER_ROOFS = true   // set false to hide roofs while testing walls
 const RENDER_DORMERS = true // dormers are the last roof feature to add — off for now
 // TEMPORARY roof debug flags — revert when done comparing roof shapes.
@@ -75,7 +78,7 @@ function edgeOutwardNormal(a, b, wingPoly) {
 //   - covered by neither → ordinary exterior wall.
 // Returns [t0, t1, interbuilding].
 const WALL_STEP = 0.1   // model units stepped outward to probe for an adjoining wing
-function boundaryIntervals(a, b, wingPoly, siblingWings, neighborWings, tol) {
+function boundaryIntervals(a, b, wingPoly, siblingWings, neighborWings, tol, currentZHeight, currentZHeightEnd) {
   const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy, L = Math.sqrt(L2) || 1
   const ts = [0, 1]
   for (const w of [...siblingWings, ...neighborWings]) {
@@ -100,9 +103,29 @@ function boundaryIntervals(a, b, wingPoly, siblingWings, neighborWings, tol) {
     const mt = (t0 + t1) / 2
     const ox = a.x + dx * mt + nx * WALL_STEP, oy = a.y + dy * mt + ny * WALL_STEP
     const pt = { x: ox, y: oy }
-    if (siblingWings.some(w => pointInPoly(pt, w.poly))) continue   // interior to this building — drop
-    const interbuilding = neighborWings.some(w => pointInPoly(pt, w.poly))
-    out.push([t0, t1, interbuilding])
+    const matchingSiblings = siblingWings.filter(w => pointInPoly(pt, w.poly))
+    if (matchingSiblings.length > 0) {
+      // Sibling wings at the SAME z-height share an open passage — no wall between them.
+      // Sibling wings at a DIFFERENT z-height produce a lean-to wall (no windows/doors).
+      // Only the higher-priority material draws; return sibMat so the caller can decide.
+      const sameLevel = matchingSiblings.some(w =>
+        w.floors.some(fe => fe.type !== 'roof' && Math.abs(fe.zHeight - currentZHeight) < 1e-6))
+      if (sameLevel) continue
+      // Find the best material of the sibling floors that overlap this floor's Y range.
+      let sibMat = null
+      for (const w of matchingSiblings) {
+        for (const fe of w.floors) {
+          if (fe.type === 'roof') continue
+          if (fe.zHeight < currentZHeightEnd - 1e-6 && currentZHeight < fe.zHeight + fe.height - 1e-6) {
+            if (matPrio(fe.material) > matPrio(sibMat)) sibMat = fe.material
+          }
+        }
+      }
+      out.push([t0, t1, 'sibling', sibMat])
+    } else {
+      const isInterbuilding = neighborWings.some(w => pointInPoly(pt, w.poly))
+      out.push([t0, t1, isInterbuilding ? 'interbuilding' : 'free'])
+    }
   }
   return out
 }
@@ -341,6 +364,8 @@ export function assemble(spec, lib) {
           siblingWingsAll.filter(w => yOverlaps(entry, w.floors)),
           neighborWingsAll.filter(w => yOverlaps(entry, w.floors)),
           WALL_TOL,
+          entry.zHeight,
+          entry.zHeight + entry.height,
         )
       }
 
@@ -379,14 +404,20 @@ export function assemble(spec, lib) {
           // party-wall suppression gets no floating brace.
           const braceA = mat === 'plaster' && rand() < 0.5
           const braceB = mat === 'plaster' && rand() < 0.5
-          for (const [t0, t1, interbuilding] of drawIntervals(poly, i, a, b, f)) {
+          for (const [t0, t1, wallType, sibMat] of drawIntervals(poly, i, a, b, f)) {
             const segL = L * (t1 - t0)
             if (segL < 1e-4) continue
-            // Party wall with a neighbour BUILDING (not a sibling wing): keep it, but
-            // route everything this interval places into the hidden-by-default,
-            // top-down-only group instead of the normal always-visible walls group.
-            currentWallGroup = interbuilding ? interbuildingGroup : wallsGroup
-            const s0x = a.x + ux * L * t0, s0y = a.y + uy * L * t0     // segment start
+            // Lean-to sibling wall: skip if the sibling has higher material priority — it draws this face.
+            if (wallType === 'sibling' && matPrio(sibMat) > matPrio(mat)) continue
+            currentWallGroup = wallsGroup
+            const isPartyWall = wallType === 'sibling' || wallType === 'interbuilding'
+            // Pull party walls slightly inward so coplanar faces from both sides don't fight.
+            let pox = 0, poz = 0
+            if (isPartyWall) {
+              const { nx: onx, ny: ony } = edgeOutwardNormal(a, b, poly)
+              pox = -onx * 0.02; poz = -ony * 0.02
+            }
+            const s0x = a.x + ux * L * t0 + pox, s0y = a.y + uy * L * t0 + poz
             const nBays = Math.max(1, Math.round(segL / B)), pitch = segL / nBays
             // Uprights snapped to bay boundaries (both ends + up to 4 interior, ≤6 total),
             // so windows/doors at bay CENTRES always sit between uprights, never on one.
@@ -401,12 +432,12 @@ export function assemble(spec, lib) {
               // The post kit part is authored at the standard floor height H — stretch it
               // to floorH so a 1.5-floor's posts still reach the plank above (decision #2,
               // per-floor height) instead of stopping 2/3 of the way up.
-              if (f === 0 && STONE_MATS.has(mat)) addStoneColumn(currentWallGroup, lib, mat, ppx, ppz, yBase, rotY, floorH)
-              else place(lib.get('post'), ppx, ppz, yBase, rotY, 1, 1, floorH / H)
+              if (f === 0 && STONE_MATS.has(mat)) addStoneColumn(currentWallGroup, lib, mat, ppx, ppz, yBase, rotY, floorH - 0.02)
+              else place(lib.get('post'), ppx, ppz, yBase, rotY, 1, 1, (floorH - 0.02) / H)
             }
             // A door is forced on the ground floor of the frontage edge (first visible
             // segment), centred in its middle bay — guaranteeing one front door per building.
-            const doorBay = (f === 0 && i === frontEdge && !doorPlaced) ? Math.floor(nBays / 2) : -1
+            const doorBay = (f === 0 && i === frontEdge && !doorPlaced && !isPartyWall) ? Math.floor(nBays / 2) : -1
             const hasBraceA = braceA && t0 === 0, hasBraceB = braceB && t1 === 1
             const shortWall = nBays < 2   // too narrow a run to read as a "wall" — never window it
             for (let k = 0; k < nBays; k++) {
@@ -424,7 +455,7 @@ export function assemble(spec, lib) {
                   // always the Foundation's material too (decision #5) — steps match it.
                   addEntranceStairs(wallsGroup, lib, px, pz, yBase, outNx, outNz, entry.material)
                 }
-              } else if (!bracedHere && !shortWall) {
+              } else if (!isPartyWall && !bracedHere && !shortWall) {
                 // Never a window on or right next to the door — checked by world distance
                 // (not bay index) so it also holds across a corner, where the door's wing
                 // and this bay's wing are different edges that just happen to sit close.
@@ -494,7 +525,7 @@ export function assemble(spec, lib) {
         // open step at each side corner where the lower wall's edge doesn't line up with the
         // jettied wall's pushed-forward edge — both read as a hole if left uncovered.
         const A = wingPoly[frontEdge], Bw = wingPoly[j], Aj = jettyPoly[frontEdge], Bj = jettyPoly[j]
-        const shelfY = jettyBaseTopH
+        const shelfY = jettyBaseTopH - 0.02
         const floorReg = lib.regions.wood ?? lib.regions.bridge.glb 
         const stepReg = lib.regions.woodtrim
         wallsGroup.add(trisMesh(quadTris(

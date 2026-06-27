@@ -62,6 +62,7 @@ export default class GuildPanel {
     this._expandedUpgradeId = null
     this._previewDistrictId = null
     this._hqSnapshot = null
+    this._snapshotRequested = false
     this._pendingHq = null         // hq chosen but not yet Applied
     this._pendingSnapshot = null
     this._selectedFactionId = null  // for Diplomacy ring click
@@ -139,6 +140,7 @@ export default class GuildPanel {
 
   setHQSnapshot(dataUrl) {
     this._hqSnapshot = dataUrl
+    this._snapshotRequested = false
     if (this.el && this.tab === 'Headquarters') this._render()
   }
 
@@ -208,7 +210,7 @@ export default class GuildPanel {
     titleBar.className = 'guild-title-bar'
     titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(0,0,0,0.4);border-bottom:1px solid #444;cursor:move;flex-shrink:0'
     const title = document.createElement('span')
-    title.textContent = this.guild?.name ? this.guild.name : 'Guild Setup'
+    title.textContent = this.guild?.name ? `Guild: ${this.guild.name}` : 'Guild Setup'
     title.style.cssText = 'font-size:13px;font-weight:bold;user-select:none'
     const closeBtn = document.createElement('button')
     closeBtn.textContent = '×'
@@ -971,11 +973,11 @@ export default class GuildPanel {
       if (snapshot) {
         const img = document.createElement('img')
         img.src = snapshot
-        img.style.cssText = 'width:240px;height:150px;object-fit:cover;border-radius:4px;flex-shrink:0;border:1px solid #333'
+        img.style.cssText = 'width:200px;height:200px;object-fit:cover;border-radius:4px;flex-shrink:0;border:1px solid #333'
         return img
       }
       const box = document.createElement('div')
-      box.style.cssText = 'width:240px;height:150px;background:#111;border:1px solid #222;border-radius:4px;display:flex;align-items:center;justify-content:center;flex-shrink:0'
+      box.style.cssText = 'width:200px;height:200px;background:#111;border:1px solid #222;border-radius:4px;display:flex;align-items:center;justify-content:center;flex-shrink:0'
       box.innerHTML = '<span style="color:#333;font-size:11px">No snapshot</span>'
       return box
     }
@@ -1034,6 +1036,11 @@ export default class GuildPanel {
     const snapRow = document.createElement('div')
     snapRow.style.cssText = 'display:flex;gap:10px;margin-bottom:12px;align-items:flex-start'
 
+    // Auto-request snapshot re-render if lost (e.g. page reload)
+    if (!this._hqSnapshot && !this._snapshotRequested) {
+      this._snapshotRequested = true
+      this.eventBus.emit('HQ_SNAPSHOT_REQUEST', hq)
+    }
     snapRow.appendChild(mkSnapshot(this._hqSnapshot))
 
     // Owned upgrades (right)
@@ -1058,13 +1065,6 @@ export default class GuildPanel {
     }
     snapRow.appendChild(ownedCol)
     body.appendChild(snapRow)
-
-    // ── Change HQ button + note ────────────────────────────────────────────
-    body.appendChild(mkPickBtn())
-    const rehouseNote = document.createElement('div')
-    rehouseNote.style.cssText = 'font-size:10px;color:#555;margin-top:6px;margin-bottom:18px;line-height:1.5'
-    rehouseNote.textContent = 'Changing your HQ costs 2 Monthly Actions and forfeits all HQ Upgrades.'
-    body.appendChild(rehouseNote)
 
     // ── Available HQ Upgrades ─────────────────────────────────────────────────
     const upgHdr = document.createElement('div')

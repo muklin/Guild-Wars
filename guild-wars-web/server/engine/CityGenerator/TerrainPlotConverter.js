@@ -1,5 +1,28 @@
 import { polygonCrossesSegment } from '../voronoi/VoronoiUtils.js'
 
+// For cells belonging to the City coarse region (gap-strip cells between the outer
+// gutter and the world Voronoi boundary), look up the nearest non-City region's type
+// so the visible strip matches the surrounding terrain rather than rendering as
+// 'unassigned' brown.
+function inferTerrainType(cell, regionTypeById, worldRegions) {
+  const t = regionTypeById.get(cell.parentRegionId)
+  if (t && t !== 'City') return t
+
+  // City-region cell: find nearest non-City coarse region by seed distance.
+  const poly = cell.polygon
+  const cx = poly.reduce((s, v) => s + v.x, 0) / poly.length
+  const cy = poly.reduce((s, v) => s + v.y, 0) / poly.length
+  let bestDist = Infinity, bestType = null
+  for (const r of worldRegions) {
+    if (r.assignedType === 'City' || !r.assignedType) continue
+    const sp = r.seedPoint
+    if (!sp) continue
+    const d = (sp.x - cx) ** 2 + (sp.y - cy) ** 2
+    if (d < bestDist) { bestDist = d; bestType = r.assignedType }
+  }
+  return bestType ?? 'Plains'
+}
+
 // Convert world-level terrain fine Voronoi cells into plot objects.
 // City plots render on top at GROUND_Y, terrain plots at GROUND_Y - 0.001, so
 // terrain is not visible under the city without needing an explicit gutter clip.
@@ -9,7 +32,8 @@ import { polygonCrossesSegment } from '../voronoi/VoronoiUtils.js'
 // pairs form road centreline segments. Terrain plots crossed by a road are flagged
 // with `hasRoad: true` for future road-side building placement.
 // worldRegions: coarse terrain region array — fine cells always have assignedType: null,
-// so we look it up from the parent region.
+// so we look it up from the parent region (City-region cells get the nearest non-City
+// region's type so the gap strip between gutter and Voronoi boundary looks correct).
 export function convertTerrainCellsToPlots(terrainFineCells, outerGutterPolygon, tradeRoadWaypoints = [], worldRegions = []) {
   const regionTypeById = new Map(worldRegions.map(r => [r.id, r.assignedType]))
 
@@ -38,7 +62,7 @@ export function convertTerrainCellsToPlots(terrainFineCells, outerGutterPolygon,
       id: `t${plotId++}`,
       blockId: null,
       districtId: null,
-      assignedType: cell.assignedType ?? regionTypeById.get(cell.parentRegionId) ?? null,
+      assignedType: cell.assignedType ?? inferTerrainType(cell, regionTypeById, worldRegions),
       blockCorners: poly,
       streetEdges: [],
       type: 'terrain',
