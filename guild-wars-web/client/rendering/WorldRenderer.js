@@ -45,9 +45,12 @@ export default class WorldRenderer {
 
   init() {
     this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(0xff00ff)
+    // background = null → transparent; CSS sky gradient on body shows through.
+    // Debug mode overrides this with solid magenta (see toggleDebugVisualization).
+    this.scene.background = null
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    this.renderer.setClearColor(0x000000, 0)   // fully transparent clear
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.setPixelRatio(window.devicePixelRatio)
     this.renderer.shadowMap.enabled = false
@@ -56,7 +59,72 @@ export default class WorldRenderer {
     this.renderer.localClippingEnabled = true
     this._floorScrollClipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)
     this._lastAppliedFloorScrollUnits = null
+    // World-boundary clip planes — trim all standard materials at the map edge so
+    // geometry (edge ribbons, region fills) never bleeds outside [0, worldSize]².
+    // ShaderMaterials with clipping:false (FP bands, sky quad) are exempt.
+    const W = this.worldSize
+    this._worldBoundaryClipPlanes = [
+      new THREE.Plane(new THREE.Vector3( 1, 0,  0),  0),  // x ≥ 0
+      new THREE.Plane(new THREE.Vector3(-1, 0,  0),  W),  // x ≤ W
+      new THREE.Plane(new THREE.Vector3( 0, 0,  1),  0),  // z ≥ 0
+      new THREE.Plane(new THREE.Vector3( 0, 0, -1),  W),  // z ≤ W
+    ]
+    this.renderer.clippingPlanes = [...this._worldBoundaryClipPlanes]
     document.body.insertBefore(this.renderer.domElement, document.body.firstChild)
+
+    // Sky quad — full-screen plane rendered behind all scene geometry.
+    // Vertex shader maps directly to clip-space so it works in any camera mode
+    // (orthographic iso, top-down, walk perspective). ShaderMaterial default
+    // clipping:false means it ignores world-boundary and floor-scroll clip planes.
+    const skyGeo = new THREE.BufferGeometry()
+    skyGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      -1, -1, 0,   1, -1, 0,   1,  1, 0,  -1,  1, 0,
+    ]), 3))
+
+    skyGeo.setIndex([0, 1, 2,  0, 2, 3])
+    const skyMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uColorBottom: { value: new THREE.Color(0x0a0a12) },  // near-black ground/nadir
+        uColorMid:    { value: new THREE.Color(0x87ceeb) },  // horizon sky blue
+        uColorTop:    { value: new THREE.Color(0x1a4a9a) },  // deep overhead blue
+        uInvProj:     { value: new THREE.Matrix4() },         // updated each frame
+        uInvView:     { value: new THREE.Matrix4() },         // updated each frame
+      },
+      // NDC xy → view-space direction → world direction → gradient by elevation (Y)
+      vertexShader: `
+        varying vec2 vNDC;
+        void main() { vNDC = position.xy; gl_Position = vec4(position.xy, 1.0, 1.0); }
+      `,
+      fragmentShader: `
+        varying vec2 vNDC;
+        uniform vec3 uColorBottom, uColorMid, uColorTop;
+        uniform mat4 uInvProj, uInvView;
+        void main() {
+          vec4 viewDir = uInvProj * vec4(vNDC, 0.0, 1.0);
+          viewDir.w = 0.0;
+          vec3 worldDir = normalize((uInvView * viewDir).xyz);
+          // worldDir.y: -1=down → 0=horizon → +1=up; map to [0,1]
+          float t = clamp(worldDir.y * 0.5 + 0.5, 0.0, 1.0);
+          const float mid = 0.5;
+          vec3 col = t < mid
+            ? mix(uColorBottom, uColorMid, t / mid)
+            : mix(uColorMid, uColorTop, (t - mid) / (1.0 - mid));
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+      depthTest: false,
+      depthWrite: false,
+    })
+    this._skyMesh = new THREE.Mesh(skyGeo, skyMat)
+    this._skyMesh.renderOrder = -999
+    this._skyMesh.frustumCulled = false
+    // Update camera matrices just before draw so gradient is always in sync
+    this._skyMesh.onBeforeRender = (_r, _s, cam) => {
+      const u = skyMat.uniforms
+      u.uInvProj.value.copy(cam.projectionMatrixInverse)
+      u.uInvView.value.copy(cam.matrixWorld)
+    }
+    this.scene.add(this._skyMesh)
 
     this._debugEl = document.createElement('div')
     this._debugEl.style.cssText = 'position:fixed;top:8px;left:8px;z-index:20;color:#fff;font:12px monospace;pointer-events:none;text-shadow:1px 1px 2px #000;display:none'
@@ -241,6 +309,7 @@ export default class WorldRenderer {
   get cityDistrictData()    { return this.districtRenderer.cityDistrictData }
   get edgePointsById()      { return this.terrainRenderer.edgePointsById }
   get cityEdgePointsById()  { return this.districtRenderer.cityEdgePointsById }
+  get isWalkMode()          { return !!this._walkMode }
 
 
   // ── Terrain delegation ──────────────────────────────────────────────────────
@@ -309,6 +378,18 @@ export default class WorldRenderer {
     return this.terrainRenderer.renderTrades(tradingDestinations, terrainData)
   }
 
+  renderForeignPowerBands(foreignPowers) {
+    return this.terrainRenderer.renderForeignPowerBands(foreignPowers)
+  }
+
+  getFPBandCenters() {
+    return this.terrainRenderer._fpBandCenters
+  }
+
+  setFPBandsVisible(visible) {
+    return this.terrainRenderer.setFPBandsVisible(visible)
+  }
+
   clearMarkers() {
     return this.terrainRenderer.clearMarkers()
   }
@@ -319,6 +400,25 @@ export default class WorldRenderer {
 
   getRegionAtWorldPos(worldX, worldY) {
     return this.terrainRenderer.getRegionAtWorldPos(worldX, worldY)
+  }
+
+  getFineCellAtWorldPos(worldX, worldY) {
+    return this.terrainRenderer.getFineCellAtWorldPos(worldX, worldY)
+  }
+
+  setFineCellHover(cellId) {
+    this.terrainRenderer.setFineCellHover(cellId)
+    this._needsRender = true
+  }
+
+  setFineCellSelected(cellId) {
+    this.terrainRenderer.setFineCellSelected(cellId)
+    this._needsRender = true
+  }
+
+  clearFineCellSelected() {
+    this.terrainRenderer.clearFineCellSelected()
+    this._needsRender = true
   }
 
   getEdgeAtWorldPos(worldX, worldY) {
@@ -651,6 +751,7 @@ export default class WorldRenderer {
     this.districtRenderer.clearFactionDistrict()
     this.groundRenderer.clearDistrictHighlight()
     this.terrainRenderer.clearFactionRegion()
+    this.groundRenderer.clearTerrainPlotHighlight()
     this.markDirty()
   }
 
@@ -670,10 +771,20 @@ export default class WorldRenderer {
     if (faction.districtId !== undefined) {
       this.districtRenderer.highlightFactionDistrict(faction.districtId)
       this.groundRenderer.highlightDistrict(faction.districtId)
+    } else if (faction.plotId !== undefined) {
+      this.groundRenderer.highlightTerrainPlot(faction.plotId)
     } else if (faction.regionId !== undefined) {
       this.terrainRenderer.highlightFactionRegion(faction.regionId)
     }
     this.markDirty()
+  }
+
+  getTerrainPlotAtWorldPos(worldX, worldY) {
+    return this.groundRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
+  }
+
+  getTerrainPlotByFineCellId(fineCellId) {
+    return this.groundRenderer._terrainPlots.find(p => p.fineCellId === fineCellId) ?? null
   }
 
   // Switch plot bases to/from the finished grassy-brown ground (leaving District Setup).
@@ -707,6 +818,7 @@ export default class WorldRenderer {
     const isTopDown = this.cameraController.toggleTopDown()
     this.groundRenderer.buildingRenderer.setInterbuildingWallsVisible(isTopDown)
     this._lastAppliedFloorScrollUnits = null   // force _applyFloorScrollClip to re-sync next frame
+    this._cameraMoveCallbacks.forEach(fn => fn())  // reposition DOM overlays immediately
     this.markDirty()
     return isTopDown
   }
@@ -723,7 +835,7 @@ export default class WorldRenderer {
     this._lastAppliedFloorScrollUnits = cc.floorScrollUnits
 
     if (cc.floorScrollUnits >= FLOOR_SCROLL_MAX) {
-      this.renderer.clippingPlanes = []
+      this.renderer.clippingPlanes = [...this._worldBoundaryClipPlanes]
       return
     }
     const br = this.groundRenderer.buildingRenderer
@@ -734,7 +846,7 @@ export default class WorldRenderer {
     // bleeds into the level above.
     const clipY = BUILDING_GROUND_Y + (cc.floorScrollUnits * 0.5 + 0.1) * br.floorHeightWorld
     this._floorScrollClipPlane.constant = clipY
-    this.renderer.clippingPlanes = [this._floorScrollClipPlane]
+    this.renderer.clippingPlanes = [...this._worldBoundaryClipPlanes, this._floorScrollClipPlane]
   }
 
   // ── Walk Mode ─────────────────────────────────────────────────────────────────
@@ -745,7 +857,7 @@ export default class WorldRenderer {
   // a clip plane left over from a prior top-down session would silently clip the walk
   // view too (and vice versa, stale walk state would leak into the next top-down/iso view).
   _clearFloorScrollClip() {
-    this.renderer.clippingPlanes = []
+    this.renderer.clippingPlanes = [...this._worldBoundaryClipPlanes]
     this._lastAppliedTopDown = false
     this._lastAppliedFloorScrollUnits = null
   }
@@ -765,6 +877,7 @@ export default class WorldRenderer {
         () => this._exitWalkMode(), this.groundRenderer.buildingRenderer, this.groundRenderer._fenceSegments,
       )
       this.cameraController.setEnabled(false)
+      this.terrainRenderer.setFPBandsVisible(false)
       return true
     } else {
       this._exitWalkMode()
@@ -777,6 +890,7 @@ export default class WorldRenderer {
     const { x, z } = this._walkMode.characterPosition
     this._walkMode.destroy()
     this._walkMode = null
+    this.terrainRenderer.setFPBandsVisible(true)
     this._clearFloorScrollClip()   // back to iso — always unclipped, never inherits walk/top-down state
     // Re-centre the iso camera on the character's last position at max zoom
     this.cameraController.targetPosition.set(x, 0, z)
@@ -819,6 +933,9 @@ export default class WorldRenderer {
       })
       this.originalMaterials.clear()
     }
+    // Magenta background in debug so transparent areas are obvious; sky quad otherwise.
+    this.scene.background = this.showDebug ? new THREE.Color(0xff00ff) : null
+    if (this._skyMesh) this._skyMesh.visible = !this.showDebug
     console.log(`Debug mode ${this.showDebug ? 'ON' : 'OFF'}`)
     this.markDirty()
   }

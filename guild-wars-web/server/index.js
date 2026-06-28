@@ -120,6 +120,10 @@ app.get('/api/state', (req, res) => {
     threats: setupPhase.threats,
     tradingDestinations: setupPhase.tradingDestinations,
     factions: setupPhase.factions,
+    gods: setupPhase.gods,
+    magicSystem: setupPhase.magicSystem,
+    foreignPowers: setupPhase.foreignPowers,
+    worldDomains: setupPhase.worldDomains,
     assetVersion: ASSET_VERSION,
     multiplayer: mp.getStateForSeat(req.header('X-Seat-Key'))
   })
@@ -300,6 +304,24 @@ app.post('/api/setup/terrain/edge', requireActiveSeat, async (req, res) => {
   }
 })
 
+app.post('/api/setup/terrain/edges', requireActiveSeat, async (req, res) => {
+  try {
+    const { edgeIds, edgeType, description, name } = req.body
+    if (!Array.isArray(edgeIds) || edgeIds.length === 0) throw new Error('edgeIds required')
+    const log = []
+    for (const edgeId of edgeIds) {
+      const r = setupPhase.assignEdgeType(edgeId, edgeType, description, name)
+      if (r.log) log.push(...r.log)
+    }
+    const seat = seatOf(req)
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Edge', entityName: name?.trim() || edgeType, vetoable: true } : null)
+    res.json({ ok: true, edges: gameStateManager.worldTerrainData.edges, log })
+  } catch (error) {
+    console.error('Edge batch assign error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
 // POST /api/setup/terrain/done - Finish terrain placement
 app.post('/api/setup/terrain/done', requireActiveSeat, async (req, res) => {
   try {
@@ -314,6 +336,86 @@ app.post('/api/setup/terrain/done', requireActiveSeat, async (req, res) => {
     })
   } catch (error) {
     console.error('Terrain done error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/terrain/god - Define a new god during Terrain Setup
+app.post('/api/setup/terrain/god', async (req, res) => {
+  try {
+    const { domains, name, description, worldDomains } = req.body
+    if (!name?.trim()) return res.status(400).json({ ok: false, error: 'Name required' })
+    if (worldDomains && !setupPhase.worldDomains) setupPhase.worldDomains = worldDomains
+    const seat = seatOf(req)
+    const god = setupPhase.addGod({ domains: domains || [], name: name.trim(), description: description || '', seatId: seat?.id ?? null })
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'God', entityName: name.trim(), vetoable: true } : null)
+    res.json({ ok: true, god, worldDomains: setupPhase.worldDomains })
+  } catch (error) {
+    console.error('Add god error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/terrain/magic-system - Define or refine the world magic system
+app.post('/api/setup/terrain/magic-system', async (req, res) => {
+  try {
+    const { conceptType, name, description } = req.body
+    if (!name?.trim()) return res.status(400).json({ ok: false, error: 'Name required' })
+    const seat = seatOf(req)
+    const wasNew = !setupPhase.magicSystem
+    let result
+    if (wasNew) {
+      result = setupPhase.defineMagicSystem({ conceptType, name: name.trim(), description: description || '', seatId: seat?.id ?? null })
+    } else {
+      result = setupPhase.refineMagicSystem({ name: name.trim(), description: description || '' })
+    }
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Magic', entityName: name.trim(), vetoable: wasNew } : null)
+    res.json({ ok: true, magicSystem: result })
+  } catch (error) {
+    console.error('Magic system error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/terrain/foreign-power - Define a new Foreign Power during Terrain Setup
+app.post('/api/setup/terrain/foreign-power', async (req, res) => {
+  try {
+    const { direction, name, colour, description } = req.body
+    if (direction == null) return res.status(400).json({ ok: false, error: 'Direction required' })
+    if (!name?.trim()) return res.status(400).json({ ok: false, error: 'Name required' })
+    const seat = seatOf(req)
+    const result = setupPhase.addForeignPower({ direction, name: name.trim(), colour: colour || '#888888', description: description || '', seatId: seat?.id ?? null })
+    if (result.error) return res.status(400).json({ ok: false, error: result.error })
+    await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Foreign Power', entityName: name.trim(), vetoable: false } : null)
+    res.json({ ok: true, foreignPower: result, foreignPowers: setupPhase.foreignPowers })
+  } catch (error) {
+    console.error('Foreign power error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/fp-threat - Declare a Foreign Power as a military threat
+app.post('/api/setup/fp-threat', async (req, res) => {
+  try {
+    const { fpId, name, description } = req.body
+    const result = setupPhase.addForeignPowerThreat({ fpId, name, description })
+    await autoSave()
+    res.json(result)
+  } catch (error) {
+    console.error('FP threat error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/fp-trade - Define a trade route with a Foreign Power
+app.post('/api/setup/fp-trade', async (req, res) => {
+  try {
+    const { fpId, name, description } = req.body
+    const result = setupPhase.addForeignPowerTrade({ fpId, name, description })
+    await autoSave()
+    res.json(result)
+  } catch (error) {
+    console.error('FP trade error:', error)
     res.status(400).json({ ok: false, error: error.message })
   }
 })
@@ -362,8 +464,8 @@ app.post('/api/setup/city/preview', requireActiveSeat, async (req, res) => {
 // POST /api/setup/city/assign - Apply (lock) a city district with its resources
 app.post('/api/setup/city/assign', requireActiveSeat, async (req, res) => {
   try {
-    const { districtId, districtType, description, name, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass } = req.body
-    const result = setupPhase.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource, name)
+    const { districtId, districtType, description, name, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass, resourceDefs } = req.body
+    const result = setupPhase.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource, name, resourceDefs || [])
     const seat = seatOf(req)
     const entityName = name?.trim() || residentialClass || LeadershipClass || districtType
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'District', entityName, vetoable: true } : null)
@@ -437,8 +539,8 @@ app.post('/api/setup/subdivision/assign', requireActiveSeat, async (req, res) =>
 // POST /api/setup/terrain-district - Assign a district type to a terrain region
 app.post('/api/setup/terrain-district', requireActiveSeat, async (req, res) => {
   try {
-    const { regionId, districtType, description, name, producedResource, consumedResources } = req.body
-    const result = setupPhase.assignTerrainDistrict(regionId, districtType, description, producedResource, consumedResources, name)
+    const { regionId, plotId, districtType, description, name, producedResource, consumedResources, resourceDefs } = req.body
+    const result = setupPhase.assignTerrainDistrict(regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs || [])
     const seat = seatOf(req)
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'District', entityName: name?.trim() || districtType, vetoable: true } : null)
     res.json({ ok: true, resourceRegistry: result.resourceRegistry, factions: result.factions, log: result.log })

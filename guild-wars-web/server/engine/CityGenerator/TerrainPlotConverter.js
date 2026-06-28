@@ -60,6 +60,8 @@ export function convertTerrainCellsToPlots(terrainFineCells, outerGutterPolygon,
 
     plots.push({
       id: `t${plotId++}`,
+      fineCellId: cell.id,
+      regionId: cell.parentRegionId,
       blockId: null,
       districtId: null,
       assignedType: cell.assignedType ?? inferTerrainType(cell, regionTypeById, worldRegions),

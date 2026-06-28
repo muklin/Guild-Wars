@@ -259,6 +259,14 @@ export default class GroundRenderer {
     this._fenceSegments        = []   // { a:{x,y}, b:{x,y} } world-space — for collision (e.g. WalkMode)
     this._fenceMeshes          = []   // merged post/panel/rail meshes, one per material — see _buildFences
 
+    // ── Terrain plot state ────────────────────────────────────────────────────
+    this._terrainPlotMeshMap   = new Map()  // plotId → THREE.Mesh
+    this._terrainPlots         = []         // stored for hit testing
+    this._terrainPlotHighlightMesh    = null
+    this._terrainPlotHighlightMeshRef = null
+    this._terrainPlotHighlightOrigColor   = undefined
+    this._terrainPlotHighlightOrigEmissive = undefined
+
     // ── Combined district highlight ───────────────────────────────────────────
     // Covers streets, plot bases, and squares in one array.
     // Each entry: { mat, color, emissive, ei } for save/restore.
@@ -1198,14 +1206,17 @@ export default class GroundRenderer {
   renderTerrainPlots(terrainPlots) {
     this.clearTerrainPlotLayer()
     if (!terrainPlots?.length) return
+    this._terrainPlots = terrainPlots
     const TERRAIN_FILL_COLORS = {
       Plains:   0xb2de69, Desert:  0xedca72, Mountains: 0x8d8d8d,
       Forest:   0x218c21, Lake:    0x1a5abf, Sea:       0x0e6e6c,
-      Hills:    0x699B4F, Swamp:   0x4a6b4a, unassigned: 0xb8a680,
+      Hills:    0x699B4F, Swamp:   0x4a6b4a, 'Ice Sheet': 0xf4f8ff, unassigned: 0xb8a680,
     }
     let terrainFailed = 0
     for (const plot of terrainPlots) {
-      const color = TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
+      const baseColor = TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
+      const seed  = this._polySeed(plot.blockCorners)
+      const color = this._jitterColor(baseColor, seed)
       const mesh = this._makeFill(plot.blockCorners, color, GROUND_Y - 0.001, { roughness: 0.6, emissiveIntensity: 0.2 })
       if (!mesh) { terrainFailed++; continue }
       this.scene.add(mesh)
@@ -1213,13 +1224,66 @@ export default class GroundRenderer {
         mesh.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6), side: THREE.DoubleSide })
       }
       this._terrainPlotMeshes.push(mesh)
+      if (plot.id) this._terrainPlotMeshMap.set(plot.id, mesh)
     }
     if (terrainFailed > 0) console.warn(`[GroundRenderer] terrain plot _makeFill failures: ${terrainFailed} / ${terrainPlots.length}`)
   }
 
   clearTerrainPlotLayer() {
+    this.clearTerrainPlotHighlight()
     for (const m of this._terrainPlotMeshes) this.scene.remove(m)
     this._terrainPlotMeshes = []
+    this._terrainPlotMeshMap.clear()
+    this._terrainPlots = []
+  }
+
+  highlightTerrainPlot(plotId) {
+    this.clearTerrainPlotHighlight()
+    const plot = this._terrainPlots.find(p => p.id === plotId)
+    if (!plot?.blockCorners?.length) return
+    const poly = plot.blockCorners
+    const verts = []
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length]
+      verts.push(a.x, GROUND_Y + 0.002, a.y, b.x, GROUND_Y + 0.002, b.y)
+    }
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+    this._terrainPlotHighlightMesh = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xffff66 }))
+    this.scene.add(this._terrainPlotHighlightMesh)
+    const mesh = this._terrainPlotMeshMap.get(plotId)
+    if (mesh) {
+      this._terrainPlotHighlightMeshRef = mesh
+      this._terrainPlotHighlightOrigColor = mesh.material.color.getHex()
+      this._terrainPlotHighlightOrigEmissive = mesh.material.emissive?.getHex()
+      const white = new THREE.Color(0xffffff)
+      mesh.material.color.lerp(white, 0.4)
+      if (mesh.material.emissive) mesh.material.emissive.lerp(white, 0.4)
+      mesh.material.emissiveIntensity = 0.85
+    }
+  }
+
+  clearTerrainPlotHighlight() {
+    if (this._terrainPlotHighlightMesh) {
+      this.scene.remove(this._terrainPlotHighlightMesh)
+      this._terrainPlotHighlightMesh.geometry?.dispose()
+      this._terrainPlotHighlightMesh = null
+    }
+    if (this._terrainPlotHighlightMeshRef) {
+      const m = this._terrainPlotHighlightMeshRef.material
+      if (this._terrainPlotHighlightOrigColor !== undefined) m.color.setHex(this._terrainPlotHighlightOrigColor)
+      if (this._terrainPlotHighlightOrigEmissive !== undefined && m.emissive) m.emissive.setHex(this._terrainPlotHighlightOrigEmissive)
+      this._terrainPlotHighlightMeshRef = null
+      this._terrainPlotHighlightOrigColor = undefined
+      this._terrainPlotHighlightOrigEmissive = undefined
+    }
+  }
+
+  getTerrainPlotAtWorldPos(worldX, worldY) {
+    for (const plot of this._terrainPlots) {
+      if (plot.blockCorners?.length && pointInPolygon(worldX, worldY, plot.blockCorners)) return plot
+    }
+    return null
   }
 
   // Switch plot bases between per-district colours (during setup) and uniform grassy brown.

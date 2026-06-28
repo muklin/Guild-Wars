@@ -41,9 +41,19 @@ export default class GameAPI {
     return this.request('/setup/terrain/edge', 'POST', { edgeId, edgeType, description, name })
   }
 
+  static async assignEdges(edgeIds, edgeType, description = '', name = '') {
+    return this.request('/setup/terrain/edges', 'POST', { edgeIds, edgeType, description, name })
+  }
+
   static async finishTerrain() {
     return this.request('/setup/terrain/done', 'POST')
   }
+
+  static async createGod(data)          { return this.request('/setup/terrain/god',            'POST', data) }
+  static async defineMagicSystem(data)  { return this.request('/setup/terrain/magic-system',   'POST', data) }
+  static async createForeignPower(data) { return this.request('/setup/terrain/foreign-power',  'POST', data) }
+  static async addForeignPowerThreat(data) { return this.request('/setup/fp-threat', 'POST', data) }
+  static async addForeignPowerTrade(data)  { return this.request('/setup/fp-trade',  'POST', data) }
 
   static async addThreat(regionId, description = '', name = '') {
     return this.request('/setup/threat', 'POST', { regionId, description, name })
@@ -53,12 +63,12 @@ export default class GameAPI {
     return this.request('/setup/trade', 'POST', { regionId, description, name, buys, sells })
   }
 
-  static async assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '') {
-    return this.request('/setup/city/assign', 'POST', { districtId, districtType, description, name, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass })
+  static async assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '', resourceDefs = []) {
+    return this.request('/setup/city/assign', 'POST', { districtId, districtType, description, name, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass, resourceDefs })
   }
 
-  static async assignTerrainDistrict(regionId, districtType, description = '', producedResource = '', consumedResources = [], name = '') {
-    return this.request('/setup/terrain-district', 'POST', { regionId, districtType, description, name, producedResource, consumedResources })
+  static async assignTerrainDistrict(regionId, plotId, districtType, description = '', producedResource = '', consumedResources = [], name = '', resourceDefs = []) {
+    return this.request('/setup/terrain-district', 'POST', { regionId, plotId, districtType, description, name, producedResource, consumedResources, resourceDefs })
   }
 
   static async assignCityEdge(edgeId, edgeType, description = '', name = '') {

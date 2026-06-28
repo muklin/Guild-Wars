@@ -87,6 +87,8 @@ export default class InputHandler {
       const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
       if (district) { this.eventBus.emit('DISTRICT_CLICKED', district.id); return }
       if (!this.renderer.guildSetupActive) {
+        const fineCell = this.renderer.getFineCellAtWorldPos(worldPos.x, worldPos.y)
+        if (fineCell) { this.eventBus.emit('TERRAIN_FINE_CELL_CLICKED', fineCell); return }
         const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
         if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
       }
@@ -131,18 +133,10 @@ export default class InputHandler {
     }
 
     if (this.renderer.mode === 'city') {
-      // Non-debug city hover (district/region selection)
+      // District hover applies in all sub-modes (debug and non-debug alike)
       const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
-      if (district) { 
-        this.renderer.setDistrictHover(district.id); this._hideTooltip(); 
-      }
-      const guildSetup = this.renderer.guildSetupActive
-      if (!guildSetup) {
-        const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
-        if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); this._hideTooltip(); }
-        const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-        if (region) { this.renderer.setRegionHover(region.id); this._hideTooltip(); }
-      }
+      if (district) { this.renderer.setDistrictHover(district.id); this._hideTooltip() }
+
       if (debug) {
         // Debug dot priority: block > plot > street junction seed > district center
         // Thresholds are ~1.5× the sphere visual radius so hovering is responsive
@@ -223,7 +217,18 @@ export default class InputHandler {
         return
       }
 
-      
+      // Standard non-debug hover: district was already checked above; now check
+      // terrain edges, fine cells, and regions. Return after the first hit so
+      // clearHover() only fires when nothing is under the cursor.
+      if (district) return  // district hover already set; don't clear it
+      if (!this.renderer.guildSetupActive) {
+        const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
+        if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); this._hideTooltip(); return }
+        const fineCell = this.renderer.getFineCellAtWorldPos(worldPos.x, worldPos.y)
+        if (fineCell) { this.renderer.setFineCellHover(fineCell.id); this._hideTooltip(); return }
+        const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+        if (region) { this.renderer.setRegionHover(region.id); this._hideTooltip(); return }
+      }
       this.renderer.clearHover()
       this._hideTooltip()
       return
@@ -280,6 +285,7 @@ export default class InputHandler {
   }
 
   onkeypress(e){
+    if (this._isTyping()) return
     if (e.code === 'KeyD' && e.shiftKey) {
       this.renderer.toggleDebugVisualization()
       this.eventBus.emit('DEBUG_TOGGLED', this.renderer.showDebug)
@@ -302,7 +308,6 @@ export default class InputHandler {
       e.preventDefault()
       return
     }
-    if (this._isTyping()) return
     if (e.code === 'Space') {
       this.renderer.isPaused = !this.renderer.isPaused
       console.log(`Render loop ${this.renderer.isPaused ? 'PAUSED' : 'RESUMED'}`)

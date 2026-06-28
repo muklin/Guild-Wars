@@ -1,4 +1,5 @@
 import CharacterSheet from './CharacterSheet.js'
+import { generateGuildNames } from './NameDialog.js'
 import { GUILD_TRAITS, TRAIT_BY_ID } from '../../shared/guildTraits.js'
 import { HQ_UPGRADES, UPGRADE_BY_ID } from '../../shared/hqUpgrades.js'
 import GameAPI from '../api/GameAPI.js'
@@ -8,7 +9,7 @@ import * as ViewStack from './ViewStack.js'
 function _factionCssColor(faction) {
   let n
   if (faction.type === 'leadership') n = DISTRICT_COLORS.get(faction.subclass) ?? DISTRICT_COLORS.Leadership
-  else if (faction.type === 'district') n = DISTRICT_COLORS.get(faction.subclass) ?? DISTRICT_COLORS.get(faction.name) ?? DISTRICT_COLORS.Residential
+  else if (faction.type === 'district') n = DISTRICT_COLORS.get(faction.subclass) ?? DISTRICT_COLORS.get(faction.typeName) ?? DISTRICT_COLORS.Residential
   else if (faction.type === 'terrain')  n = 0x6a9b5a
   else if (faction.type === 'trade')    n = 0xd4a017
   else n = DISTRICT_COLORS.Neutral
@@ -290,10 +291,42 @@ export default class GuildPanel {
     nameInput.placeholder = 'Enter guild name…'
     nameInput.disabled = locked
     nameInput.style.cssText = `flex:1;padding:7px 10px;background:#1a1a1a;border:1px solid ${locked ? '#333' : '#555'};border-radius:4px;color:${locked ? '#888' : '#fff'};font-size:14px;outline:none`
-    nameRow.appendChild(nameInput)
+    const nameWrap = document.createElement('div')
+    nameWrap.style.cssText = 'position:relative;flex:1'
+    nameWrap.appendChild(nameInput)
+    nameRow.appendChild(nameWrap)
+
     if (!locked) {
+      const showSuggestions = () => {
+        if (nameWrap.querySelector('.gp-name-suggestions')) return
+        const leaderChar = (this.guild.characters || []).find(c => c.role === 'guild-leader')
+        const standingMap = this.guild.standing || {}
+        const standingsChanged = Object.values(standingMap).some(v => v !== 50)
+        const suggestions = generateGuildNames({
+          headquartersDistrictType: this._hqDistrictType(),
+          leaderClass: leaderChar?.class || null,
+          traits: this.guild.traits || [],
+          standingsChanged
+        })
+        const dropdown = document.createElement('div')
+        dropdown.className = 'gp-name-suggestions'
+        dropdown.style.cssText = 'position:absolute;top:100%;left:0;right:0;z-index:100;background:#1a1a1a;border:1px solid #555;border-top:none;border-radius:0 0 4px 4px;overflow:hidden'
+        for (const s of suggestions) {
+          const chip = document.createElement('div')
+          chip.textContent = s
+          chip.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:12px;color:#ccc;border-bottom:1px solid #252525'
+          chip.addEventListener('mousedown', e => { e.preventDefault(); nameInput.value = s; dropdown.remove() })
+          chip.addEventListener('mouseenter', () => { chip.style.background = '#2a3a2a' })
+          chip.addEventListener('mouseleave', () => { chip.style.background = '' })
+          dropdown.appendChild(chip)
+        }
+        nameWrap.appendChild(dropdown)
+      }
+      nameInput.addEventListener('focus', showSuggestions)
+      nameInput.addEventListener('blur', () => setTimeout(() => nameWrap.querySelector('.gp-name-suggestions')?.remove(), 150))
+
       const saveBtn = document.createElement('button')
-      saveBtn.textContent = 'Save'
+      saveBtn.textContent = 'Apply'
       saveBtn.style.cssText = 'padding:7px 16px;background:#4a7c59;border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;flex-shrink:0'
       const doSave = () => {
         const n = nameInput.value.trim()
@@ -394,7 +427,7 @@ export default class GuildPanel {
       const grid = document.createElement('div')
       grid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px'
       for (const f of this.factions) {
-        const nm = f.subclass ? `${f.name}: ${f.subclass}` : f.name
+        const nm = f.name || f.typeName || ''
         const health = f.health ?? 70
         const influence = inf[f.id] ?? 0
         const standing = std[f.id] ?? 50
@@ -608,7 +641,7 @@ export default class GuildPanel {
 
       // Label outside the arc
       const labelPt = pt(pos.angle, RX + arcR + 14, RY + arcR + 14)
-      const nm = f.name || ''
+      const nm = f.name || f.typeName || ''
       const lbl = mkEl('text', {
         x: labelPt.x, y: labelPt.y + 4,
         'font-size': '8', fill: visible ? '#bbb' : '#444',
@@ -764,7 +797,7 @@ export default class GuildPanel {
     if (knownFactions.length || unknownFactions.length) {
       body.appendChild(sectionHdr('Faction Resources', '#7fd'))
       for (const f of knownFactions) {
-        const nm = f.subclass ? `${f.name}: ${f.subclass}` : f.name
+        const nm = f.name || f.typeName || ''
         const fHdr = document.createElement('div')
         fHdr.style.cssText = 'font-size:10px;color:#7fd;margin:8px 0 3px'
         fHdr.textContent = nm
@@ -787,11 +820,11 @@ export default class GuildPanel {
   // Compute per-round resource production/consumption for a faction.
   // Fixed row order: Gold, Labour, Basic Food, Security.
   _factionFlows(f) {
-    const sub  = f.subclass || ''
-    const name = f.name || ''
-    const isResidential    = f.type === 'district' && (name === 'Residential' || /Residential/i.test(name))
+    const sub      = f.subclass || ''
+    const typeName = f.typeName || ''
+    const isResidential    = f.type === 'district' && (typeName === 'Residential' || /Residential/i.test(typeName))
     const isLabourProducer = isResidential && /Slums|Middle/i.test(sub)
-    const isMarket         = f.type === 'district' && name === 'Market'
+    const isMarket         = f.type === 'district' && typeName === 'Market'
     const isNonResidential = f.type === 'district' && !isResidential
     const isLeadership     = f.type === 'leadership'
 
@@ -899,7 +932,7 @@ export default class GuildPanel {
     for (const n of nodes) {
       const { f, flows, x, y, cx } = n
       const fColor = _factionCssColor(f)
-      const nm = f.subclass ? `${f.name}: ${f.subclass}` : f.name
+      const nm = f.name || f.typeName || ''
 
       // Card background
       svg.appendChild(mkEl('rect', { x, y, width: NW, height: NH, rx: 3, fill: '#0b0b0b', stroke: fColor, 'stroke-width': '1.5' }))
@@ -1398,7 +1431,7 @@ export default class GuildPanel {
 
   _districtFactionName(districtId) {
     const f = this.factions.find(x => x.districtId === districtId)
-    return f ? (f.subclass ? `${f.name}: ${f.subclass}` : f.name) : `District ${districtId ?? '?'}`
+    return f ? (f.name || f.typeName || `District ${districtId ?? '?'}`) : `District ${districtId ?? '?'}`
   }
 
   _hqDistrictType() {

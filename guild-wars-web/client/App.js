@@ -9,6 +9,10 @@ import MultiplayerUI from './ui/MultiplayerUI.js'
 import EventCardManager from './ui/EventCardManager.js'
 import config from './config.js'
 import DebugPanel from './ui/DebugPanel.js'
+import ForeignPowerDialog from './ui/ForeignPowerDialog.js'
+import GodDialog from './ui/GodDialog.js'
+import MagicSystemDialog from './ui/MagicSystemDialog.js'
+import NameDialog from './ui/NameDialog.js'
 export default class App {
   constructor() {
     this.renderer = null
@@ -37,9 +41,13 @@ export default class App {
     this.playerCount = 1
     this.currentPhase = null
     this.selectedTerrainRegionId = null
+    this.selectedTerrainPlotId = null
     this.pendingTerrainAction = null
     this.pendingResidentialClass = null
     this.pendingLeadershipClass = 'Monarchy'
+
+    this._fpLabelContainer = null
+    this._fpLabelEls = []
   }
 
   async init() {
@@ -54,6 +62,8 @@ export default class App {
 
       this.inputHandler = new InputHandler(this.eventBus)
       this.inputHandler.init(this.renderer)
+
+      this.renderer.addCameraMoveCallback(() => this._updateFPLabelPositions())
 
       this.debugPanel = new DebugPanel(this.renderer)
 
@@ -117,6 +127,17 @@ export default class App {
     this.eventBus.on('CITY_EDGE_APPLY',       (data) => this._handleCityEdgeApply(data))
 
     this.eventBus.on('TERRAIN_ACTION_SELECT', ({ action }) => {
+      if (action === 'Threat') {
+        const dialog = new NameDialog({
+          entityKind: 'threat', entityLabel: 'Threat', subType: 'Threat',
+          onApply: (name, description) => {
+            this.eventBus.emit('TERRAIN_THREAT_APPLY', { name, description })
+          },
+          onCancel: () => {}
+        })
+        dialog.open()
+        return
+      }
       this.pendingTerrainAction = action
       this._refreshDistrictPanel()
     })
@@ -138,6 +159,7 @@ export default class App {
           this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData)
           this.renderer.deselectRegion(regionId)
           this.selectedTerrainRegionId = null
+          this.selectedTerrainPlotId = null
           this.pendingTerrainAction = null
           this._refreshDistrictPanel()
         } else { this.uiManager.showError(response.error); this._refreshDistrictPanel() }
@@ -155,14 +177,62 @@ export default class App {
           this.uiManager.updateThreats(this.threats)
           this.renderer.deselectRegion(regionId)
           this.selectedTerrainRegionId = null
+          this.selectedTerrainPlotId = null
           this.pendingTerrainAction = null
           this._refreshDistrictPanel()
         } else { this.uiManager.showError(response.error); this._refreshDistrictPanel() }
       } catch (error) { this.uiManager.showError(error.message); this._refreshDistrictPanel() }
     })
 
-    this.eventBus.on('TERRAIN_DISTRICT_ASSIGN', async ({ regionId, districtType, description, producedResource, consumedResources }) => {
-      await this._handleTerrainDistrictAssign(regionId, districtType, description, producedResource, consumedResources)
+    this.eventBus.on('TERRAIN_FINE_CELL_CLICKED', (fineCell) => {
+      const regions = this.renderer.terrainData?.regions
+      if (!regions) return
+      const parent = regions.find(r => r.id === fineCell.parentRegionId)
+      if (!parent) return
+
+      if (this.currentPhase === 'CitySubdivision') {
+        const DISTRICT_FOR = { Forest: 'Forestry', Hills: 'Mining', Plains: 'Agriculture', Lake: 'Fishing', Sea: 'Fishing' }
+        const canDistrict = !!DISTRICT_FOR[parent.assignedType]
+        const canThreatTrade = !!parent.isEdge
+        if (!canDistrict && !canThreatTrade) return
+
+        // Resolve the terrain plot for this fine cell
+        const terrainPlot = this.renderer.getTerrainPlotByFineCellId(fineCell.id)
+        const plotId = terrainPlot?.id ?? null
+        const plotHasDistrict = plotId && (this.factions || []).some(f => f.type === 'terrain' && f.plotId === plotId)
+
+        // Toggle deselect if clicking the same plot that's already selected
+        if (this.selectedTerrainPlotId !== null && this.selectedTerrainPlotId === plotId) {
+          this.renderer.clearFineCellSelected()
+          this.renderer.deselectRegion(parent.id)
+          this.selectedTerrainRegionId = null
+          this.selectedTerrainPlotId = null
+          this.pendingTerrainAction = null
+          this._refreshDistrictPanel()
+          return
+        }
+
+        if (this.selectedTerrainRegionId !== null) this.renderer.deselectRegion(this.selectedTerrainRegionId)
+        if (this.selectedDistrictId !== null) {
+          this._revertProvisionalDistrict(this.selectedDistrictId)
+          this.renderer.deselectDistrict(this.selectedDistrictId)
+          this.selectedDistrictId = null
+          this.pendingDistrictType = null
+        }
+        this._clearCityEdgeSelection()
+        this.selectedTerrainRegionId = parent.id
+        this.selectedTerrainPlotId = plotId
+        this.pendingTerrainAction = null
+        // Highlight only this fine cell (white), not the whole region
+        this.renderer.setFineCellSelected(fineCell.id)
+        this._refreshDistrictPanel()
+      } else {
+        this._handleRegionClick(parent.id)
+      }
+    })
+
+    this.eventBus.on('TERRAIN_DISTRICT_ASSIGN', async ({ regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs }) => {
+      await this._handleTerrainDistrictAssign(regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs)
     })
 
     this.eventBus.on('NEW_GAME', async () => {
@@ -257,6 +327,50 @@ export default class App {
       const entered = this.renderer.toggleWalkMode(() => this.uiManager.setWalkMode(false))
       if (entered) this.uiManager.setWalkMode(true)
     })
+
+    // ── Terrain Setup worldbuilding ──
+    this.eventBus.on('ADD_FOREIGN_POWER', () => {
+      const dialog = new ForeignPowerDialog({
+        existingForeignPowers: this.gameState?.foreignPowers ?? [],
+        renderer: this.renderer,
+        onApply: async ({ direction, name, colour, description }) => {
+          try {
+            const res = await GameAPI.createForeignPower({ direction, name, colour, description })
+            if (!res.ok) this.uiManager.showError(res.error || 'Failed to add Foreign Power')
+          } catch (e) { this.uiManager.showError(e.message) }
+        },
+        onCancel: () => {}
+      })
+      dialog.open()
+    })
+
+    this.eventBus.on('ADD_GOD', () => {
+      const dialog = new GodDialog({
+        worldDomains: this.gameState?.worldDomains ?? null,
+        onApply: async ({ domains, name, description, worldDomains }) => {
+          try {
+            const res = await GameAPI.createGod({ domains, name, description, worldDomains })
+            if (!res.ok) this.uiManager.showError(res.error || 'Failed to add God')
+          } catch (e) { this.uiManager.showError(e.message) }
+        },
+        onCancel: () => {}
+      })
+      dialog.open()
+    })
+
+    this.eventBus.on('ADD_MAGIC', () => {
+      const dialog = new MagicSystemDialog({
+        existingSystem: this.gameState?.magicSystem ?? null,
+        onApply: async ({ conceptType, name, description }) => {
+          try {
+            const res = await GameAPI.defineMagicSystem({ conceptType, name, description })
+            if (!res.ok) this.uiManager.showError(res.error || 'Failed to define Magic System')
+          } catch (e) { this.uiManager.showError(e.message) }
+        },
+        onCancel: () => {}
+      })
+      dialog.open()
+    })
   }
 
   // The local player's guild (their Seat's, or the only one in solo play).
@@ -314,7 +428,7 @@ export default class App {
 
     if (this.currentPhase === 'CitySubdivision') {
       const DISTRICT_FOR = { Forest: 'Forestry', Hills: 'Mining', Plains: 'Agriculture', Lake: 'Fishing', Sea: 'Fishing' }
-      const canDistrict = !!DISTRICT_FOR[region.assignedType] && !region.terrainDistrict
+      const canDistrict = !!DISTRICT_FOR[region.assignedType]
       const canThreatTrade = !!region.isEdge
       if (canDistrict || canThreatTrade) {
         this._handleTerrainRegionClick(regionId)
@@ -367,6 +481,11 @@ export default class App {
           this.selectedEdgeIds.delete(edgeId)
           this.renderer.deselectEdge(edgeId)
         }
+        for (const edgeId of response.autoCliffEdgeIds || []) {
+          const edge = this.renderer.terrainData?.edges?.[edgeId]
+          if (edge) { edge.assignedType = 'Cliff' }
+          this.renderer.updateEdgeColor(edgeId, 'Cliff')
+        }
 
         this.selectedRegionId = null
         this.pendingTerrainType = null
@@ -402,6 +521,7 @@ export default class App {
         this.pendingLeadershipClass = 'Monarchy'
         this.selectedCityEdgeIds.clear()
         this.pendingCityEdgeType = null
+        this._refreshTerrainPanel()   // hides the floating panel + closes any open NameDialog
         this._finalizeTerrainDisplay()
         const cityData = response.cityDistrictData || { districts: [], edges: {}, edgePoints: [] }
         this.renderer.setCityDistrictData(cityData)
@@ -490,20 +610,19 @@ export default class App {
     const edgeIds = [...this.selectedEdgeIds]
     const edgeType = this.pendingEdgeType
     try {
-      for (const edgeId of edgeIds) {
-        const response = await GameAPI.assignEdge(edgeId, edgeType, description, name)
-        if (response.ok) {
+      const response = await GameAPI.assignEdges(edgeIds, edgeType, description, name)
+      if (response.ok) {
+        for (const edgeId of edgeIds) {
           const edge = this.renderer.terrainData?.edges?.[edgeId]
           if (edge) { edge.assignedType = edgeType; edge.name = name; edge.description = description }
           this.renderer.updateEdgeColor(edgeId, edgeType)
-        } else {
-          this.uiManager.showError(response.error)
-          this._refreshTerrainPanel()
-          return
         }
+        this._clearEdgeSelection()
+        this._refreshTerrainPanel()
+      } else {
+        this.uiManager.showError(response.error)
+        this._refreshTerrainPanel()
       }
-      this._clearEdgeSelection()
-      this._refreshTerrainPanel()
     } catch (error) { this.uiManager.showError(error.message); this._refreshTerrainPanel() }
   }
 
@@ -532,19 +651,21 @@ export default class App {
     this.pendingEdgeType = null
   }
 
-  _getAdjacentTypes(regionId) {
+  _getAdjacentRegions(regionId) {
     const edges = this.renderer.terrainData?.edges || {}
     const regions = this.renderer.terrainData?.regions || []
     const regionMap = new Map(regions.map(r => [r.id, r]))
-    const adjacentTypes = []
+    const seen = new Set()
+    const result = []
     for (const edge of Object.values(edges)) {
       const otherId = edge.regionA === regionId ? edge.regionB : edge.regionB === regionId ? edge.regionA : null
-      if (otherId !== null) {
+      if (otherId !== null && !seen.has(otherId)) {
+        seen.add(otherId)
         const other = regionMap.get(otherId)
-        if (other?.assignedType) adjacentTypes.push(other.assignedType)
+        if (other?.assignedType) result.push({ type: other.assignedType, name: other.name || '' })
       }
     }
-    return adjacentTypes
+    return result
   }
 
   _getEdgeAdjacentTypes(edgeId) {
@@ -593,7 +714,7 @@ export default class App {
 
     for (const ptId of freeEndpoints) {
       if (!this._isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap, pointPositions, worldSize)) {
-        return 'Endpoints must connect to a River, Sea, Lake, or the map edge'
+        return 'Endpoints must connect to a River, Sea, Lake, Ice Sheet, or the map edge'
       }
     }
 
@@ -616,9 +737,10 @@ export default class App {
       const rA = regionMap.get(edge.regionA)
       const rB = regionMap.get(edge.regionB)
 
-      // Sea or Lake adjacent to this point
-      if (rA?.assignedType === 'Sea' || rB?.assignedType === 'Sea') return true
-      if (rA?.assignedType === 'Lake' || rB?.assignedType === 'Lake') return true
+      // Sea, Lake, or Ice Sheet adjacent to this point
+      if (rA?.assignedType === 'Sea'       || rB?.assignedType === 'Sea')       return true
+      if (rA?.assignedType === 'Lake'      || rB?.assignedType === 'Lake')      return true
+      if (rA?.assignedType === 'Ice Sheet' || rB?.assignedType === 'Ice Sheet') return true
     }
     return false
   }
@@ -634,7 +756,8 @@ export default class App {
       panel.showContext('region', {
         pendingType: this.pendingTerrainType,
         isEdge: region?.isEdge ?? false,
-        adjacentTypes: this._getAdjacentTypes(this.selectedRegionId)
+        isNorthEdge: region?.isNorthEdge ?? false,
+        adjacentRegions: this._getAdjacentRegions(this.selectedRegionId)
       })
     } else if (this.selectedEdgeIds.size > 0) {
       const edgePts = this._getEdgeWorldPoints()
@@ -696,6 +819,7 @@ export default class App {
     if (this.selectedTerrainRegionId !== null) {
       this.renderer.deselectRegion(this.selectedTerrainRegionId)
       this.selectedTerrainRegionId = null
+      this.selectedTerrainPlotId = null
     }
 
     if (district.locked) { this._refreshDistrictPanel(); return }   // locked districts are final
@@ -728,6 +852,7 @@ export default class App {
     if (this.selectedTerrainRegionId === regionId) {
       this.renderer.deselectRegion(regionId)
       this.selectedTerrainRegionId = null
+      this.selectedTerrainPlotId = null
       this.pendingTerrainAction = null
       this._refreshDistrictPanel()
       return
@@ -741,23 +866,20 @@ export default class App {
     }
     this._clearCityEdgeSelection()
     this.selectedTerrainRegionId = regionId
+    this.selectedTerrainPlotId = null
     this.pendingTerrainAction = null
     this.renderer.selectRegion(regionId)
     this._refreshDistrictPanel()
   }
 
-  async _handleTerrainDistrictAssign(regionId, districtType, description = '', producedResource = '', consumedResources = [], name = '') {
+  async _handleTerrainDistrictAssign(regionId, plotId, districtType, description = '', producedResource = '', consumedResources = [], name = '', resourceDefs = []) {
     try {
-      const response = await GameAPI.assignTerrainDistrict(regionId, districtType, description, producedResource, consumedResources, name)
+      const response = await GameAPI.assignTerrainDistrict(regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs)
       if (response.ok) {
-        const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
-        if (region) {
-          region.terrainDistrict = districtType
-          region.terrainDistrictName = name || ''
-          region.terrainDistrictProducedResource = producedResource || null
-        }
         this.renderer.deselectRegion(regionId)
+        this.renderer.clearFineCellSelected()
         this.selectedTerrainRegionId = null
+        this.selectedTerrainPlotId = null
         this.pendingTerrainAction = null
         this.renderer.spawnTerrainDistrictFeature(regionId, districtType)
         if (response.resourceRegistry) {
@@ -807,12 +929,12 @@ export default class App {
   }
 
   // Apply = lock the district in. Validates + commits resources server-side.
-  async _handleDistrictApply({ name, description, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass }) {
+  async _handleDistrictApply({ name, description, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass, resourceDefs = [] }) {
     if (this.selectedDistrictId === null || !this.pendingDistrictType) return
     const districtId = this.selectedDistrictId
     const districtType = this.pendingDistrictType
     try {
-      const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource, name)
+      const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource, name, resourceDefs)
       if (response.ok) {
         const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === districtId)
         if (district) {
@@ -876,6 +998,7 @@ export default class App {
         if (this.selectedTerrainRegionId !== null) {
           this.renderer.deselectRegion(this.selectedTerrainRegionId)
           this.selectedTerrainRegionId = null
+          this.selectedTerrainPlotId = null
           this.pendingTerrainAction = null
         }
         if (this.selectedDistrictId !== null) {
@@ -1009,9 +1132,9 @@ export default class App {
     const fromCityDistricts = (this.renderer.cityDistrictData?.districts || [])
       .filter(d => d.producedResource && d.id !== this.selectedDistrictId)
       .map(d => d.producedResource.toLowerCase())
-    const fromTerrainDistricts = (this.renderer.terrainData?.regions || [])
-      .filter(r => r.terrainDistrictProducedResource && r.id !== this.selectedTerrainRegionId)
-      .map(r => r.terrainDistrictProducedResource.toLowerCase())
+    const fromTerrainDistricts = (this.factions || [])
+      .filter(f => f.type === 'terrain' && f.producedResource && f.plotId !== this.selectedTerrainPlotId)
+      .map(f => f.producedResource.toLowerCase())
     return [...fromCityDistricts, ...fromTerrainDistricts]
   }
 
@@ -1026,12 +1149,15 @@ export default class App {
       const region = this.renderer.terrainData?.regions?.find(r => r.id === this.selectedTerrainRegionId)
       if (region?.vertices?.length) panel.setAnchorPoints(region.vertices)
       else if (region?.seedPoint) panel.setAnchorPoints([{ x: region.seedPoint.x, y: region.seedPoint.y }])
+      const plotId = this.selectedTerrainPlotId ?? null
+      const hasDistrict = plotId ? (this.factions || []).some(f => f.type === 'terrain' && f.plotId === plotId) : false
       panel.showContext('terrainRegion', {
         regionType: region?.assignedType,
         isEdge: region?.isEdge ?? false,
-        hasDistrict: !!region?.terrainDistrict,
+        hasDistrict,
         pendingAction: this.pendingTerrainAction,
         regionId: this.selectedTerrainRegionId,
+        plotId,
         resourceRegistry: this.resourceRegistry,
         usedProducedResources: this._getUsedProducedResources(),
         ...shared
@@ -1178,8 +1304,11 @@ export default class App {
       this.factions = state.factions
       this.uiManager.updateFactions(this.factions)
     }
+    this.renderer.renderForeignPowerBands(state.foreignPowers || [])
+    this._updateFPLabels(state.foreignPowers || [], setupStep)
     this.inputHandler.setTerrainData(state)
     this.uiManager.showSetupPhase(setupStep)
+    if (setupStep === 'Terrain') this.uiManager.updateTerrainWorldbuildingButtons(state)
     // In Guild Setup the city is final — disable terrain/district-edge hover & select.
     this.renderer.guildSetupActive = (setupStep === 'GuildCreation' || setupStep === 'Complete')
     this.guilds = state.guilds || []
@@ -1202,6 +1331,150 @@ export default class App {
       this.eventBus.emit('SETUP_STARTED')
     }
     return true
+  }
+
+  // ── Foreign Power DOM labels ────────────────────────────────────────────────
+
+  _ensureFPLabelContainer() {
+    if (this._fpLabelContainer) return
+    const c = document.createElement('div')
+    c.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10'
+    document.body.appendChild(c)
+    this._fpLabelContainer = c
+  }
+
+  _updateFPLabels(foreignPowers, setupStep) {
+    this._ensureFPLabelContainer()
+    this._fpLabelContainer.innerHTML = ''
+    this._fpLabelEls = []
+    if (this.renderer.isWalkMode) return   // hide FP labels entirely in walk mode
+    if (!foreignPowers?.length) return
+
+    const centers = this.renderer.getFPBandCenters()
+    const inDistrictMode = setupStep === 'CitySubdivision'
+
+    for (const fp of foreignPowers) {
+      const center = centers.find(c => c.fp.id === fp.id)
+      if (!center) continue
+
+      const btn = document.createElement('button')
+      btn.textContent = fp.name
+      btn.style.cssText = [
+        'position:absolute', 'transform:translate(-50%,-50%)',
+        `color:${fp.colour || '#fff'}`, 'font:bold 13px Arial',
+        'background:rgba(0,0,0,0.55)', `border:1.5px solid ${fp.colour || '#888'}`,
+        'border-radius:20px', 'padding:3px 12px', 'white-space:nowrap',
+        'text-shadow:0 1px 3px rgba(0,0,0,0.9)',
+        inDistrictMode ? 'pointer-events:auto;cursor:pointer' : 'pointer-events:none;cursor:default',
+      ].join(';')
+      if (inDistrictMode) {
+        btn.addEventListener('click', (e) => { e.stopPropagation(); this._openFPStancePopup(fp, btn) })
+      }
+      this._fpLabelContainer.appendChild(btn)
+      this._fpLabelEls.push({ el: btn, worldX: center.worldX, worldY: center.worldY ?? 0, worldZ: center.worldZ })
+    }
+    this._updateFPLabelPositions()
+  }
+
+  _updateFPLabelPositions() {
+    for (const { el, worldX, worldY, worldZ } of this._fpLabelEls) {
+      const s = this.renderer.worldToScreen(worldX, worldY ?? 0, worldZ)
+      el.style.left = s.x + 'px'
+      el.style.top  = s.y + 'px'
+    }
+  }
+
+  _openFPStancePopup(fp, anchorEl) {
+    document.querySelector('.fp-stance-popup')?.remove()
+
+    const popup = document.createElement('div')
+    popup.className = 'fp-stance-popup'
+    popup.style.cssText = [
+      'position:fixed', 'z-index:300', 'background:#1a1a1a',
+      'border:1px solid #555', 'border-radius:8px', 'padding:14px 18px',
+      'font-family:Arial', 'color:#fff', 'width:220px',
+      'box-shadow:0 6px 24px rgba(0,0,0,0.8)',
+    ].join(';')
+    popup.addEventListener('mousedown', e => e.stopPropagation())
+    popup.addEventListener('click', e => e.stopPropagation())
+
+    const title = document.createElement('div')
+    title.style.cssText = `font-size:13px;font-weight:bold;color:${fp.colour || '#fff'};margin-bottom:4px`
+    title.textContent = fp.name
+    popup.appendChild(title)
+
+    const sub = document.createElement('div')
+    sub.style.cssText = 'font-size:11px;color:#888;margin-bottom:12px'
+    sub.textContent = 'Foreign Power'
+    popup.appendChild(sub)
+
+    const mkBtn = (label, handler, disabled = false) => {
+      const b = document.createElement('button')
+      b.textContent = label
+      b.style.cssText = [
+        'display:block;width:100%;text-align:left;padding:7px 10px',
+        'margin-bottom:6px;border-radius:5px;font-size:12px;font-family:Arial',
+        disabled ? 'background:#222;border:1px solid #333;color:#555;cursor:not-allowed'
+                 : 'background:#2a2a2a;border:1px solid #555;color:#ccc;cursor:pointer',
+      ].join(';')
+      if (!disabled) b.addEventListener('click', handler)
+      return b
+    }
+
+    popup.appendChild(mkBtn('Declare as Threat', () => {
+      popup.remove()
+      const dialog = new NameDialog({
+        entityKind: 'threat', entityLabel: fp.name, subType: 'Threat',
+        onApply: async (name, description) => {
+          try {
+            const res = await GameAPI.addForeignPowerThreat({ fpId: fp.id, name, description })
+            if (res.ok) {
+              if (res.threats) this.threats = res.threats
+              if (res.factions) { this.factions = res.factions; this.uiManager.updateFactions(this.factions) }
+            } else { this.uiManager.showError(res.error) }
+          } catch (e) { this.uiManager.showError(e.message) }
+        },
+        onCancel: () => {}
+      })
+      dialog.open()
+    }))
+
+    popup.appendChild(mkBtn('Define Trade Route ↗', () => {
+      popup.remove()
+      const dialog = new NameDialog({
+        entityKind: 'trade', entityLabel: fp.name, subType: 'Trade',
+        onApply: async (name, description) => {
+          try {
+            const res = await GameAPI.addForeignPowerTrade({ fpId: fp.id, name, description })
+            if (res.ok) {
+              if (res.tradingDestinations) { this.tradingDestinations = res.tradingDestinations; this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData) }
+              if (res.factions) { this.factions = res.factions; this.uiManager.updateFactions(this.factions) }
+            } else { this.uiManager.showError(res.error) }
+          } catch (e) { this.uiManager.showError(e.message) }
+        },
+        onCancel: () => {}
+      })
+      dialog.open()
+    }))
+
+    const closeBtn = document.createElement('button')
+    closeBtn.textContent = 'Cancel'
+    closeBtn.style.cssText = 'background:none;border:none;color:#666;font-size:11px;cursor:pointer;padding:0;font-family:Arial'
+    closeBtn.addEventListener('click', () => popup.remove())
+    popup.appendChild(closeBtn)
+
+    // Position near the anchor label
+    document.body.appendChild(popup)
+    const rect = anchorEl.getBoundingClientRect()
+    const ph = popup.offsetHeight || 140, pw = popup.offsetWidth || 220
+    const left = Math.min(rect.right + 8, window.innerWidth - pw - 8)
+    const top  = Math.max(8, Math.min(rect.top, window.innerHeight - ph - 8))
+    popup.style.left = left + 'px'
+    popup.style.top  = top  + 'px'
+
+    document.addEventListener('click', function dismiss(e) {
+      if (!popup.contains(e.target) && e.target !== anchorEl) { popup.remove(); document.removeEventListener('click', dismiss) }
+    }, { capture: true, once: false })
   }
 
   _finalizeTerrainDisplay() {
@@ -1234,6 +1507,7 @@ export default class App {
         this.gameState = response
         this.currentPhase = 'Terrain'
         this.selectedTerrainRegionId = null
+        this.selectedTerrainPlotId = null
         this.pendingTerrainAction = null
         this.selectedDistrictId = null
         this.pendingDistrictType = null

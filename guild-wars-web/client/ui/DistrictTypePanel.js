@@ -1,5 +1,6 @@
 import TerrainColors from '../rendering/TerrainColors.js'
 import NameDialog from './NameDialog.js'
+import ResourceDialog from './ResourceDialog.js'
 
 const DISTRICT_TYPES = [
   'Residential', 'Market',
@@ -38,6 +39,16 @@ export default class DistrictTypePanel {
     this._anchorPoints = []
     this._el = null
     this._cameraCB = null
+    // Resource selection state — reset when type or context changes
+    this._cityConsumed = []
+    this._cityProduced = []
+    this._lastCityPendingType = null
+    this._terrainConsumed = []
+    this._terrainProduced = null
+    this._lastTerrainKey = null
+    this._tradeBuys = []
+    this._tradeSells = []
+    this._lastTradeRegionId = null
     this._build()
   }
 
@@ -97,6 +108,19 @@ export default class DistrictTypePanel {
       return
     }
 
+    // Close button
+    const closeRow = document.createElement('div')
+    closeRow.style.cssText = 'display:flex;justify-content:flex-end;margin-bottom:4px'
+    const closeBtn = document.createElement('button')
+    closeBtn.textContent = '✕'
+    closeBtn.title = 'Close'
+    closeBtn.style.cssText = 'background:none;border:none;color:#666;cursor:pointer;font-size:13px;line-height:1;padding:0'
+    closeBtn.addEventListener('mouseenter', () => { closeBtn.style.color = '#ccc' })
+    closeBtn.addEventListener('mouseleave', () => { closeBtn.style.color = '#666' })
+    closeBtn.addEventListener('click', () => this.showContext('none'))
+    closeRow.appendChild(closeBtn)
+    this._el.appendChild(closeRow)
+
     const main = document.createElement('div')
     if (type === 'district') {
       this._buildDistrictContent(main, options)
@@ -106,13 +130,6 @@ export default class DistrictTypePanel {
       this._buildTerrainRegionContent(main, options)
     }
     this._el.appendChild(main)
-
-    const bottom = document.createElement('div')
-    bottom.style.cssText = 'border-top:1px solid #444;padding-top:6px;margin-top:6px'
-    this._buildThreatList(bottom, options)
-    bottom.appendChild(this._divider())
-    this._buildTradeList(bottom, options)
-    this._el.appendChild(bottom)
 
     this._el.style.display = 'block'
     this._reposition()
@@ -127,7 +144,7 @@ export default class DistrictTypePanel {
   _buildTerrainRegionContent(container, options) {
     const {
       regionType, isEdge = false, hasDistrict = false,
-      pendingAction = null, regionId,
+      pendingAction = null, regionId, plotId,
       resourceRegistry = [], usedProducedResources = []
     } = options
 
@@ -212,37 +229,68 @@ export default class DistrictTypePanel {
 
     // ── Trade form ──
     if (pendingAction === 'Trade') {
-      const TRADE_RESOURCES = ['Gold', 'Labour', 'Security', 'Water', 'Basic Food',
-        ...resourceRegistry.filter(r => !['gold', 'labour', 'security', 'water', 'basic food'].includes(r.toLowerCase()))]
-
-      // Buys / Sells: up to 3 each, ≥1 each. New resources can be typed in.
-      const makeGroup = (kind, listId) => {
-        const datalist = document.createElement('datalist')
-        datalist.id = listId
-        container.appendChild(datalist)
-        const rebuild = () => {
-          const selected = [0, 1, 2].map(i => document.getElementById(`terrain-trade-${kind}-${i}`)?.value?.trim().toLowerCase()).filter(Boolean)
-          datalist.innerHTML = ''
-          for (const r of TRADE_RESOURCES) {
-            if (selected.includes(r.toLowerCase())) continue
-            const opt = document.createElement('option'); opt.value = r; datalist.appendChild(opt)
-          }
-        }
-        container.appendChild(this._fieldLabel(kind === 'buys' ? 'Buys (Resources or Services In)' : 'Sells (Resources or Services Out)'))
-        for (let i = 0; i < 3; i++) {
-          const inp = document.createElement('input')
-          inp.id = `terrain-trade-${kind}-${i}`
-          inp.type = 'text'
-          inp.placeholder = `Resource or Service ${i + 1}...`
-          inp.setAttribute('list', listId)
-          inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #998800;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:3px'
-          inp.addEventListener('change', () => { inp.blur(); rebuild() })
-          container.appendChild(inp)
-        }
-        rebuild()
+      if (regionId !== this._lastTradeRegionId) {
+        this._tradeBuys = []
+        this._tradeSells = []
+        this._lastTradeRegionId = regionId
       }
-      makeGroup('buys', 'terrain-trade-buys-list')
-      makeGroup('sells', 'terrain-trade-sells-list')
+
+      const tradeSection = document.createElement('div')
+      container.appendChild(tradeSection)
+
+      const renderTradeSection = () => {
+        tradeSection.innerHTML = ''
+
+        const localNewNames = [...this._tradeBuys, ...this._tradeSells]
+          .filter(r => r.isNew).map(r => r.name)
+        const extendedRegistry = [
+          ...resourceRegistry,
+          ...localNewNames.filter(n => !resourceRegistry.some(r => r.toLowerCase() === n.toLowerCase()))
+        ]
+
+        const makeTradeGroup = (label, items, setItems, otherItems) => {
+          const section = document.createElement('div')
+          section.appendChild(this._fieldLabel(label))
+          const pills = document.createElement('div')
+          pills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
+          for (const item of items) {
+            pills.appendChild(this._resourcePill(item.name, () => {
+              setItems(items.filter(r => r !== item))
+              renderTradeSection()
+            }))
+          }
+          section.appendChild(pills)
+          if (items.length < 3) {
+            section.appendChild(this._addResourceButton(`Add ${label}`, () => {
+              new ResourceDialog({
+                mode: 'consumed',
+                showSpec: false,
+                titleOverride: `Add ${label}`,
+                resourceRegistry: extendedRegistry,
+                usedProduced: [],
+                alreadySelected: [...items, ...otherItems].map(r => r.name),
+                onAdd: item => { setItems([...items, item]); renderTradeSection() }
+              }).open()
+            }))
+          }
+          return section
+        }
+
+        tradeSection.appendChild(makeTradeGroup(
+          'Buys (Resources or Services In)',
+          this._tradeBuys,
+          v => { this._tradeBuys = v },
+          this._tradeSells
+        ))
+        tradeSection.appendChild(makeTradeGroup(
+          'Sells (Resources or Services Out)',
+          this._tradeSells,
+          v => { this._tradeSells = v },
+          this._tradeBuys
+        ))
+      }
+
+      renderTradeSection()
 
       const warn = document.createElement('div')
       warn.style.cssText = 'font-size:10px;color:#ff6666;margin-bottom:4px;display:none'
@@ -252,8 +300,8 @@ export default class DistrictTypePanel {
       applyBtn.textContent = 'Apply Trade Route'
       applyBtn.style.cssText = 'width:100%;padding:7px;background:#6b5a1a;color:#fff;border:1px solid #998800;border-radius:3px;cursor:pointer;font-weight:bold;font-size:12px'
       applyBtn.addEventListener('click', () => {
-        const buys = [0, 1, 2].map(i => document.getElementById(`terrain-trade-buys-${i}`)?.value?.trim() || '').filter(Boolean)
-        const sells = [0, 1, 2].map(i => document.getElementById(`terrain-trade-sells-${i}`)?.value?.trim() || '').filter(Boolean)
+        const buys = this._tradeBuys.map(r => r.name)
+        const sells = this._tradeSells.map(r => r.name)
         if (buys.length < 1) { warn.textContent = 'Select at least one resource or service to buy.'; warn.style.display = 'block'; return }
         if (sells.length < 1) { warn.textContent = 'Select at least one resource or service to sell.'; warn.style.display = 'block'; return }
         warn.style.display = 'none'
@@ -285,63 +333,76 @@ export default class DistrictTypePanel {
     typeRow.style.cssText = 'font-size:12px;color:#ccc;font-weight:bold;margin-bottom:8px'
     container.appendChild(typeRow)
 
-    // Datalist for consumed resources or services only (produced uses a plain text input)
-    const DROPDOWN_PREDEFINED = ['Gold', 'Labour', 'Security']
-    const EXCLUDED_LOWER = ['water', 'basic food']
-    const predefinedLower = DROPDOWN_PREDEFINED.map(r => r.toLowerCase())
-    const allDropdownResources = [
-      ...DROPDOWN_PREDEFINED,
-      ...resourceRegistry.filter(r => !predefinedLower.includes(r.toLowerCase()) && !EXCLUDED_LOWER.includes(r.toLowerCase()))
-    ]
+    // Reset terrain state when region/action changes
+    const terrainKey = `${regionId}:${districtType}`
+    if (terrainKey !== this._lastTerrainKey) {
+      this._terrainConsumed = []
+      this._terrainProduced = null
+      this._lastTerrainKey = terrainKey
+    }
 
-    const consDatalist = document.createElement('datalist')
-    consDatalist.id = 'terrain-resource-cons-list'
-    container.appendChild(consDatalist)
+    const terrainConsumedSection = document.createElement('div')
+    const terrainProducedSection = document.createElement('div')
 
-    const rebuildConsDatalist = () => {
-      const produced = (document.getElementById('terrain-district-produced-resource')?.value || '').trim().toLowerCase()
-      const selected = [0, 1, 2].map(i => document.getElementById(`terrain-district-consumed-${i}`)?.value?.trim().toLowerCase()).filter(Boolean)
-      consDatalist.innerHTML = ''
-      for (const r of allDropdownResources) {
-        const lower = r.toLowerCase()
-        if (lower === produced && produced !== 'labour') continue
-        if (selected.includes(lower)) continue
-        const opt = document.createElement('option'); opt.value = r; consDatalist.appendChild(opt)
+    const renderTerrainResources = () => {
+      terrainConsumedSection.innerHTML = ''
+      terrainProducedSection.innerHTML = ''
+
+      const localNewNames = [...this._terrainConsumed, ...(this._terrainProduced ? [this._terrainProduced] : [])]
+        .filter(r => r.isNew).map(r => r.name)
+      const extendedRegistry = [
+        ...resourceRegistry,
+        ...localNewNames.filter(n => !resourceRegistry.some(r => r.toLowerCase() === n.toLowerCase()))
+      ]
+
+      terrainConsumedSection.appendChild(this._fieldLabel('Consumed Resources or Services'))
+      const consPills = document.createElement('div')
+      consPills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
+      for (const item of this._terrainConsumed) {
+        consPills.appendChild(this._resourcePill(item.name, () => {
+          this._terrainConsumed = this._terrainConsumed.filter(r => r !== item)
+          renderTerrainResources()
+        }))
+      }
+      terrainConsumedSection.appendChild(consPills)
+      if (this._terrainConsumed.length < 3) {
+        terrainConsumedSection.appendChild(this._addResourceButton('Add Consumed Resource or Service', () => {
+          new ResourceDialog({
+            mode: 'consumed',
+            resourceRegistry: extendedRegistry,
+            usedProduced: [],
+            alreadySelected: this._terrainConsumed.map(r => r.name),
+            onAdd: item => { this._terrainConsumed.push(item); renderTerrainResources() }
+          }).open()
+        }))
+      }
+
+      terrainProducedSection.appendChild(this._fieldLabel('Produced Resource or Service'))
+      if (this._terrainProduced) {
+        const prodPills = document.createElement('div')
+        prodPills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
+        prodPills.appendChild(this._resourcePill(this._terrainProduced.name, () => {
+          this._terrainProduced = null
+          renderTerrainResources()
+        }))
+        terrainProducedSection.appendChild(prodPills)
+      } else {
+        terrainProducedSection.appendChild(this._addResourceButton('Add Produced Resource or Service', () => {
+          new ResourceDialog({
+            mode: 'produced',
+            resourceRegistry: extendedRegistry,
+            usedProduced: usedProducedResources,
+            alreadySelected: [],
+            consumedResources: this._terrainConsumed.map(r => r.name),
+            onAdd: item => { this._terrainProduced = item; renderTerrainResources() }
+          }).open()
+        }))
       }
     }
-    rebuildConsDatalist()
 
-    container.appendChild(this._fieldLabel('Consumed Resources or Services'))
-    for (let i = 0; i < 3; i++) {
-      const inp = document.createElement('input')
-      inp.id = `terrain-district-consumed-${i}`
-      inp.type = 'text'
-      inp.placeholder = `Resource or Service ${i + 1}...`
-      inp.setAttribute('list', 'terrain-resource-cons-list')
-      inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:3px'
-      inp.addEventListener('change', () => { inp.blur(); rebuildConsDatalist() })
-      container.appendChild(inp)
-    }
-    
-    container.appendChild(this._fieldLabel('Produced Resource or Service'))
-    const prodWrap = document.createElement('div')
-    prodWrap.style.cssText = 'margin-bottom:5px'
-    const prodInput = document.createElement('input')
-    prodInput.id = 'terrain-district-produced-resource'
-    prodInput.type = 'text'
-    prodInput.placeholder = 'Resource or service...'
-    prodInput.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box'
-    const dupWarn = document.createElement('div')
-    dupWarn.style.cssText = 'font-size:10px;color:#ff6666;margin-top:1px;display:none'
-    dupWarn.textContent = 'Already produced by another district'
-    prodInput.addEventListener('input', () => {
-      dupWarn.style.display = (prodInput.value.trim().toLowerCase() && usedProducedResources.includes(prodInput.value.trim().toLowerCase())) ? 'block' : 'none'
-      rebuildConsDatalist(prodInput.value)
-    })
-    prodInput.addEventListener('change', () => prodInput.blur())
-    prodWrap.appendChild(prodInput)
-    prodWrap.appendChild(dupWarn)
-    container.appendChild(prodWrap)
+    renderTerrainResources()
+    container.appendChild(terrainConsumedSection)
+    container.appendChild(terrainProducedSection)
 
     const implicitNote = document.createElement('div')
     implicitNote.textContent = 'Always consumed: Water, Basic Food'
@@ -356,19 +417,19 @@ export default class DistrictTypePanel {
     applyBtn.textContent = `Apply: ${districtType}`
     applyBtn.style.cssText = 'width:100%;padding:7px;background:#2a3a2a;color:#fff;border:1px solid #4a7c59;border-radius:3px;cursor:pointer;font-weight:bold;font-size:12px'
     applyBtn.addEventListener('click', () => {
-      const produced = document.getElementById('terrain-district-produced-resource')?.value?.trim() || ''
-      const consumed = [0, 1, 2].map(i => document.getElementById(`terrain-district-consumed-${i}`)?.value?.trim() || '').filter(Boolean)
+      const produced = this._terrainProduced?.name || ''
+      const consumed = this._terrainConsumed.map(r => r.name)
       if (!produced) { validWarn.textContent = 'Must define at least one produced resource or service.'; validWarn.style.display = 'block'; return }
       if (consumed.length < 2) { validWarn.textContent = 'Must define at least 2 consumed resources or services.'; validWarn.style.display = 'block'; return }
-      if (usedProducedResources.includes(produced.toLowerCase())) return
       validWarn.style.display = 'none'
       applyBtn.disabled = true
       applyBtn.style.opacity = '0.6'
       applyBtn.style.cursor = 'default'
+      const resourceDefs = [...this._terrainConsumed, this._terrainProduced].filter(r => r?.isNew)
       const dialog = new NameDialog({
         entityKind: 'terrain-district', entityLabel: districtType, subType: districtType, producedResource: produced,
         onApply: (name, description) => {
-          this.eventBus.emit('TERRAIN_DISTRICT_ASSIGN', { regionId, districtType, description, producedResource: produced, consumedResources: consumed, name })
+          this.eventBus.emit('TERRAIN_DISTRICT_ASSIGN', { regionId, plotId, districtType, description, producedResource: produced, consumedResources: consumed, name, resourceDefs })
         },
         onCancel: () => {
           applyBtn.disabled = false
@@ -478,96 +539,101 @@ export default class DistrictTypePanel {
     // ── Resource or Service form ──
     const isResidential = pendingType === 'Residential'
     const isNoble = isResidential && residentialClass === 'Noble'
-    const lockedLabour = isResidential && !isNoble
     const isIndustry = pendingType === 'Industry'
-    const consumeCount = isIndustry ? 5 : 3
+    const isMarket = pendingType === 'Market'
+    const maxConsumed = isIndustry ? 5 : 3
+    const maxProduced = isIndustry ? 2 : 1
 
-    const CONSUME_PREDEFINED = ['Gold', 'Labour', 'Security']
-    const PRODUCE_PREDEFINED = ['Labour', 'Security']  // Gold is auto-produced — not selectable
-    const EXCLUDED_LOWER = ['water', 'basic food']
-    const consumePredefinedLower = CONSUME_PREDEFINED.map(r => r.toLowerCase())
-    const producePredefinedLower = PRODUCE_PREDEFINED.map(r => r.toLowerCase())
-    const allConsumeResources = [
-      ...CONSUME_PREDEFINED,
-      ...resourceRegistry.filter(r => !consumePredefinedLower.includes(r.toLowerCase()) && !EXCLUDED_LOWER.includes(r.toLowerCase()))
-    ]
-    const allProduceResources = [
-      ...PRODUCE_PREDEFINED,
-      ...resourceRegistry.filter(r => !producePredefinedLower.includes(r.toLowerCase()) && !EXCLUDED_LOWER.includes(r.toLowerCase()) && r.toLowerCase() !== 'gold')
-    ]
-
-    const consDatalist = document.createElement('datalist')
-    consDatalist.id = 'resource-cons-list'
-    container.appendChild(consDatalist)
-
-    const prodDatalist = document.createElement('datalist')
-    prodDatalist.id = 'resource-prod-list'
-    for (const r of allProduceResources) {
-      if (usedProducedResources.includes(r.toLowerCase())) continue
-      const opt = document.createElement('option'); opt.value = r; prodDatalist.appendChild(opt)
+    // Reset state when type changes
+    if (pendingType !== this._lastCityPendingType) {
+      this._cityConsumed = []
+      this._cityProduced = []
+      this._lastCityPendingType = pendingType
     }
-    container.appendChild(prodDatalist)
 
-    const rebuildConsDatalist = () => {
-      const prod1 = isResidential ? '' : (document.getElementById('district-produced-resource')?.value?.trim().toLowerCase() || '')
-      const prod2 = isIndustry ? (document.getElementById('district-produced-resource-2')?.value?.trim().toLowerCase() || '') : ''
-      const selected = Array.from({ length: consumeCount }, (_, i) => document.getElementById(`district-consumed-${i}`)?.value?.trim().toLowerCase()).filter(Boolean)
-      consDatalist.innerHTML = ''
-      for (const r of allConsumeResources) {
-        const lower = r.toLowerCase()
-        if (prod1 && lower === prod1 && prod1 !== 'labour') continue
-        if (prod2 && lower === prod2 && prod2 !== 'labour') continue
-        if (selected.includes(lower)) continue
-        const opt = document.createElement('option'); opt.value = r; consDatalist.appendChild(opt)
+    const renderResourceSection = () => {
+      consumedSection.innerHTML = ''
+      producedSection.innerHTML = ''
+
+      // Merge locally-pending new resources into the registry so each dialog
+      // can see resources defined in the same editing session (not yet submitted).
+      const localNewNames = [...this._cityConsumed, ...this._cityProduced]
+        .filter(r => r.isNew).map(r => r.name)
+      const extendedRegistry = [
+        ...resourceRegistry,
+        ...localNewNames.filter(n => !resourceRegistry.some(r => r.toLowerCase() === n.toLowerCase()))
+      ]
+
+      // ── Consumed ──
+      consumedSection.appendChild(this._fieldLabel(`Consumed Resources or Services${isIndustry ? ' (up to 5)' : ''}`))
+      const consPills = document.createElement('div')
+      consPills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
+      for (const item of this._cityConsumed) {
+        consPills.appendChild(this._resourcePill(item.name, () => {
+          this._cityConsumed = this._cityConsumed.filter(r => r !== item)
+          renderResourceSection()
+        }))
       }
-    }
-    rebuildConsDatalist()
+      consumedSection.appendChild(consPills)
 
-    container.appendChild(this._fieldLabel(`Consumed Resources or Services${isIndustry ? ' (up to 5)' : ''}`))
-    for (let i = 0; i < consumeCount; i++) {
-      const inp = document.createElement('input')
-      inp.id = `district-consumed-${i}`
-      inp.type = 'text'
-      inp.placeholder = `Resource or Service ${i + 1}...`
-      inp.setAttribute('list', 'resource-cons-list')
-      inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:3px'
-      inp.addEventListener('change', () => { inp.blur(); rebuildConsDatalist() })
-      container.appendChild(inp)
-    }
-    
-    if (!isResidential) {
-      container.appendChild(this._fieldLabel(isIndustry ? 'Produced Resources or Services (up to 2)' : 'Produced Resource or Service'))
-
-      const makeProdInput = (id) => {
-        const wrap = document.createElement('div')
-        wrap.style.cssText = 'margin-bottom:5px'
-        const inp = document.createElement('input')
-        inp.id = id
-        inp.type = 'text'
-        inp.placeholder = 'Resource or service...'
-        inp.setAttribute('list', 'resource-prod-list')
-        inp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box'
-        const dupWarn = document.createElement('div')
-        dupWarn.style.cssText = 'font-size:10px;color:#ff6666;margin-top:1px;display:none'
-        dupWarn.textContent = 'Already produced by another district'
-        inp.addEventListener('input', () => {
-          dupWarn.style.display = (inp.value.trim().toLowerCase() && usedProducedResources.includes(inp.value.trim().toLowerCase())) ? 'block' : 'none'
-          rebuildConsDatalist()
+      if (this._cityConsumed.length < maxConsumed) {
+        const addBtn = this._addResourceButton('Add Consumed Resource or Service', () => {
+          new ResourceDialog({
+            mode: 'consumed',
+            resourceRegistry: extendedRegistry,
+            usedProduced: [],
+            alreadySelected: this._cityConsumed.map(r => r.name),
+            onAdd: item => { this._cityConsumed.push(item); renderResourceSection() }
+          }).open()
         })
-        inp.addEventListener('change', () => inp.blur())
-        wrap.appendChild(inp)
-        wrap.appendChild(dupWarn)
-        return wrap
+        consumedSection.appendChild(addBtn)
       }
 
-      container.appendChild(makeProdInput('district-produced-resource'))
-      if (isIndustry) container.appendChild(makeProdInput('district-produced-resource-2'))
+      // ── Produced ──
+      if (!isResidential) {
+        producedSection.appendChild(this._fieldLabel(isIndustry ? 'Produced Resources or Services (up to 2)' : 'Produced Resource or Service'))
+        const prodPills = document.createElement('div')
+        prodPills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
+        for (const item of this._cityProduced) {
+          prodPills.appendChild(this._resourcePill(item.name, () => {
+            this._cityProduced = this._cityProduced.filter(r => r !== item)
+            renderResourceSection()
+          }))
+        }
+        producedSection.appendChild(prodPills)
 
-      const goldNote = document.createElement('div')
-      goldNote.textContent = 'Note: always produces Gold (automatic)'
-      goldNote.style.cssText = 'font-size:10px;color:#aa8800;font-style:italic;margin-bottom:3px'
-      container.appendChild(goldNote)
+        if (this._cityProduced.length < maxProduced) {
+          const usedForDialog = isMarket
+            ? usedProducedResources.filter(r => r !== 'gold')
+            : usedProducedResources
+          const addProdBtn = this._addResourceButton('Add Produced Resource or Service', () => {
+            new ResourceDialog({
+              mode: 'produced',
+              resourceRegistry: extendedRegistry,
+              usedProduced: usedForDialog,
+              alreadySelected: this._cityProduced.map(r => r.name),
+              consumedResources: this._cityConsumed.map(r => r.name),
+              isMarket,
+              onAdd: item => { this._cityProduced.push(item); renderResourceSection() }
+            }).open()
+          })
+          producedSection.appendChild(addProdBtn)
+        }
+
+        const goldNote = document.createElement('div')
+        goldNote.textContent = isMarket
+          ? 'Note: Markets can produce Gold directly (sells consumed items at +10%)'
+          : 'Note: always produces Gold (automatic)'
+        goldNote.style.cssText = 'font-size:10px;color:#aa8800;font-style:italic;margin-bottom:3px'
+        producedSection.appendChild(goldNote)
+      }
     }
+
+    const consumedSection = document.createElement('div')
+    const producedSection = document.createElement('div')
+    renderResourceSection()
+    container.appendChild(consumedSection)
+    container.appendChild(producedSection)
 
     const implicitNote = document.createElement('div')
     implicitNote.textContent = 'Always consumed: Water, Basic Food'
@@ -588,15 +654,12 @@ export default class DistrictTypePanel {
     applyBtn.textContent = `Apply: ${label}`
     applyBtn.style.cssText = `width:100%;padding:7px;background:${hex};color:#fff;border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px`
     applyBtn.addEventListener('click', () => {
-      const produced = isResidential ? '' : (document.getElementById('district-produced-resource')?.value?.trim() || '')
-      const produced2 = isIndustry ? (document.getElementById('district-produced-resource-2')?.value?.trim() || '') : ''
-      const consumed = Array.from({ length: consumeCount }, (_, i) => document.getElementById(`district-consumed-${i}`)?.value?.trim() || '').filter(Boolean)
+      const produced = isResidential ? '' : (this._cityProduced[0]?.name || '')
+      const produced2 = isIndustry ? (this._cityProduced[1]?.name || '') : ''
+      const consumed = this._cityConsumed.map(r => r.name)
       if (!isResidential && !isNoble && !produced) { validWarn.textContent = 'Must define a produced resource or service (in addition to Gold).'; validWarn.style.display = 'block'; return }
-      if (produced.toLowerCase() === 'gold') { validWarn.textContent = 'Gold is produced automatically — choose a different resource or service.'; validWarn.style.display = 'block'; return }
-      if (produced2.toLowerCase() === 'gold') { validWarn.textContent = 'Gold is produced automatically — choose a different resource or service.'; validWarn.style.display = 'block'; return }
+      if (!isMarket && produced.toLowerCase() === 'gold') { validWarn.textContent = 'Gold is produced automatically — choose a different resource or service.'; validWarn.style.display = 'block'; return }
       if (produced && produced2 && produced.toLowerCase() === produced2.toLowerCase()) { validWarn.textContent = 'Cannot produce the same resource or service twice.'; validWarn.style.display = 'block'; return }
-      if (!isResidential && produced && usedProducedResources.includes(produced.toLowerCase())) return
-      if (!isResidential && produced2 && usedProducedResources.includes(produced2.toLowerCase())) return
       const minConsumed = (isIndustry && produced2) ? 5 : (!isResidential ? 2 : 0)
       if (minConsumed && consumed.length < minConsumed) {
         validWarn.textContent = produced2
@@ -608,10 +671,11 @@ export default class DistrictTypePanel {
       applyBtn.disabled = true
       applyBtn.style.opacity = '0.6'
       applyBtn.style.cursor = 'default'
+      const resourceDefs = [...this._cityConsumed, ...this._cityProduced].filter(r => r.isNew)
       const dialog = new NameDialog({
         entityKind: 'district', entityLabel: label, subType: pendingType, producedResource: produced || produced2,
         onApply: (name, description) => {
-          this.eventBus.emit('DISTRICT_APPLY', { description, producedResource: produced, secondProducedResource: produced2, consumedResources: consumed, residentialClass: isResidential ? residentialClass : null, name })
+          this.eventBus.emit('DISTRICT_APPLY', { description, producedResource: produced, secondProducedResource: produced2, consumedResources: consumed, residentialClass: isResidential ? residentialClass : null, name, resourceDefs })
         },
         onCancel: () => {
           applyBtn.disabled = false
@@ -734,5 +798,29 @@ export default class DistrictTypePanel {
     el.textContent = text
     el.style.cssText = 'margin-bottom:2px;margin-top:4px;font-size:10px;color:#777;text-transform:uppercase;letter-spacing:0.5px'
     return el
+  }
+
+  _resourcePill(name, onRemove) {
+    const pill = document.createElement('div')
+    pill.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#1a2a1a;border:1px solid #4a7c59;border-radius:12px;padding:2px 8px 2px 10px;font-size:11px;color:#cfc'
+    const label = document.createElement('span')
+    label.textContent = name
+    const x = document.createElement('button')
+    x.textContent = '×'
+    x.style.cssText = 'background:none;border:none;color:#888;cursor:pointer;font-size:13px;line-height:1;padding:0;margin:0'
+    x.addEventListener('click', onRemove)
+    pill.appendChild(label)
+    pill.appendChild(x)
+    return pill
+  }
+
+  _addResourceButton(label, onClick) {
+    const btn = document.createElement('button')
+    btn.textContent = `+ ${label}`
+    btn.style.cssText = 'width:100%;padding:5px 8px;background:#1a3a1a;color:#8f8;border:1px solid #4a7c59;border-radius:4px;cursor:pointer;font-size:11px;text-align:left;margin-bottom:4px'
+    btn.addEventListener('mouseenter', () => { btn.style.background = '#2a4a2a' })
+    btn.addEventListener('mouseleave', () => { btn.style.background = '#1a3a1a' })
+    btn.addEventListener('click', onClick)
+    return btn
   }
 }

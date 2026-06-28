@@ -1,0 +1,3 @@
+Buy price in the resource market is governed by **Standing** (symmetric, 0–100 per pair), not Influence (asymmetric, per-guild-per-faction). Formula: market price at Standing=50; −30% at Standing=100; +30% at Standing=0. Applies to guild-to-faction trades via `guild.standing[factionId]` and faction-to-faction trades via `faction.standing[otherFactionId]`.
+
+The design spec used both "Standing" and "influence" in the same sentence. Standing was chosen because the buy-price relationship is symmetric (both parties give each other the same discount/premium based on mutual regard), which matches Standing's symmetric definition. Influence is directional control, not mutual regard, and would have broken symmetry in faction-to-faction trades.

@@ -1,4 +1,4 @@
-import nameLibrary from '../../resources/nameLibrary.json' assert { type: 'json' }
+import nameLibrary from './nameLibrary.js'
 
 // Keyboard-mash and trivially meaningless strings to reject.
 const BLOCKLIST = new Set([
@@ -122,6 +122,9 @@ export function generateGuildNames({ headquartersDistrictType, leaderClass, trai
 // ─── NameDialog ────────────────────────────────────────────────────────────────
 
 export default class NameDialog {
+  static closeAll() {
+    document.querySelectorAll('.name-dialog-overlay').forEach(el => el.remove())
+  }
   constructor({ entityKind, entityLabel, subType, producedResource, onApply, onCancel }) {
     this.entityKind     = entityKind
     this.entityLabel    = entityLabel || subType || 'Entity'
@@ -144,6 +147,7 @@ export default class NameDialog {
 
   _render(suggestions) {
     const overlay = document.createElement('div')
+    overlay.className = 'name-dialog-overlay'
     overlay.style.cssText = [
       'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.65)',
       'z-index:200', 'display:flex', 'align-items:center', 'justify-content:center',

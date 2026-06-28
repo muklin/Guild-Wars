@@ -195,6 +195,30 @@ export default class UIManager {
     panel.addEventListener('click',     (e) => e.stopPropagation())
     panel.addEventListener('mousedown', (e) => e.stopPropagation())
 
+    const terrainBtns = document.createElement('div')
+    terrainBtns.id = 'terrain-worldbuilding-btns'
+    terrainBtns.style.cssText = 'display:none;flex-direction:column;gap:6px;margin-bottom:8px'
+    const WB_ACTIONS = [
+      { id: 'add-god-btn',           label: 'Add God',            event: 'ADD_GOD' },
+      { id: 'add-magic-btn',         label: 'Add Magic',          event: 'ADD_MAGIC' },
+      { id: 'add-foreign-power-btn', label: 'Add Foreign Power',  event: 'ADD_FOREIGN_POWER' },
+    ]
+    for (const { id, label, event } of WB_ACTIONS) {
+      const b = document.createElement('button')
+      b.id = id
+      b.textContent = label
+      b.style.cssText = [
+        'display:block', 'width:100%', 'padding:7px 16px',
+        'background:#1e2d3a', 'border:1px solid #4a7a9b', 'border-radius:6px',
+        'color:#a8c8e0', 'font-size:12px', 'font-weight:bold',
+        'cursor:pointer', 'letter-spacing:0.4px'
+      ].join(';')
+      b.addEventListener('click', () => this.eventBus.emit(event))
+      terrainBtns.appendChild(b)
+    }
+    panel.appendChild(terrainBtns)
+    this._terrainWorldbuildingBtns = terrainBtns
+
     const btn = document.createElement('button')
     btn.id = 'advance-phase-btn'
     btn.style.cssText = [
@@ -262,6 +286,14 @@ export default class UIManager {
       panel.style.display = 'none'
       btn.onclick = null
     }
+    if (this._terrainWorldbuildingBtns) {
+      this._terrainWorldbuildingBtns.style.display = step === 'Terrain' ? 'flex' : 'none'
+    }
+  }
+
+  updateTerrainWorldbuildingButtons(state) {
+    const magicBtn = document.getElementById('add-magic-btn')
+    if (magicBtn) magicBtn.textContent = state?.magicSystem ? 'Refine Magic' : 'Add Magic'
   }
 
   // ── Help Text window ──────────────────────────────────────────────────────────
@@ -459,6 +491,9 @@ export default class UIManager {
         this._hideHelpWindow()
       }
     }
+    // Re-render the bar after currentStep changes so quantity display (qty visible
+    // only in Guild phase) matches the new phase even if updateResources ran first.
+    this._renderResourceBar()
   }
 
   // ── Resource bar ──────────────────────────────────────────────────────────

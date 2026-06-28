@@ -8,6 +8,7 @@ import TextureTemplateGenerator from './CityGenerator/buildings/TextureTemplateG
 import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
 import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
 import { getDistrictConfig, districtConfigKey } from '../../shared/districtConfig.js'
+import { generateName } from '../../shared/nameLibrary.js'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -143,6 +144,12 @@ export default class SetupPhase {
     this.threats = []
     this.tradingDestinations = []
     this.factions = []
+    this.gods = []
+    this.magicSystem = null
+    this.foreignPowers = []
+    this.worldDomains = null
+    this.terrainDistrictPlots = []
+    this.terrainFeaturePlots = []
   }
 
   initialize() {
@@ -157,6 +164,12 @@ export default class SetupPhase {
     this.threats = []
     this.tradingDestinations = []
     this.factions = []
+    this.gods = []
+    this.magicSystem = null
+    this.foreignPowers = []
+    this.worldDomains = null
+    this.terrainDistrictPlots = []
+    this.terrainFeaturePlots = []
     this.log.push('Initializing Setup Phase...')
 
     this.worldGenerator = new TerrainVoronoiGenerator()
@@ -167,6 +180,7 @@ export default class SetupPhase {
     const worldSize = 50
     for (const region of worldData.regions) {
       region.isEdge = this.touchesBoundary(region, worldSize)
+      region.isNorthEdge = this.touchesNorthBoundary(region, worldSize)
     }
 
     const cityRegion = this.findCityRegion(worldData.regions, worldData.fineCells)
@@ -407,6 +421,18 @@ export default class SetupPhase {
     return false
   }
 
+  // "North" = the y=0 edge of the 2D map (low Z in 3D, the far side as seen from default camera)
+  touchesNorthBoundary(region, worldSize) {
+    if (!region.polygon || region.polygon.length === 0) return false
+    const eps = 0.5
+    const poly = region.polygon
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length]
+      if (a.y < eps && b.y < eps) return true
+    }
+    return false
+  }
+
   assignTerrainToRegion(regionId, terrainType, description = '', name = '') {
     const regions = this.gameStateManager.worldTerrainData.regions
     const region = regions.find(r => r.id === regionId)
@@ -416,6 +442,9 @@ export default class SetupPhase {
     const EDGE_ONLY_TYPES = ['Desert', 'Mountains', 'Sea']
     if (EDGE_ONLY_TYPES.includes(terrainType) && !region.isEdge) {
       throw new Error(`${terrainType} can only be placed on edge regions`)
+    }
+    if (terrainType === 'Ice Sheet' && !region.isNorthEdge) {
+      throw new Error('Ice Sheet can only be placed on north-edge regions')
     }
 
     if (terrainType === 'Sea' || terrainType === 'Lake') {
@@ -438,6 +467,22 @@ export default class SetupPhase {
     this.terrainPlacements.push({ regionId, terrainType, description, name: region.name })
     this.log.push(`Assigned ${terrainType} to region ${regionId}`)
 
+    // Ice Sheet: auto-assign all adjacent unassigned inter-region edges as Cliffs
+    const autoCliffEdgeIds = []
+    if (terrainType === 'Ice Sheet') {
+      const edges = this.gameStateManager.worldTerrainData.edges
+      for (const [edgeId, edge] of Object.entries(edges)) {
+        if ((edge.regionA === regionId || edge.regionB === regionId) && !edge.assignedType) {
+          edge.assignedType = 'Cliff'
+          edge.description = ''
+          edge.name = ''
+          this.edgePlacements.push({ edgeId, edgeType: 'Cliff', description: '', name: '' })
+          this.log.push(`Auto-cliffed edge ${edgeId} (borders Ice Sheet)`)
+          autoCliffEdgeIds.push(edgeId)
+        }
+      }
+    }
+
     const clearedEdgeIds = []
     if (terrainType === 'Lake' || terrainType === 'Sea') {
       const edges = this.gameStateManager.worldTerrainData.edges
@@ -452,7 +497,7 @@ export default class SetupPhase {
       }
     }
 
-    return { ok: true, clearedEdgeIds, log: this.log }
+    return { ok: true, clearedEdgeIds, autoCliffEdgeIds, log: this.log }
   }
 
   assignEdgeType(edgeId, edgeType, description = '', name = '') {
@@ -470,7 +515,7 @@ export default class SetupPhase {
 
   // Apply = lock the district in (final). The type may already have been set by
   // previewDistrictType; here we validate resources, commit them, and lock.
-  assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '') {
+  assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '', resourceDefs = []) {
     const district = this.gameStateManager.cityDistrictData.districts.find(d => d.id === districtId)
     if (!district) throw new Error(`District ${districtId} not found`)
     if (district.locked) throw new Error(`District ${districtId} is already locked`)
@@ -505,12 +550,14 @@ export default class SetupPhase {
 
     const normalizedProd = producedResource?.trim().toLowerCase()
     const normalizedProd2 = secondProducedResource?.trim().toLowerCase()
-    if (normalizedProd === 'gold') throw new Error('Gold is produced automatically — choose a different resource or service')
+    const isMarket = districtType === 'Market'
+    if (normalizedProd === 'gold' && !isMarket) throw new Error('Gold is produced automatically — choose a different resource or service')
     if (normalizedProd2 === 'gold') throw new Error('Gold is produced automatically — choose a different resource or service')
     if (normalizedProd && normalizedProd2 && normalizedProd === normalizedProd2) throw new Error(`Cannot produce the same resource or service twice: "${producedResource}"`)
     if (normalizedProd2 && districtType !== 'Industry') throw new Error('Only Industry districts can produce a second resource or service')
 
-    const DUPE_EXEMPT = new Set(['labour'])
+    // Gold is exempt from uniqueness — multiple Market districts can produce it
+    const DUPE_EXEMPT = new Set(['labour', 'gold'])
     const checkDupe = (prod, label) => {
       if (!prod || DUPE_EXEMPT.has(prod)) return
       const conflict = this.gameStateManager.cityDistrictData.districts.find(d =>
@@ -521,6 +568,11 @@ export default class SetupPhase {
     }
     checkDupe(normalizedProd, producedResource)
     checkDupe(normalizedProd2, secondProducedResource)
+
+    // Store new resource definitions (name, gpValue, ingredients) in the registry
+    for (const def of resourceDefs) {
+      if (def?.name) this._registerResourceDef(def)
+    }
 
     const explicitConsumed = (consumedResources || []).map(r => r.trim()).filter(Boolean)
     const isNoble = isResidential && residentialClass === 'Noble'
@@ -599,6 +651,15 @@ export default class SetupPhase {
   _registerResource(name) {
     if (name && !this.resourceRegistry.includes(name)) {
       this.resourceRegistry.push(name)
+    }
+  }
+
+  _registerResourceDef({ name, gpValue, ingredients }) {
+    this._registerResource(name)
+    if (!this.resourceDefinitions) this.resourceDefinitions = {}
+    const key = name.trim().toLowerCase()
+    if (!this.resourceDefinitions[key]) {
+      this.resourceDefinitions[key] = { name: name.trim(), gpValue: Number(gpValue) || 0, ingredients: ingredients || [] }
     }
   }
 
@@ -973,6 +1034,7 @@ export default class SetupPhase {
         district.secondProducedResource = null
         district.consumedResources = []
         district.description = ''
+        district.name = generateName('Leadership', 'Monarchy')
         this.log.push(`Auto-assigned Leadership (Monarchy) to district ${district.id}`)
       } else if (!district.assignedType && !district.isLeadershipDistrict) {
         // Prefer a still-missing type (heavy coverage bias); once the queue is empty
@@ -998,18 +1060,17 @@ export default class SetupPhase {
           district.secondProducedResource = null
           district.consumedResources = ['Water', 'Basic Food']
           district.description = ''
+          district.name = generateName('Residential', cls)
           this.log.push(`Auto-assigned Residential (${cls}) to district ${district.id}`)
         } else {
           district.assignedType = districtType
           district.residentialClass = null
           district.LeadershipClass = null
-          // Nonsense placeholder values — unique per district id so the producedResource
-          // dupe-check (see assignDistrictType) never collides; real per-type resource
-          // balancing is a separate pass.
           district.producedResource = `Placeholder Good ${district.id}`
           district.secondProducedResource = null
           district.consumedResources = [`Placeholder Input ${district.id}A`, `Placeholder Input ${district.id}B`, 'Water', 'Basic Food']
           district.description = ''
+          district.name = generateName('district', districtType)
           this.log.push(`Auto-assigned ${districtType} (placeholder resources) to district ${district.id}`)
         }
       }
@@ -1170,11 +1231,13 @@ export default class SetupPhase {
     return cityData.terrainPlots.length
   }
 
-  assignTerrainDistrict(regionId, districtType, description = '', producedResource = '', consumedResources = [], name = '') {
+  assignTerrainDistrict(regionId, plotId, districtType, description = '', producedResource = '', consumedResources = [], name = '', resourceDefs = []) {
     const regions = this.gameStateManager.worldTerrainData.regions
     const region = regions.find(r => r.id === regionId)
     if (!region) throw new Error(`Region ${regionId} not found`)
-    if (region.terrainDistrict) throw new Error(`Region ${regionId} already has a terrain district`)
+    if (plotId && this.terrainDistrictPlots.find(p => p.plotId === plotId)) {
+      throw new Error(`Plot ${plotId} already has a terrain district`)
+    }
 
     const VALID = { Forest: 'Forestry', Hills: 'Mining', Plains: 'Agriculture', Lake: 'Fishing', Sea: 'Fishing' }
     if (!VALID[region.assignedType]) throw new Error(`Cannot add a district to ${region.assignedType} regions`)
@@ -1192,23 +1255,33 @@ export default class SetupPhase {
       ...IMPLICIT_CONSUMED.filter(r => !explicitConsumed.some(e => e.toLowerCase() === r.toLowerCase()))
     ]
 
-    region.terrainDistrict = districtType
-    region.terrainDistrictDescription = description?.trim() || ''
-    region.terrainDistrictName = name?.trim() || ''
-    region.terrainDistrictProducedResource = producedResource.trim()
-    region.terrainDistrictConsumedResources = allConsumed
+    const districtName = name?.trim() || ''
+    const producedTrimmed = producedResource.trim()
+
+    this.terrainDistrictPlots.push({
+      plotId,
+      regionId,
+      districtType,
+      description: description?.trim() || '',
+      name: districtName,
+      producedResource: producedTrimmed,
+      consumedResources: allConsumed
+    })
 
     const PREDEFINED_LOWER = ['gold', 'water', 'labour', 'basic food']
-    if (!PREDEFINED_LOWER.includes(region.terrainDistrictProducedResource.toLowerCase())) {
-      this._registerResource(region.terrainDistrictProducedResource)
+    if (!PREDEFINED_LOWER.includes(producedTrimmed.toLowerCase())) {
+      this._registerResource(producedTrimmed)
     }
     for (const r of explicitConsumed) {
       if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
     }
+    for (const def of resourceDefs) {
+      if (def?.name) this._registerResourceDef(def)
+    }
 
-    this.factions.push({ id: this.factions.length, health: 70, type:'terrain', typeName: districtType, name: region.terrainDistrictName, subclass: null, regionId })
+    this.factions.push({ id: this.factions.length, health: 70, type:'terrain', typeName: districtType, name: districtName, subclass: null, plotId, regionId, producedResource: producedTrimmed })
 
-    this.log.push(`Assigned ${districtType} district to ${region.assignedType} region ${regionId}`)
+    this.log.push(`Assigned ${districtType} district to plot ${plotId} in ${region.assignedType} region ${regionId}`)
     return { ok: true, resourceRegistry: this.resourceRegistry, factions: this.factions, log: this.log }
   }
 
@@ -1353,6 +1426,12 @@ export default class SetupPhase {
     this.threats = []
     this.tradingDestinations = []
     this.factions = []
+    this.gods = []
+    this.magicSystem = null
+    this.foreignPowers = []
+    this.worldDomains = null
+    this.terrainDistrictPlots = []
+    this.terrainFeaturePlots = []
   }
 
   serialize() {
@@ -1366,7 +1445,13 @@ export default class SetupPhase {
       resourceRegistry: this.resourceRegistry,
       threats: this.threats,
       tradingDestinations: this.tradingDestinations,
-      factions: this.factions
+      factions: this.factions,
+      gods: this.gods,
+      magicSystem: this.magicSystem,
+      foreignPowers: this.foreignPowers,
+      worldDomains: this.worldDomains,
+      terrainDistrictPlots: this.terrainDistrictPlots,
+      terrainFeaturePlots: this.terrainFeaturePlots
     }
   }
 
@@ -1382,9 +1467,67 @@ export default class SetupPhase {
     }
     if (data.threats) this.threats = data.threats
     if (data.tradingDestinations) this.tradingDestinations = data.tradingDestinations
+    this.gods = data.gods ?? []
+    this.magicSystem = data.magicSystem ?? null
+    this.foreignPowers = data.foreignPowers ?? []
+    this.worldDomains = data.worldDomains ?? null
+    this.terrainDistrictPlots = data.terrainDistrictPlots ?? []
     // Rebuild derived lists from source-of-truth data so older saves are reconciled on load.
     this._rebuildFactions()
     this._rebuildRegistry()
+  }
+
+  addGod({ domains, name, description, seatId }) {
+    const god = { id: this.gods.length, domains, name, description, seatId }
+    this.gods.push(god)
+    return god
+  }
+
+  defineMagicSystem({ conceptType, name, description, seatId }) {
+    this.magicSystem = { conceptType, name, description, seatId }
+    return this.magicSystem
+  }
+
+  refineMagicSystem({ name, description }) {
+    if (!this.magicSystem) throw new Error('No magic system defined')
+    if (name)        this.magicSystem.name        = name
+    if (description) this.magicSystem.description = description
+    return this.magicSystem
+  }
+
+  addForeignPowerThreat({ fpId, name, description }) {
+    const fp = this.foreignPowers.find(f => f.id === fpId)
+    if (!fp) throw new Error('Foreign power not found')
+    const label = (name || fp.name).trim()
+    if (!label) throw new Error('A name is required')
+    const threat = { id: this.threats.length, foreignPowerId: fpId, name: label, description: description || '', direction: fp.direction, terrainType: 'foreign-power' }
+    this.threats.push(threat)
+    this.factions.push({ id: this.factions.length, health: 70, type: 'threat', typeName: 'Foreign Threat', name: label, subclass: null, foreignPowerId: fpId, standing: {} })
+    this.log.push(`Declared ${fp.name} as threat: "${label}"`)
+    return { ok: true, threats: this.threats, factions: this.factions, log: this.log }
+  }
+
+  addForeignPowerTrade({ fpId, name, description }) {
+    const fp = this.foreignPowers.find(f => f.id === fpId)
+    if (!fp) throw new Error('Foreign power not found')
+    const label = (name || fp.name).trim()
+    if (!label) throw new Error('A name is required')
+    const dest = { id: this.tradingDestinations.length, foreignPowerId: fpId, name: label, description: description || '', direction: fp.direction, terrainType: 'foreign-power', buys: [], sells: [] }
+    this.tradingDestinations.push(dest)
+    this.factions.push({ id: this.factions.length, health: 100, type: 'trade', typeName: 'Foreign Trade', name: label, subclass: null, foreignPowerId: fpId, standing: {} })
+    this.log.push(`Defined trade route with ${fp.name}: "${label}"`)
+    return { ok: true, tradingDestinations: this.tradingDestinations, factions: this.factions, log: this.log }
+  }
+
+  addForeignPower({ direction, name, colour, description, seatId }) {
+    for (const fp of this.foreignPowers) {
+      const diff = Math.abs(((direction - fp.direction) + 360) % 360)
+      const gap  = Math.min(diff, 360 - diff)
+      if (gap < 45) return { error: 'Too close to existing foreign power' }
+    }
+    const fp = { id: this.foreignPowers.length, direction, name, colour, description, seatId }
+    this.foreignPowers.push(fp)
+    return fp
   }
 
   _rebuildRegistry() {
@@ -1400,10 +1543,17 @@ export default class SetupPhase {
       if (d.producedResource) reg(d.producedResource)
       for (const r of (d.consumedResources || [])) reg(r)
     }
+    for (const tDP of (this.terrainDistrictPlots || [])) {
+      if (tDP.producedResource) reg(tDP.producedResource)
+      for (const r of (tDP.consumedResources || [])) reg(r)
+    }
+    // Backwards compat: old saves stored on region objects
     const regions = this.gameStateManager.worldTerrainData?.regions || []
-    for (const region of regions) {
-      if (region.terrainDistrictProducedResource) reg(region.terrainDistrictProducedResource)
-      for (const r of (region.terrainDistrictConsumedResources || [])) reg(r)
+    if (!(this.terrainDistrictPlots?.length)) {
+      for (const region of regions) {
+        if (region.terrainDistrictProducedResource) reg(region.terrainDistrictProducedResource)
+        for (const r of (region.terrainDistrictConsumedResources || [])) reg(r)
+      }
     }
     for (const trade of this.tradingDestinations) {
       for (const r of [...(trade.buys || []), ...(trade.sells || [])]) reg(r)
@@ -1420,9 +1570,16 @@ export default class SetupPhase {
         this.factions.push({ id: this.factions.length, health: 70, type:'leadership', typeName: 'Leadership', name: district.name || '', subclass: district.LeadershipClass || null, districtId: district.id, influence: {}, standing: {} })
       }
     }
-    for (const region of regions) {
-      if (region.terrainDistrict) {
-        this.factions.push({ id: this.factions.length, health: 70, type:'terrain', typeName: region.terrainDistrict, name: region.terrainDistrictName || '', subclass: null, regionId: region.id, standing: {} })
+    if (this.terrainDistrictPlots?.length) {
+      for (const tDP of this.terrainDistrictPlots) {
+        this.factions.push({ id: this.factions.length, health: 70, type:'terrain', typeName: tDP.districtType, name: tDP.name || '', subclass: null, plotId: tDP.plotId, regionId: tDP.regionId, producedResource: tDP.producedResource || '', standing: {} })
+      }
+    } else {
+      // Backwards compat: old saves stored district on the region object
+      for (const region of regions) {
+        if (region.terrainDistrict) {
+          this.factions.push({ id: this.factions.length, health: 70, type:'terrain', typeName: region.terrainDistrict, name: region.terrainDistrictName || '', subclass: null, regionId: region.id, producedResource: region.terrainDistrictProducedResource || '', standing: {} })
+        }
       }
     }
     for (const district of districts) {

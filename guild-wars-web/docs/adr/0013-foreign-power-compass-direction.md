@@ -1,0 +1,3 @@
+Foreign Powers are defined by a compass direction (a continuous angle on a dial) rather than by clicking a map-edge region. The compass UI disables each occupied 45° arc, enforcing a maximum of 8 Foreign Powers.
+
+This was chosen because Foreign Powers are deliberately off-map — they are civilizations beyond the game board, not features placed on it. A precise map-edge click would imply a geographic anchor that doesn't exist. The compass gives fuzzy directional flavour ("they are to the North-East") without committing to a specific border point. The trade-off is that players cannot see Foreign Powers in relation to specific terrain regions.

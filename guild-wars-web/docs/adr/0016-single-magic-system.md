@@ -1,0 +1,3 @@
+Each game world has exactly one Magic System. The first player to click "Add Magic" claims the definition (first-come-first-served); subsequent players can refine it but cannot add a second system. If no Magic System is defined by the end of Terrain Setup, the world defaults to D&D Schools of Magic.
+
+Unlike Gods — which allow a pantheon — magic is the foundational logic of the world and cannot be plural without contradiction. The single-system constraint forces players to commit to a coherent magical identity. The trade-off is that players cannot represent a world with multiple competing magic traditions; that nuance can be handled through the free-text description field.

@@ -1064,7 +1064,7 @@ export default class BuildingRenderer {
         const px = mx + ex * ll + nx * dd
         const pz = my + ey * ll + ny * dd
         if (!pointInPolygon(px, pz, poly)) continue
-        const scale = 0.13 + this._rand(seed + 3) * 0.08   // small
+        const scale = 0.104 + this._rand(seed + 3) * 0.064   // small (−20%)
         const treeGlb = TREE_GLBS[Math.floor(this._rand(seed + 5) * TREE_GLBS.length)]
         placements.push({ x: px, z: pz, rotY: this._rand(seed + 4) * Math.PI * 2, glbPath: treeGlb, scale })
         placed++

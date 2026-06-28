@@ -12,6 +12,11 @@ function savePos(x, y) {
 export default class TutorialWindow {
   constructor() {
     this._el = null
+    this._messages = []
+    this._current = 0
+    this._advanceBtn = null
+    this._messageEl = null
+    this._checkbox = null
     this._build()
   }
 
@@ -26,18 +31,13 @@ export default class TutorialWindow {
       'user-select:none'
     ].join(';')
 
-    // Title bar (drag handle)
+    // Title bar (drag handle) — no close button
     const titleBar = document.createElement('div')
-    titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#2a2a2a;border-bottom:1px solid #444;border-radius:6px 6px 0 0;cursor:move'
+    titleBar.style.cssText = 'display:flex;align-items:center;padding:8px 12px;background:#2a2a2a;border-bottom:1px solid #444;border-radius:6px 6px 0 0;cursor:move'
     const title = document.createElement('span')
-    title.textContent = 'Tutorial Information'
+    title.textContent = 'Tutorial'
     title.style.cssText = 'font-weight:bold;font-size:12px;color:#aaa;text-transform:uppercase;letter-spacing:1px'
-    const closeBtn = document.createElement('button')
-    closeBtn.textContent = '×'
-    closeBtn.style.cssText = 'background:none;border:none;color:#aaa;font-size:18px;cursor:pointer;padding:0;line-height:1'
-    closeBtn.addEventListener('click', () => this.hide())
     titleBar.appendChild(title)
-    titleBar.appendChild(closeBtn)
     el.appendChild(titleBar)
 
     // Body
@@ -47,12 +47,15 @@ export default class TutorialWindow {
     this._messageEl.style.cssText = 'margin:0 0 14px 0;line-height:1.5'
     body.appendChild(this._messageEl)
 
-    // Close button
-    const dismissBtn = document.createElement('button')
-    dismissBtn.textContent = 'Close'
-    dismissBtn.style.cssText = 'display:block;width:100%;padding:8px;background:#3a3a3a;color:#ccc;border:1px solid #555;border-radius:4px;cursor:pointer;font-size:13px;margin-bottom:8px'
-    dismissBtn.addEventListener('click', () => this.hide())
-    body.appendChild(dismissBtn)
+    // Next / Close button
+    const advanceBtn = document.createElement('button')
+    advanceBtn.textContent = 'Next'
+    advanceBtn.style.cssText = 'display:block;width:100%;padding:8px;background:#3a4a3a;color:#ccc;border:1px solid #4a6a4a;border-radius:4px;cursor:pointer;font-size:13px;margin-bottom:8px'
+    advanceBtn.addEventListener('click', () => this._advance())
+    advanceBtn.addEventListener('mouseenter', () => { advanceBtn.style.background = '#4a5a4a' })
+    advanceBtn.addEventListener('mouseleave', () => { advanceBtn.style.background = '#3a4a3a' })
+    this._advanceBtn = advanceBtn
+    body.appendChild(advanceBtn)
 
     // Disable tutorials checkbox
     const checkLabel = document.createElement('label')
@@ -70,7 +73,6 @@ export default class TutorialWindow {
 
     el.appendChild(body)
 
-    // Block map interactions — stop propagation at the window boundary.
     el.addEventListener('click',     (e) => e.stopPropagation())
     el.addEventListener('mousedown', (e) => e.stopPropagation())
 
@@ -86,7 +88,6 @@ export default class TutorialWindow {
       this._el.style.left = saved.x + 'px'
       this._el.style.top  = saved.y + 'px'
     } else {
-      // Default: center of screen
       this._el.style.left = Math.round((window.innerWidth - 320) / 2) + 'px'
       this._el.style.top  = Math.round(window.innerHeight / 3) + 'px'
     }
@@ -113,7 +114,6 @@ export default class TutorialWindow {
         document.removeEventListener('mouseup', onUp)
         if (didDrag) {
           savePos(parseInt(this._el.style.left), parseInt(this._el.style.top))
-          // Suppress the click the browser synthesises after a drag release.
           const suppressClick = (e) => {
             e.stopPropagation()
             document.removeEventListener('click', suppressClick, true)
@@ -126,15 +126,45 @@ export default class TutorialWindow {
     })
   }
 
-  // Show with the given text if tutorials are enabled.
+  _refresh() {
+    const msg = this._messages[this._current] || ''
+    this._messageEl.textContent = msg
+    const isLast = this._current >= this._messages.length - 1
+    this._advanceBtn.textContent = isLast ? 'Close' : 'Next'
+    this._advanceBtn.style.background = isLast ? '#3a2a2a' : '#3a4a3a'
+    this._advanceBtn.style.borderColor = isLast ? '#6a4a4a' : '#4a6a4a'
+  }
+
+  _advance() {
+    if (this._current < this._messages.length - 1) {
+      this._current++
+      this._refresh()
+    } else {
+      this.hide()
+    }
+  }
+
+  // Push a message onto the stack. Shows the window at the first new message
+  // if it was hidden; otherwise queues behind existing messages.
   show(text) {
     if (!Settings.showTutorials) return
-    this._messageEl.textContent = text
-    this._checkbox.checked = false
-    this._el.style.display = 'block'
+    if (!text) return
+    const wasHidden = this._el.style.display === 'none' || !this._el.style.display
+    this._messages.push(text)
+    if (wasHidden) {
+      this._current = this._messages.length - 1
+      this._checkbox.checked = false
+      this._el.style.display = 'block'
+    }
+    this._refresh()
   }
+
+  // Alias so callers can use push(text) explicitly.
+  push(text) { this.show(text) }
 
   hide() {
     this._el.style.display = 'none'
+    this._messages = []
+    this._current = 0
   }
 }

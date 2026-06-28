@@ -1,0 +1,3 @@
+Each district's production is locked to a fixed unit count (Base Production Units = `floor(100Gp ÷ initial Market Value)`) calculated once at creation. Units never change when market prices fluctuate. Actual output per round scales only by Faction Health: `produced = Base Production Units × (health / 100)`.
+
+The alternative — floating gold-value output (always produce 100Gp worth at the current price) — would have made production respond to market prices, reducing scarcity once prices rise. Fixed units separates "how much is produced" from "how much it's worth," making the Market Value system the sole lever for economic signals. It also keeps round-1 pre-loading deterministic.

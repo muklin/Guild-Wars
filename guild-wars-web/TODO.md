@@ -2,6 +2,8 @@
 
 # Bugs:
 - sometimes Terrain Regions fine voronois are not adjacent.  This results in missing edges.  
+
+- Map movement at full zoom out is broken.  The map goes to the top of the screen and can't move the map down.  zoom in fixes it, but we want to be able to zoom out to the point that the whole map is visible and we can still pan around.  
 - Fix rooves. Make sure they Gable correctly on the ends of wings.  
 
 # Baby Features:
@@ -11,31 +13,10 @@
 
 ## City Setup 
 
-### Terrain plots
-move the plot conversion for terrain to happen when a terrain is defined.  this can happen either: 
-- when the user specifes the terrain in Terrain mode.  
-- when the terrain is auto assigned (plain) when leaving terrain mode.  
 
-The reason is, we want to let users define plots, not whole terrains as forrestry / fishing / mining / agriculture / trade / threat, etc, and follow rules to add infrastructure (roads / buildings, etc.) at that time, during city setup.  
 
 ### Walls as buildings. 
 change wall generation to use building generation, to allow for turrets, gates, walls to have internal rooms.  Need to add some standard capabilities: wall pieces.  Crenelations, etc.  
-
-
-### Resources.  
-When players go to create a new resource, we will popup a dialogue to help them name, choose an icon for, set the initial value of (in gold)
-
-Implement a "resource market" system.  Each Resource has a "global current market value"  This value rises and falls, based on: the scarcity/availability of the resource at the start of the round, (more available, will drop the value, less, increases it, max shift of 10% per round.  When 2x or more as much is available as is needed, the value drops by 10% (capped)). 
-
-All Factions need a gold balance - starts at 100Gp per Faction. Factions will try to barter their goods, selling their goods to the most expensive buyer first, then the closest, if there are ties. 
-
-Buy price is a function of Standing.  50% influcence sets the buy price at the market value.  
-The function is linear, buy price is reduced by 30% when Standing is 100%, increased 30% when influence is 0%.
-
-Each round, during upkeep, the districts will 
-1. create the resources they produce.  The maximum resources a District can create is based on the initial resouce value set by the player.  That is set at 100Gp worth of goods, and saved to the Faction, at creation.  At the start of the round, the amount produced is the max produced multiplied by the current health of the District.  Factions must have the resources that are the inputs/requirements, in  order to do this, as defined by the Resource panel.  Trade Factions are exempt from this rule.  (They don't have resource stockpiles, and always produce their fuil health, no matter what.)
-2. trade with other factions, buying resources they need from factions who have the resource, and selling resources they hold, to factions who need them.  
-
 
 
 
@@ -81,10 +62,12 @@ Archways, Portals or passages that pass under a building to the Courtyard beyond
 
 ## Gameplay during terrain 
 During Terrain setup players define
- - remote Cities / towns / Aggressors
- - gods
+ - Regional neighbours / remote (off the map) Cities / towns / potential Aggressors or Traders
+ - gods / Religion / Themes
+ - Magic concepts 
  - Special Terrain: Volcano, edge of ice sheet ... etc? 
 
+ 
 
 
 ## Groundplane Z-height implementation.  HUGE

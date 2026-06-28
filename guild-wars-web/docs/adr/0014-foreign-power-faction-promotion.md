@@ -1,0 +1,3 @@
+A Foreign Power is not a Faction when created during Terrain Setup. It becomes a Faction only when assigned a relationship during City Subdivision: Trade Route (→ Trading Destination Faction) or Threat (→ Threat Faction). Unclassified Foreign Powers have no Faction mechanics.
+
+This defers Influence and Standing overhead until the relationship is known, keeping Terrain Setup lean. The alternative — making every Foreign Power a Faction immediately — would require players to manage diplomatic mechanics for entities whose role in the game isn't yet determined. The trade-off is that unclassified Foreign Powers have no mechanical presence during the early game.

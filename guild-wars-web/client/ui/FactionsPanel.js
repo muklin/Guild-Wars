@@ -206,7 +206,7 @@ export default class FactionsPanel {
     const item = document.createElement('div')
     item.style.cssText = `margin-bottom:5px;padding:5px 8px;background:${toCss(colorNum)};border:1px solid rgba(0,0,0,0.35);border-radius:3px;cursor:default;transition:filter 0.1s`
 
-    const typePart = faction.typeName || ''
+    const typePart = faction.subclass || faction.typeName || ''
     const playerName = faction.name || ''
     const title = faction._isGuild
       ? (playerName || 'Our Guild')

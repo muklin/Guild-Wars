@@ -996,15 +996,30 @@ export default class StreetVoronoiGenerator {
       }
     }
 
-    // Average merged node positions
+    // Merge node positions — boundary nodes are pinned.
+    // When a cluster contains any boundary node, the merged position uses only
+    // the boundary nodes' average. Interior Voronoi nodes sit slightly inward; if
+    // their position were averaged in, the merged junction would drift off the
+    // district boundary and leave a visible gap between adjacent district plots.
+    const boundaryNodeIdSet = new Set(boundaryNodes.map(n => n.id))
     const rootData = new Map()
     for (const n of allNodes) {
       const root = find(n.id)
-      if (!rootData.has(root)) rootData.set(root, { id: root, sumX: 0, sumY: 0, count: 0 })
+      if (!rootData.has(root)) {
+        rootData.set(root, { id: root, sumX: 0, sumY: 0, count: 0, bSumX: 0, bSumY: 0, bCount: 0 })
+      }
       const r = rootData.get(root)
-      r.sumX += n.x; r.sumY += n.y; r.count++
+      if (boundaryNodeIdSet.has(n.id)) {
+        r.bSumX += n.x; r.bSumY += n.y; r.bCount++
+      } else {
+        r.sumX += n.x; r.sumY += n.y; r.count++
+      }
     }
-    const finalNodes = [...rootData.values()].map(r => ({ id: r.id, x: r.sumX / r.count, y: r.sumY / r.count }))
+    const finalNodes = [...rootData.values()].map(r =>
+      r.bCount > 0
+        ? { id: r.id, x: r.bSumX / r.bCount, y: r.bSumY / r.bCount }
+        : { id: r.id, x: r.sumX / r.count,  y: r.sumY / r.count  }
+    )
 
     // Remap edges, drop degenerate / duplicate
     const finalEdges = []

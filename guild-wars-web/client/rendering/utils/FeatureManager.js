@@ -18,12 +18,17 @@ const FEATURES = {
     loop: false           // wind-sway loops continuously
   },
   forest: {
-    glbPath: '/resources/Models/tree.glb',
-    strategy: 'scatter',  // multiple instances spread across the cell polygon
-    count: 15,
-    baseScale: 0.38,
-    scaleVariation: 0.18,
-    minScale: 0.15,
+    glbPaths: [
+      '/resources/Models/tree.glb',
+      '/resources/Models/tree1.glb',
+      '/resources/Models/tree2.glb',
+      '/resources/Models/tree3.glb',
+    ],
+    strategy: 'scatter',
+    count: 30,
+    baseScale: 0.104,
+    scaleVariation: 0.064,
+    minScale: 0.08,
     leanMax: 0.03,
   },
   mountains: {
@@ -98,7 +103,10 @@ function loadGLTFShared(path) {
 export function preloadModels() {
   const paths = new Set()
   for (const arr of Object.values(MODELS)) for (const m of arr) if (m.glbPath) paths.add(m.glbPath)
-  for (const cfg of Object.values(FEATURES)) if (cfg.glbPath) paths.add(cfg.glbPath)
+  for (const cfg of Object.values(FEATURES)) {
+    if (cfg.glbPath) paths.add(cfg.glbPath)
+    if (cfg.glbPaths) for (const p of cfg.glbPaths) paths.add(p)
+  }
   return Promise.all([...paths].map(p =>
     loadGLTFShared(p).catch(err => console.error(`preloadModels: failed to load ${p}`, err))
   ))
@@ -185,12 +193,23 @@ export default class FeatureManager {
     const cfg = FEATURES[featureName]
     if (!cfg) { console.warn(`FeatureManager: unknown feature '${featureName}'`); return }
 
+    // Support both single glbPath and multi-model glbPaths array
     let gltf
-    try {
-      gltf = await this._loadGLTF(cfg.glbPath)
-    } catch (err) {
-      console.error(`FeatureManager: failed to load ${cfg.glbPath}`, err)
-      return
+    let gltfs = null  // array for glbPaths mode
+    if (cfg.glbPaths) {
+      try {
+        gltfs = await Promise.all(cfg.glbPaths.map(p => this._loadGLTF(p)))
+      } catch (err) {
+        console.error(`FeatureManager: failed to load models for '${featureName}'`, err)
+        return
+      }
+    } else {
+      try {
+        gltf = await this._loadGLTF(cfg.glbPath)
+      } catch (err) {
+        console.error(`FeatureManager: failed to load ${cfg.glbPath}`, err)
+        return
+      }
     }
 
     console.log(`FeatureManager: spawning '${featureName}' for ${cells.length} cells`)
@@ -212,7 +231,8 @@ export default class FeatureManager {
           const rotX = (rng() - 0.5) * 2 * (cfg.leanMax ?? 0)
           const rotZ = (rng() - 0.5) * 2 * (cfg.leanMax ?? 0)
           const scale = Math.max(cfg.minScale, cfg.baseScale + (rng() - 0.5) * 2 * cfg.scaleVariation)
-          this._spawnOne(gltf, pt.x, pt.z, scale, rotY, rotX, rotZ, cfg.billboardY ?? false)
+          const model = gltfs ? gltfs[Math.floor(rng() * gltfs.length)] : gltf
+          this._spawnOne(model, pt.x, pt.z, scale, rotY, rotX, rotZ, cfg.billboardY ?? false)
         }
       } else if (cfg.strategy === 'single') {
         const area = cell.polygon?.length >= 3 ? this._polygonArea(cell.polygon) : 1

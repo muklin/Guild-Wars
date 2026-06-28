@@ -23,7 +23,7 @@ function _attachDisabledTooltip(btn, reason) {
   btn.addEventListener('click', e => e.stopImmediatePropagation())
 }
 
-const TERRAIN_TYPES = ['Plains', 'Forest', 'Mountains', 'Desert', 'Swamp', 'Hills', 'Lake', 'Sea']
+const TERRAIN_TYPES = ['Plains', 'Forest', 'Mountains', 'Desert', 'Swamp', 'Hills', 'Lake', 'Sea', 'Ice Sheet']
 const EDGE_TYPES = ['River', 'Cliff']
 
 // Preferred gap between the anchor screen point and the floating panel edge.
@@ -69,12 +69,15 @@ export default class TerrainTypePanel {
   }
 
   showContext(type, options = {}) {
+    const wasHidden = this._el.style.display === 'none' || !this._el.style.display
+    const contextTypeChanged = type !== this._currentContext
     this._currentContext = type
     this._currentOptions = options
     this._el.innerHTML = ''
 
     if (type === 'none') {
       this._el.style.display = 'none'
+      NameDialog.closeAll()
       return
     }
 
@@ -89,7 +92,10 @@ export default class TerrainTypePanel {
 
     this._el.appendChild(content)
     this._el.style.display = 'block'
-    this._reposition()
+    // Only reposition when first shown or switching context type (region↔edge).
+    // Adding a second/third edge to an existing multi-edge selection keeps the
+    // panel where the user last saw it.
+    if (wasHidden || contextTypeChanged) this._reposition()
   }
 
   _reposition() {
@@ -120,7 +126,8 @@ export default class TerrainTypePanel {
     }
   }
 
-  _buildRegionContent(container, { pendingType, isEdge = false, adjacentTypes = [] }) {
+  _buildRegionContent(container, { pendingType, isEdge = false, isNorthEdge = false, adjacentRegions = [] }) {
+    const adjacentTypes = adjacentRegions.map(r => r.type)
     const label = document.createElement('div')
     label.textContent = 'Terrain Type'
     label.style.cssText = 'margin-bottom:8px;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px'
@@ -137,6 +144,7 @@ export default class TerrainTypePanel {
 
       let disabledReason = null
       if (EDGE_ONLY.includes(type) && !isEdge)              disabledReason = `${type} can only be placed on boundary (edge-of-map) regions`
+      else if (type === 'Ice Sheet' && !isNorthEdge)         disabledReason = 'Ice Sheet can only be placed on north-edge regions'
       else if (type === 'Sea' && adjacentTypes.includes('Lake'))  disabledReason = 'Cannot be placed adjacent to a Lake'
       else if (type === 'Lake' && adjacentTypes.includes('Sea'))  disabledReason = 'Cannot be placed adjacent to the Sea'
       const disabled = disabledReason !== null
@@ -160,6 +168,12 @@ export default class TerrainTypePanel {
       applyBtn.textContent = `Apply: ${pendingType}`
       applyBtn.style.cssText = `width:100%;padding:8px;margin-top:6px;background:${hex};color:#fff;border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px`
       applyBtn.addEventListener('click', () => {
+        // Auto-inherit name if a neighbour already carries this terrain type
+        const inheritFrom = adjacentRegions.find(r => r.type === pendingType && r.name)
+        if (inheritFrom) {
+          this.eventBus.emit('TERRAIN_APPLY', { name: inheritFrom.name, description: '' })
+          return
+        }
         applyBtn.disabled = true
         applyBtn.style.opacity = '0.6'
         applyBtn.style.cursor = 'default'

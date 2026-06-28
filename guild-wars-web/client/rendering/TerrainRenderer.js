@@ -4,18 +4,19 @@ import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, clipPolygonToBox } from './utils/renderUtils.js'
 
 const TERRAIN_COLORS = {
-  City:        0x808080,
-  Plains:      0xb2de69,
-  Desert:      0xedca72,
-  Mountains:   0x8d8d8d,
-  Forest:      0x218c21,
-  Lake:        0x1a5abf,
-  Sea:         0x0e6e6c,
-  Hills:       0x699B4F,
-  Swamp:       0x4a6b4a,
-  unassigned:  0xb8a680,
-  Cliff:       0xaaaaaa,
-  River:       0x4488ff,
+  City:          0x808080,
+  Plains:        0xb2de69,
+  Desert:        0xedca72,
+  Mountains:     0x8d8d8d,
+  Forest:        0x218c21,
+  Lake:          0x1a5abf,
+  Sea:           0x0e6e6c,
+  Hills:         0x699B4F,
+  Swamp:         0x4a6b4a,
+  'Ice Sheet':   0xf4f8ff,
+  unassigned:    0xb8a680,
+  Cliff:         0xaaaaaa,
+  River:         0x4488ff,
   get(type) {
     return this[type] ?? null
   }
@@ -48,9 +49,14 @@ export default class TerrainRenderer {
     this.featureManager = new FeatureManager(scene)
     this.spawnedFeatureRegions = new Map()
 
+    this._fpBandMeshes  = []
+    this._fpBandCenters = []  // [{fp, worldX, worldZ}] for DOM label positioning
+
     this.hoveredRegionId = null
     this.hoveredEdgeId = null
+    this.hoveredFineCellId = null
     this.selectedRegionId = null
+    this.selectedFineCellId = null
     this._debugPreHoverColors = new Map()
   }
 
@@ -84,7 +90,51 @@ export default class TerrainRenderer {
     arr.length = 0
   }
 
+  setFineCellSelected(cellId) {
+    if (this.selectedFineCellId !== null && this.selectedFineCellId !== cellId) {
+      this._restoreFineCellColor(this.selectedFineCellId)
+    }
+    this.selectedFineCellId = cellId
+    const mesh = this.fineCellMeshes.get(cellId)
+    if (mesh?.material) {
+      mesh.material.color.setHex(0xffffff)
+      mesh.material.emissive?.setHex(0xffffff)
+      mesh.material.emissiveIntensity = 0.5
+    }
+  }
+
+  clearFineCellSelected() {
+    if (this.selectedFineCellId === null) return
+    this._restoreFineCellColor(this.selectedFineCellId)
+    this.selectedFineCellId = null
+  }
+
+  _restoreFineCellColor(cellId) {
+    const cell = this.terrainData?.fineCells?.find(c => c.id === cellId)
+    const base = cell ? this._regionBaseColor(cell.parentRegionId) : 0x888888
+    const mesh = this.fineCellMeshes.get(cellId)
+    if (mesh?.material) {
+      mesh.material.color.setHex(base)
+      mesh.material.emissive?.setHex(base)
+      mesh.material.emissiveIntensity = 0.2
+    }
+  }
+
   clearHover() {
+    if (this.hoveredFineCellId !== null) {
+      // Don't wipe the selected-cell's white highlight when clearing hover
+      if (this.hoveredFineCellId !== this.selectedFineCellId) {
+        const cell = this.terrainData?.fineCells?.find(c => c.id === this.hoveredFineCellId)
+        const baseColor = cell ? this._regionBaseColor(cell.parentRegionId) : 0x888888
+        const mesh = this.fineCellMeshes.get(this.hoveredFineCellId)
+        if (mesh?.material) {
+          mesh.material.color.setHex(baseColor)
+          mesh.material.emissive?.setHex(baseColor)
+          mesh.material.emissiveIntensity = 0.2
+        }
+      }
+      this.hoveredFineCellId = null
+    }
     if (this.hoveredRegionId !== null) {
       const isSelected = this.selectedRegionId === this.hoveredRegionId
       const baseColor = isSelected ? 0xffffff : this._regionBaseColor(this.hoveredRegionId)
@@ -279,12 +329,17 @@ export default class TerrainRenderer {
   }
 
   selectRegion(regionId) {
+    this.clearFineCellSelected()
     this.selectedRegionId = regionId
     this._applyRegionColor(regionId, 0xffffff)
   }
 
   deselectRegion(regionId) {
     if (this.selectedRegionId === regionId) this.selectedRegionId = null
+    if (this.selectedFineCellId !== null) {
+      const cell = this.terrainData?.fineCells?.find(c => c.id === this.selectedFineCellId)
+      if (cell?.parentRegionId === regionId) this.clearFineCellSelected()
+    }
     this._applyRegionColor(regionId, this._regionBaseColor(regionId))
   }
 
@@ -339,6 +394,29 @@ export default class TerrainRenderer {
         rm.material.emissiveIntensity = 0.45
       }
     }
+  }
+
+  setFineCellHover(cellId) {
+    if (this.hoveredFineCellId === cellId) return
+    this.clearHover()
+    this.hoveredFineCellId = cellId
+    const mesh = this.fineCellMeshes.get(cellId)
+    if (!mesh?.material) return
+    const cell = this.terrainData?.fineCells?.find(c => c.id === cellId)
+    const baseColor = cell ? this._regionBaseColor(cell.parentRegionId) : 0x888888
+    const lightened = new THREE.Color(baseColor).lerp(new THREE.Color(0xffffff), 0.35)
+    const lightenedHex = lightened.getHex()
+    mesh.material.color.setHex(lightenedHex)
+    mesh.material.emissive?.setHex(lightenedHex)
+    mesh.material.emissiveIntensity = 0.45
+  }
+
+  getFineCellAtWorldPos(worldX, worldY) {
+    if (!this.terrainData?.fineCells?.length) return null
+    for (const cell of this.terrainData.fineCells) {
+      if (cell.polygon && pointInPolygon(worldX, worldY, cell.polygon)) return cell
+    }
+    return null
   }
 
   setEdgeHover(edgeId) {
@@ -760,6 +838,179 @@ export default class TerrainRenderer {
     spawned.add(featureName)
     const cells = this._cellsForRegion(regionId)
     if (cells.length > 0) this.featureManager.spawn(featureName, cells)
+  }
+
+  // ── Foreign Power border bands ───────────────────────────────────────────────
+
+  renderForeignPowerBands(foreignPowers) {
+    this.clearForeignPowerBands()
+    if (!foreignPowers?.length) return
+    for (const fp of foreignPowers) {
+      const band = this._buildFPBand(fp.direction, fp.colour || '#888888')
+      if (band) { this.scene.add(band); this._fpBandMeshes.push(band) }
+      const center = this._computeFPBandCenter(fp.direction)
+      if (center) this._fpBandCenters.push({ fp, worldX: center.x, worldY: center.y, worldZ: center.z })
+    }
+  }
+
+  clearForeignPowerBands() {
+    for (const m of this._fpBandMeshes) { m.geometry?.dispose(); m.material?.dispose(); this.scene.remove(m) }
+    this._fpBandMeshes  = []
+    this._fpBandCenters = []
+  }
+
+  setFPBandsVisible(visible) {
+    for (const m of this._fpBandMeshes) m.visible = visible
+  }
+
+  _fpRayBoundary(cx, cy, vx, vy, W) {
+    const candidates = []
+    if (Math.abs(vx) > 1e-9) {
+      const t = vx > 0 ? (W - cx) / vx : -cx / vx
+      if (t > 0) {
+        const hy = cy + t * vy
+        if (hy >= -0.01 && hy <= W + 0.01)
+          candidates.push({ t, x: Math.min(W, Math.max(0, cx + t * vx)), y: Math.min(W, Math.max(0, hy)) })
+      }
+    }
+    if (Math.abs(vy) > 1e-9) {
+      const t = vy > 0 ? (W - cy) / vy : -cy / vy
+      if (t > 0) {
+        const hx = cx + t * vx
+        if (hx >= -0.01 && hx <= W + 0.01)
+          candidates.push({ t, x: Math.min(W, Math.max(0, hx)), y: Math.min(W, Math.max(0, cy + t * vy)) })
+      }
+    }
+    return candidates.length ? candidates.reduce((a, b) => a.t < b.t ? a : b) : null
+  }
+
+  // Convert a boundary hit point to a perimeter parameter t ∈ [0, 4W).
+  // Perimeter goes clockwise from NW corner: North→East→South→West.
+  _perimPosOf(hit, W) {
+    const eps = 0.01
+    if (hit.y <= eps)     return hit.x                  // North edge
+    if (hit.x >= W - eps) return W + hit.y              // East edge
+    if (hit.y >= W - eps) return 2 * W + (W - hit.x)    // South edge
+    return 3 * W + (W - hit.y)                           // West edge
+  }
+
+  // Return {x, y, inX, inY} for a perimeter position t (wraps around 4W).
+  // (x,y) is the 2D map point; (inX,inY) is the inward-facing normal.
+  _perimPt(t, W) {
+    const P = 4 * W
+    const T = ((t % P) + P) % P
+    if (T < W)       return { x: T,         y: 0,         inX: 0,  inY: 1  }
+    if (T < 2 * W)   return { x: W,         y: T - W,     inX: -1, inY: 0  }
+    if (T < 3 * W)   return { x: 3 * W - T, y: W,         inX: 0,  inY: -1 }
+    return                 { x: 0,          y: 4 * W - T, inX: 1,  inY: 0  }
+  }
+
+  _buildFPBand(bearing, colourStr) {
+    const W     = this.worldSize, toRad = Math.PI / 180
+    const vx    = Math.sin(bearing * toRad), vy = -Math.cos(bearing * toRad)
+    const hit   = this._fpRayBoundary(W / 2, W / 2, vx, vy, W)
+    if (!hit) return null
+
+    const halfLen = 12    // units along perimeter on each side of bearing point
+    const depth   = 1.5  // strip thickness inward from boundary
+    const Y       = 4.0  // float height — ShaderMaterial bypasses clip plane so it's visible in top-down
+    const N_STRIP = 60   // samples for main strip
+    const N_CAP   = 14   // semicircle segments per pill cap
+
+    const hitT = this._perimPosOf(hit, W)
+    const t0   = hitT - halfLen
+    const t1   = hitT + halfLen
+
+    const verts = [], tris = []
+    let vi = 0
+    const pushV = (x, z) => { verts.push(x, Y, z); return vi++ }
+
+    // ── Main strip ───────────────────────────────────────────────────────────
+    const oIdx = [], iIdx = []
+    for (let i = 0; i <= N_STRIP; i++) {
+      const t = t0 + (i / N_STRIP) * (t1 - t0)
+      const p = this._perimPt(t, W)
+      oIdx.push(pushV(p.x, p.y))
+      iIdx.push(pushV(p.x + p.inX * depth, p.y + p.inY * depth))
+    }
+    for (let i = 0; i < N_STRIP; i++) {
+      const a = oIdx[i], b = iIdx[i], c = oIdx[i + 1], d = iIdx[i + 1]
+      tris.push(a, c, b,  b, c, d)
+    }
+
+    // ── Corner fill triangles (closes the gap when strip wraps a map corner) ─
+    for (const ct of [W, 2 * W, 3 * W, 4 * W]) {
+      const frac = (ct - t0) / (t1 - t0) * N_STRIP
+      if (frac > 0.5 && frac < N_STRIP - 0.5) {
+        const pBefore = this._perimPt(ct - 0.01, W)
+        const pAfter  = this._perimPt(ct + 0.01, W)
+        const pCorner = this._perimPt(ct, W)
+        const iA = pushV(pBefore.x + pBefore.inX * depth, pBefore.y + pBefore.inY * depth)
+        const iB = pushV(pAfter.x  + pAfter.inX  * depth, pAfter.y  + pAfter.inY  * depth)
+        const ov = pushV(pCorner.x, pCorner.y)
+        tris.push(ov, iA, iB)
+      }
+    }
+
+    // ── Pill caps (rounded ends) ─────────────────────────────────────────────
+    // sign: -1 = start cap (opens in −t direction), +1 = end cap (+t direction)
+    const addCap = (t, sign) => {
+      const p  = this._perimPt(t, W)
+      const r  = depth / 2
+      const cx = p.x + p.inX * r, cz = p.y + p.inY * r   // cap centre
+      const tX = p.inY * sign,    tZ = -p.inX * sign       // outward tangent for this end
+
+      const cv  = pushV(cx, cz)
+      const arc = []
+      for (let j = 0; j <= N_CAP; j++) {
+        const a  = (j / N_CAP) * Math.PI
+        // angle=0 → outer edge (boundary), angle=π → inner edge
+        const ex = Math.cos(a) * (-p.inX) + Math.sin(a) * tX
+        const ez = Math.cos(a) * (-p.inY) + Math.sin(a) * tZ
+        arc.push(pushV(cx + ex * r, cz + ez * r))
+      }
+      for (let j = 0; j < N_CAP; j++) tris.push(cv, arc[j], arc[j + 1])
+    }
+    addCap(t0, -1)
+    addCap(t1, +1)
+
+    // ── Geometry + material ──────────────────────────────────────────────────
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1))
+
+    // ShaderMaterial with default clipping:false bypasses the floor-scroll
+    // clip plane, keeping the band visible in top-down orthographic mode.
+    const color = new THREE.Color(colourStr)
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uColor: { value: color }, uOpacity: { value: 0.5 } },
+      vertexShader: `
+        void main() {
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uOpacity;
+        void main() {
+          gl_FragColor = vec4(uColor, uOpacity);
+        }
+      `,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+    return new THREE.Mesh(geo, mat)
+  }
+
+  _computeFPBandCenter(bearing) {
+    const W   = this.worldSize, toRad = Math.PI / 180
+    const vx  = Math.sin(bearing * toRad), vy = -Math.cos(bearing * toRad)
+    const hit = this._fpRayBoundary(W / 2, W / 2, vx, vy, W)
+    if (!hit) return null
+    const p = this._perimPt(this._perimPosOf(hit, W), W)
+    // Label sits at strip centre: depth/2 = 0.75 inward from boundary
+    return { x: hit.x + p.inX * 0.75, y: 4.0, z: hit.y + p.inY * 0.75 }
   }
 
   _spawnFieldsForRegion(regionId) {

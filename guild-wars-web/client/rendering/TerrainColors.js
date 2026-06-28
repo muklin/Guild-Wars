@@ -10,6 +10,7 @@ export default {
   //Delta: 0x66bf99,  
   Hills: 0x699B4F,
   Swamp: 0x4a6b4a,
+  'Ice Sheet': 0xf4f8ff,
   unassigned: 0xb8a680,
 
   // Terrain edge types
