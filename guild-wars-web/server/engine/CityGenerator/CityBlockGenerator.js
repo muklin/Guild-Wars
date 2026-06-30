@@ -5,6 +5,14 @@ import { STREET_HALF_WIDTH, getDistrictParams, halfWidthForDistrict } from './St
 // Street priority for tie-breaking (paved hierarchy: Stone > Brick > Mud).
 export const STREET_TYPE_PRIORITY = { Stone: 2, Brick: 1, Mud: 0 }
 
+// Distance below which two gutter-graph nodes are the same point. Mitre corners from
+// adjacent junctions and planarization crossing-nodes routinely land ~0.005–0.01 apart;
+// the toFixed(6) node key is far too tight to merge them, so the face tracer walks micro-
+// faces between them and produces only wraparound faces (→ void) or duplicate overlapping
+// faces (→ double-layer). A third of the road half-width catches those while staying well
+// clear of any legitimately-distinct gutter corner.
+const GUTTER_MERGE_TOL = STREET_HALF_WIDTH * 0.35   // ≈ 0.0153 world units
+
 // Centroid + bbox area of a face, for the bug-4 reject diagnostics (correlate a dropped
 // face's world position with a visible black hole on the map). Cheap; debug-only.
 function faceCentroidArea(verts) {
@@ -18,15 +26,15 @@ function faceCentroidArea(verts) {
   return { x: cx / n, y: cy / n, bbox: (maxX - minX) * (maxY - minY) }
 }
 
-// Log the N largest rejects in a category with their world centroids. For enclosesNode
-// rejects each entry also carries `degrees` (the degrees of the gutter nodes it enclosed):
-// deg[1] = a dangling dead-end stub (likely a REAL block wrongly dropped); deg[3+] = a
-// true junction wraparound (correctly dropped).
+// Log the N largest rejected faces in a category with their world centroids — a quick
+// pointer to where any "missing block" came from. enclosesNode rejects are normally just
+// district-outline loops (correctly dropped); a road-pass reject sitting on a real block is
+// the one to investigate.
 function logRejects(label, rejects, n = 5) {
   if (!rejects.length) return
   const top = [...rejects].sort((a, b) => b.bbox - a.bbox).slice(0, n)
-    .map(r => `(${r.x.toFixed(3)},${r.y.toFixed(3)}${r.degrees != null ? ` deg[${r.degrees}]` : ''})`).join(' ')
-  console.log(`  [bug4] ${label}: ${rejects.length} rejected — largest at ${top}`)
+    .map(r => `(${r.x.toFixed(3)},${r.y.toFixed(3)})`).join(' ')
+  console.log(`  [blocks] ${label}: ${rejects.length} rejected — largest at ${top}`)
 }
 
 // The street type bordering the majority of a block's street-facing edges.
@@ -84,7 +92,11 @@ export default class CityBlockGenerator {
     const junctions = streetGraph?.junctions || []
 
     const { gutterNodes, gutterEdges, roadEdges } = this._gutterGraphFromJunctions(junctions)
-    const { nodes: planarNodes, edges: planarEdges } = this._planarizeGutterGraph(gutterNodes, gutterEdges)
+    const planar = this._planarizeGutterGraph(gutterNodes, gutterEdges)
+    // Snap-merge near-coincident gutter nodes (mitre corners + planarization crossings that
+    // land ~0.005–0.01 apart). Without this the tracer produces wraparound-only faces (void)
+    // or duplicate overlapping faces (double-layer) — see GUTTER_MERGE_TOL.
+    const { nodes: planarNodes, edges: planarEdges } = this._mergeNearbyGutterNodes(planar.nodes, planar.edges, GUTTER_MERGE_TOL)
 
     // bug-4 diagnostic: a healthy gutter graph is all closed loops, so every node has
     // degree ≥ 2. A degree-0/1 node is a dangling gutter endpoint — the face beside it
@@ -96,7 +108,7 @@ export default class CityBlockGenerator {
       const byId = new Map(planarNodes.map(n => [n.id, n]))
       const dangling = [...deg.entries()].filter(([, d]) => d <= 1)
         .map(([id, d]) => { const n = byId.get(id); return n ? `(${n.x.toFixed(3)},${n.y.toFixed(3)})d${d}` : null }).filter(Boolean)
-      if (dangling.length) console.log(`  [bug4] ${dangling.length} dangling gutter node(s) (broken loop → untraced void): ${dangling.slice(0, 12).join(' ')}`)
+      if (dangling.length) console.log(`  [blocks] ${dangling.length} dangling gutter node(s) (broken loop → untraced void): ${dangling.slice(0, 12).join(' ')}`)
     }
 
     const streetNodes = junctions.map(j => ({ id: j.id, x: j.x, y: j.y }))
@@ -247,6 +259,7 @@ export default class CityBlockGenerator {
     logRejects('road-pass2 (surrounded by road)', dbgRoad2)
     logRejects('degenerate-area', dbgArea)
     logRejects('enclosesNode (face wraps a gutter node)', this._dbgEnclosedRejects || [])
+
     return { blocks, roadEdges }
   }
 
@@ -357,6 +370,67 @@ export default class CityBlockGenerator {
 
     console.log(`_planarizeGutterGraph: resolved ${crossingCount} crossings, added ${allNodes.length - nodes.length} nodes`)
     return { nodes: allNodes, edges: newEdges }
+  }
+
+  // Snap-merge gutter-graph nodes within `tol` of each other into one node, averaging
+  // their positions and remapping edges (dropping self-loops + duplicates). Collapses the
+  // near-coincident clusters (mitre corners + planarization crossings) that otherwise make
+  // _traceFaces emit wraparound-only or duplicate overlapping faces. Returns {nodes, edges}.
+  _mergeNearbyGutterNodes(nodes, edges, tol) {
+    if (nodes.length < 2) return { nodes, edges }
+    const tolSq = tol * tol
+
+    const parent = new Map(nodes.map(n => [n.id, n.id]))
+    const find = (id) => { while (parent.get(id) !== id) { parent.set(id, parent.get(parent.get(id))); id = parent.get(id) } return id }
+    const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(rb, ra) }
+
+    const buckets = new Map()
+    for (const n of nodes) {
+      const k = `${Math.floor(n.x / tol)},${Math.floor(n.y / tol)}`
+      if (!buckets.has(k)) buckets.set(k, [])
+      buckets.get(k).push(n)
+    }
+    for (const n of nodes) {
+      const gx = Math.floor(n.x / tol), gy = Math.floor(n.y / tol)
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        const arr = buckets.get(`${gx + dx},${gy + dy}`)
+        if (!arr) continue
+        for (const m of arr) {
+          if (m.id <= n.id) continue
+          const ddx = n.x - m.x, ddy = n.y - m.y
+          if (ddx * ddx + ddy * ddy < tolSq) union(n.id, m.id)
+        }
+      }
+    }
+
+    const acc = new Map()
+    for (const n of nodes) {
+      const r = find(n.id)
+      if (!acc.has(r)) acc.set(r, { sx: 0, sy: 0, c: 0 })
+      const a = acc.get(r); a.sx += n.x; a.sy += n.y; a.c++
+    }
+
+    let mergedCount = 0
+    const newNodes = []
+    for (const n of nodes) {
+      if (find(n.id) === n.id) { const a = acc.get(n.id); newNodes.push({ id: n.id, x: a.sx / a.c, y: a.sy / a.c }) }
+      else mergedCount++
+    }
+    if (mergedCount === 0) return { nodes, edges }
+
+    const seen = new Set()
+    const newEdges = []
+    for (const e of edges) {
+      const a = find(e.nodeA), b = find(e.nodeB)
+      if (a === b) continue
+      const k = a < b ? `${a}_${b}` : `${b}_${a}`
+      if (seen.has(k)) continue
+      seen.add(k)
+      newEdges.push({ nodeA: a, nodeB: b })
+    }
+
+    console.log(`_mergeNearbyGutterNodes: merged ${mergedCount} near-coincident gutter node(s) (tol=${tol.toFixed(3)})`)
+    return { nodes: newNodes, edges: newEdges }
   }
 
   // Returns true if polygon has no self-intersecting edges (non-adjacent edge pairs).
@@ -531,14 +605,8 @@ export default class CityBlockGenerator {
         // another gutter node — those are outer/wraparound faces, not minimal
         // blocks. A true block face is empty of interior nodes.
         if (area < 0) {
-          const enclosed = this._enclosedNodes(faceVerts, nodes)
-          if (enclosed.length) {
-            const info = faceCentroidArea(faceVerts)
-            info.degrees = enclosed.map(nd => (adj.get(nd.id) || []).length).sort((a, b) => a - b).join(',')
-            this._dbgEnclosedRejects.push(info)
-          } else {
-            faces.push(faceVerts)
-          }
+          if (this._enclosesNode(faceVerts, nodes)) this._dbgEnclosedRejects.push(faceCentroidArea(faceVerts))
+          else faces.push(faceVerts)
         }
       }
     }

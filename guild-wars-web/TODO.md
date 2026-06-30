@@ -1,13 +1,30 @@
 # Bugs:
 
-- Don't name Threats and Trade Routes.  Allow the option to rename it, but mainly we're looking for the description.
 - Map movement at full zoom out is brdoken.  The map goes to the top of the screen and can't move the map down.  zoom in fixes it, but we want to be able to zoom out to the point that the whole map is visible and we can still pan around.  
 - Fix rooves. Make sure they Gable correctly on the ends of wings.  
 
 # Baby Features:
+## Names 
+- Don't name Threats and Trade Routes.  Allow the option to rename it, but mainly we're looking for the description.
+- Don't name Walls, Canals, Main Roads.
 
 
 # Features:
+
+## Districts
+- Don't auto identify a Leadership district at start of District Setup.  
+- Ensure exactly one Leadership District is selected by the end of District Setup.  
+  - If one isn't, randomly select one unapplied city plot, OR terrain plot adjacent to the existing city to become a random LEadership district.
+- Add Tutorial text around Leadership districts. 
+- Allow non city plots to be made into District plots, when they're adjacent to the existing city. 
+- Monarchy + Tyrant Leadership Districts MUST be a castle.  
+- Add a "% walled" and "% external walled  feature to District specs.  That percentage of the district is walled.  
+ - Monarchy, Tyrant are 100% & 100%
+ - Noble are 50% & 100%
+ - Market is 0% & 100%
+ - Religious is 10% & 100%
+ - Religious is 10% & 100%
+
 ## Buildings 
 ### Special Junctions
 
