@@ -184,10 +184,10 @@ export default class App {
       } catch (error) { this.uiManager.showError(error.message); this._refreshDistrictPanel() }
     })
 
-    this.eventBus.on('TERRAIN_FINE_CELL_CLICKED', (fineCell) => {
+    this.eventBus.on('TERRAIN_PLOT_CLICKED', (rawPlot) => {
       const regions = this.renderer.terrainData?.regions
       if (!regions) return
-      const parent = regions.find(r => r.id === fineCell.parentRegionId)
+      const parent = regions.find(r => r.id === rawPlot.parentRegionId)
       if (!parent) return
 
       if (this.currentPhase === 'CitySubdivision') {
@@ -196,14 +196,14 @@ export default class App {
         const canThreatTrade = !!parent.isEdge
         if (!canDistrict && !canThreatTrade) return
 
-        // Resolve the terrain plot for this fine cell
-        const terrainPlot = this.renderer.getTerrainPlotByFineCellId(fineCell.id)
+        // Resolve the rendered terrain plot for this raw plot
+        const terrainPlot = this.renderer.getTerrainPlotBySourceId(rawPlot.id)
         const plotId = terrainPlot?.id ?? null
         const plotHasDistrict = plotId && (this.factions || []).some(f => f.type === 'terrain' && f.plotId === plotId)
 
         // Toggle deselect if clicking the same plot that's already selected
         if (this.selectedTerrainPlotId !== null && this.selectedTerrainPlotId === plotId) {
-          this.renderer.clearFineCellSelected()
+          this.renderer.clearTerrainPlotSelected()
           this.renderer.deselectRegion(parent.id)
           this.selectedTerrainRegionId = null
           this.selectedTerrainPlotId = null
@@ -223,8 +223,7 @@ export default class App {
         this.selectedTerrainRegionId = parent.id
         this.selectedTerrainPlotId = plotId
         this.pendingTerrainAction = null
-        // Highlight only this fine cell (white), not the whole region
-        this.renderer.setFineCellSelected(fineCell.id)
+        this.renderer.setTerrainPlotSelected(rawPlot.id)
         this._refreshDistrictPanel()
       } else {
         this._handleRegionClick(parent.id)
@@ -414,9 +413,8 @@ export default class App {
     this.renderer.renderGutters(cityData.streetGraph)
     this.renderer.renderBlocks(cityData.blocks)
     this.renderer.renderPlots(cityData.plots, cityData)
-    this.renderer.renderTerrainPlots(cityData.terrainPlots)
     this.renderer.drawBlockCenters(cityData.blocks)
-    this.renderer.drawPlotCenters([...(cityData.plots || []), ...(cityData.terrainPlots || [])])
+    this.renderer.drawPlotCenters(cityData.plots || [])
     this.renderer.drawStreetSeeds(cityData.streetGraph)
   }
 
@@ -877,7 +875,7 @@ export default class App {
       const response = await GameAPI.assignTerrainDistrict(regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs)
       if (response.ok) {
         this.renderer.deselectRegion(regionId)
-        this.renderer.clearFineCellSelected()
+        this.renderer.clearTerrainPlotSelected()
         this.selectedTerrainRegionId = null
         this.selectedTerrainPlotId = null
         this.pendingTerrainAction = null
@@ -1264,7 +1262,7 @@ export default class App {
     this.renderer.setTerrainData(
       regions,
       state.worldTerrainData.edges || {},
-      state.worldTerrainData.fineCells || [],
+      state.worldTerrainData.terrainPlots || [],
       state.worldTerrainData.edgePoints || []
     )
 
@@ -1506,6 +1504,10 @@ export default class App {
       if (response.ok) {
         this.gameState = response
         this.currentPhase = 'Terrain'
+        this.selectedRegionId = null
+        this.pendingTerrainType = null
+        this.selectedEdgeIds.clear()
+        this.pendingEdgeType = null
         this.selectedTerrainRegionId = null
         this.selectedTerrainPlotId = null
         this.pendingTerrainAction = null
@@ -1515,6 +1517,8 @@ export default class App {
         this.pendingLeadershipClass = 'Monarchy'
         this.selectedCityEdgeIds.clear()
         this.pendingCityEdgeType = null
+        this._refreshTerrainPanel()
+        this._refreshDistrictPanel()
         this.resourceRegistry = []
         this.threats = []
         this.tradingDestinations = []
@@ -1531,12 +1535,8 @@ export default class App {
         this.renderer.setMode('terrain')
         this.renderer.guildSetupActive = false
         this.renderer.setCityEdgesHidden(false)
-        this.renderer.setTerrainData(response.regions, response.edges || {}, response.fineCells || [], response.edgePoints || [])
+        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [])
         this.inputHandler.setTerrainData(response)
-        // Show initiative roll dialog before revealing terrain setup UI
-        if (this.multiplayerUI) {
-          await this.multiplayerUI.showInitiativeRoll(response.multiplayer)
-        }
         this.uiManager.showSetupPhase('Terrain')
         this._focusCameraOnCity(response.regions)
         this.eventBus.emit('SETUP_STARTED')

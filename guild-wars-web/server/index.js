@@ -23,7 +23,8 @@ const PORT = 3001
 // Middleware
 app.use(express.json())
 app.use(express.static(path.join(__dirname, '../dist')))
-app.use('/resources', express.static(path.join(__dirname, '../resources')))
+app.use('/resources',   express.static(path.join(__dirname, '../resources')))
+app.use('/game-rules', express.static(path.join(__dirname, '../../Game Rules')))
 
 // Initialize game systems
 const gameStateManager = new GameStateManager()
@@ -62,13 +63,12 @@ try {
     await autoSave()
     console.log('Migrated save: generated missing street graph')
   }
-  // Migrate terrain plots: always regenerate from current fine cells so older saves
-  // (with S-H clipping gaps or null assignedType) are fixed on load.
-  if (gameStateManager.cityDistrictData?.plots?.length) {
-    const count = setupPhase.regenerateTerrainPlots()
+  // Regenerate all plots (city block + terrain) from saved blocks and junctions.
+  if (gameStateManager.cityDistrictData?.blocks?.length) {
+    const count = setupPhase.regeneratePlots()
     if (count) {
       await autoSave()
-      console.log(`Migrated terrain plots: ${count} plots regenerated`)
+      console.log(`Regenerated ${count} plots on load`)
     }
   }
 } catch {
@@ -800,6 +800,7 @@ app.post('/api/load', async (req, res) => {
     setupPhase.deserialize(data.setupPhase || {})
     mp.clear()
     mp.deserialize(data.multiplayer || {})
+    if (gameStateManager.cityDistrictData?.blocks?.length) setupPhase.regeneratePlots()
     await autoSave()
     res.json({ ok: true, savedAt: data.savedAt, state: gameStateManager.getStateSnapshot() })
   } catch (error) {

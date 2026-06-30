@@ -127,6 +127,7 @@ export default class WalkMode {
 
   get camera() { return this._camera }
   get characterPosition() { return { x: this._px, z: this._pz } }
+  get yaw() { return this._yaw }
 
   update(delta) {
     const sprint = this._sprinting

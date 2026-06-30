@@ -38,8 +38,8 @@ export default class TerrainRenderer {
     this.edgePointsById = new Map()
 
     this.regionMeshes = new Map()
-    this.fineCellMeshes = new Map()
-    this.regionFineCells = new Map()
+    this.terrainPlotMeshes = new Map()
+    this.regionTerrainPlots = new Map()
     this.terrainPolylines = null
 
     this.threatMeshes = []
@@ -54,9 +54,9 @@ export default class TerrainRenderer {
 
     this.hoveredRegionId = null
     this.hoveredEdgeId = null
-    this.hoveredFineCellId = null
+    this.hoveredTerrainPlotId = null
     this.selectedRegionId = null
-    this.selectedFineCellId = null
+    this.selectedTerrainPlotId = null
     this._debugPreHoverColors = new Map()
   }
 
@@ -90,12 +90,12 @@ export default class TerrainRenderer {
     arr.length = 0
   }
 
-  setFineCellSelected(cellId) {
-    if (this.selectedFineCellId !== null && this.selectedFineCellId !== cellId) {
-      this._restoreFineCellColor(this.selectedFineCellId)
+  setTerrainPlotSelected(cellId) {
+    if (this.selectedTerrainPlotId !== null && this.selectedTerrainPlotId !== cellId) {
+      this._restoreTerrainPlotColor(this.selectedTerrainPlotId)
     }
-    this.selectedFineCellId = cellId
-    const mesh = this.fineCellMeshes.get(cellId)
+    this.selectedTerrainPlotId = cellId
+    const mesh = this.terrainPlotMeshes.get(cellId)
     if (mesh?.material) {
       mesh.material.color.setHex(0xffffff)
       mesh.material.emissive?.setHex(0xffffff)
@@ -103,16 +103,16 @@ export default class TerrainRenderer {
     }
   }
 
-  clearFineCellSelected() {
-    if (this.selectedFineCellId === null) return
-    this._restoreFineCellColor(this.selectedFineCellId)
-    this.selectedFineCellId = null
+  clearTerrainPlotSelected() {
+    if (this.selectedTerrainPlotId === null) return
+    this._restoreTerrainPlotColor(this.selectedTerrainPlotId)
+    this.selectedTerrainPlotId = null
   }
 
-  _restoreFineCellColor(cellId) {
-    const cell = this.terrainData?.fineCells?.find(c => c.id === cellId)
+  _restoreTerrainPlotColor(cellId) {
+    const cell = this.terrainData?.terrainPlots?.find(c => c.id === cellId)
     const base = cell ? this._regionBaseColor(cell.parentRegionId) : 0x888888
-    const mesh = this.fineCellMeshes.get(cellId)
+    const mesh = this.terrainPlotMeshes.get(cellId)
     if (mesh?.material) {
       mesh.material.color.setHex(base)
       mesh.material.emissive?.setHex(base)
@@ -121,26 +121,26 @@ export default class TerrainRenderer {
   }
 
   clearHover() {
-    if (this.hoveredFineCellId !== null) {
+    if (this.hoveredTerrainPlotId !== null) {
       // Don't wipe the selected-cell's white highlight when clearing hover
-      if (this.hoveredFineCellId !== this.selectedFineCellId) {
-        const cell = this.terrainData?.fineCells?.find(c => c.id === this.hoveredFineCellId)
+      if (this.hoveredTerrainPlotId !== this.selectedTerrainPlotId) {
+        const cell = this.terrainData?.terrainPlots?.find(c => c.id === this.hoveredTerrainPlotId)
         const baseColor = cell ? this._regionBaseColor(cell.parentRegionId) : 0x888888
-        const mesh = this.fineCellMeshes.get(this.hoveredFineCellId)
+        const mesh = this.terrainPlotMeshes.get(this.hoveredTerrainPlotId)
         if (mesh?.material) {
           mesh.material.color.setHex(baseColor)
           mesh.material.emissive?.setHex(baseColor)
           mesh.material.emissiveIntensity = 0.2
         }
       }
-      this.hoveredFineCellId = null
+      this.hoveredTerrainPlotId = null
     }
     if (this.hoveredRegionId !== null) {
       const isSelected = this.selectedRegionId === this.hoveredRegionId
       const baseColor = isSelected ? 0xffffff : this._regionBaseColor(this.hoveredRegionId)
-      const cellIds = this.regionFineCells.get(this.hoveredRegionId) || []
+      const cellIds = this.regionTerrainPlots.get(this.hoveredRegionId) || []
       for (const cellId of cellIds) {
-        const mesh = this.fineCellMeshes.get(cellId)
+        const mesh = this.terrainPlotMeshes.get(cellId)
         if (mesh?.material) {
           const restoreColor = this.showDebug ? (this._debugPreHoverColors.get(cellId) ?? baseColor) : baseColor
           mesh.material.color.setHex(restoreColor)
@@ -171,42 +171,42 @@ export default class TerrainRenderer {
 
   // ── Terrain data ────────────────────────────────────────────────────────────
 
-  setTerrainData(regions, edges, fineCells, edgePoints) {
+  setTerrainData(regions, edges, terrainPlots, edgePoints) {
     this.clearMarkers()
-    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (fineCells || []).length, 'fine cells,', (edgePoints || []).length, 'edge points')
+    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points')
     this.edgePointsById = new Map((edgePoints || []).map(p => [p.id, p]))
-    this.terrainData = { regions, edges: edges || {}, fineCells: fineCells || [] }
-    this.renderTerrain(regions, fineCells || [])
+    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [] }
+    this.renderTerrain(regions, terrainPlots || [])
     this.drawVoronoiCenters(regions)
     if (edges && Object.keys(edges).length > 0) {
       this.renderEdges(edges)
     }
   }
 
-  renderTerrain(regions, fineCells) {
+  renderTerrain(regions, terrainPlots) {
     this.regionMeshes.forEach(mesh => this.scene.remove(mesh))
     this.regionMeshes.clear()
-    this.fineCellMeshes.forEach(mesh => this.scene.remove(mesh))
-    this.fineCellMeshes.clear()
-    this.regionFineCells.clear()
+    this.terrainPlotMeshes.forEach(mesh => this.scene.remove(mesh))
+    this.terrainPlotMeshes.clear()
+    this.regionTerrainPlots.clear()
 
-    if (fineCells && fineCells.length > 0) {
+    if (terrainPlots && terrainPlots.length > 0) {
       const regionMap = new Map(regions.map(r => [r.id, r]))
       let count = 0
-      for (const cell of fineCells) {
+      for (const cell of terrainPlots) {
         const parent = regionMap.get(cell.parentRegionId)
         const mesh = this.buildRegionMesh({ ...cell, assignedType: parent?.assignedType ?? null })
         if (mesh) {
           this.scene.add(mesh)
-          this.fineCellMeshes.set(cell.id, mesh)
-          if (!this.regionFineCells.has(cell.parentRegionId)) {
-            this.regionFineCells.set(cell.parentRegionId, [])
+          this.terrainPlotMeshes.set(cell.id, mesh)
+          if (!this.regionTerrainPlots.has(cell.parentRegionId)) {
+            this.regionTerrainPlots.set(cell.parentRegionId, [])
           }
-          this.regionFineCells.get(cell.parentRegionId).push(cell.id)
+          this.regionTerrainPlots.get(cell.parentRegionId).push(cell.id)
           count++
         }
       }
-      console.log(`Rendered ${count}/${fineCells.length} fine cells across ${this.regionFineCells.size} merged regions`)
+      console.log(`Rendered ${count}/${terrainPlots.length} terrain plots across ${this.regionTerrainPlots.size} merged regions`)
       for (const region of regions) {
         if (region.assignedType === 'Forest')    this._spawnFeatureForRegion('forest', region.id)
         if (region.assignedType === 'Mountains') this._spawnFeatureForRegion('mountains', region.id)
@@ -329,16 +329,16 @@ export default class TerrainRenderer {
   }
 
   selectRegion(regionId) {
-    this.clearFineCellSelected()
+    this.clearTerrainPlotSelected()
     this.selectedRegionId = regionId
     this._applyRegionColor(regionId, 0xffffff)
   }
 
   deselectRegion(regionId) {
     if (this.selectedRegionId === regionId) this.selectedRegionId = null
-    if (this.selectedFineCellId !== null) {
-      const cell = this.terrainData?.fineCells?.find(c => c.id === this.selectedFineCellId)
-      if (cell?.parentRegionId === regionId) this.clearFineCellSelected()
+    if (this.selectedTerrainPlotId !== null) {
+      const plot = this.terrainData?.terrainPlots?.find(p => p.id === this.selectedTerrainPlotId)
+      if (plot?.parentRegionId === regionId) this.clearTerrainPlotSelected()
     }
     this._applyRegionColor(regionId, this._regionBaseColor(regionId))
   }
@@ -375,9 +375,9 @@ export default class TerrainRenderer {
     const lightened = new THREE.Color(baseColor).lerp(new THREE.Color(0xffffff), 0.35)
     const lightenedHex = lightened.getHex()
 
-    const cellIds = this.regionFineCells.get(regionId) || []
+    const cellIds = this.regionTerrainPlots.get(regionId) || []
     for (const cellId of cellIds) {
-      const mesh = this.fineCellMeshes.get(cellId)
+      const mesh = this.terrainPlotMeshes.get(cellId)
       if (mesh?.material) {
         if (this.showDebug) this._debugPreHoverColors.set(cellId, mesh.material.color.getHex())
         mesh.material.color.setHex(lightenedHex)
@@ -396,13 +396,13 @@ export default class TerrainRenderer {
     }
   }
 
-  setFineCellHover(cellId) {
-    if (this.hoveredFineCellId === cellId) return
+  setTerrainPlotHover(cellId) {
+    if (this.hoveredTerrainPlotId === cellId) return
     this.clearHover()
-    this.hoveredFineCellId = cellId
-    const mesh = this.fineCellMeshes.get(cellId)
+    this.hoveredTerrainPlotId = cellId
+    const mesh = this.terrainPlotMeshes.get(cellId)
     if (!mesh?.material) return
-    const cell = this.terrainData?.fineCells?.find(c => c.id === cellId)
+    const cell = this.terrainData?.terrainPlots?.find(c => c.id === cellId)
     const baseColor = cell ? this._regionBaseColor(cell.parentRegionId) : 0x888888
     const lightened = new THREE.Color(baseColor).lerp(new THREE.Color(0xffffff), 0.35)
     const lightenedHex = lightened.getHex()
@@ -411,9 +411,9 @@ export default class TerrainRenderer {
     mesh.material.emissiveIntensity = 0.45
   }
 
-  getFineCellAtWorldPos(worldX, worldY) {
-    if (!this.terrainData?.fineCells?.length) return null
-    for (const cell of this.terrainData.fineCells) {
+  getTerrainPlotAtWorldPos(worldX, worldY) {
+    if (!this.terrainData?.terrainPlots?.length) return null
+    for (const cell of this.terrainData.terrainPlots) {
       if (cell.polygon && pointInPolygon(worldX, worldY, cell.polygon)) return cell
     }
     return null
@@ -446,9 +446,9 @@ export default class TerrainRenderer {
   }
 
   _paintRegion(regionId, hex, ei) {
-    const cellIds = this.regionFineCells.get(regionId) || []
+    const cellIds = this.regionTerrainPlots.get(regionId) || []
     for (const cellId of cellIds) {
-      const mesh = this.fineCellMeshes.get(cellId)
+      const mesh = this.terrainPlotMeshes.get(cellId)
       if (mesh?.material) { mesh.material.color.setHex(hex); mesh.material.emissive?.setHex(hex); mesh.material.emissiveIntensity = ei }
     }
     if (cellIds.length === 0) {
@@ -484,26 +484,26 @@ export default class TerrainRenderer {
     if (!tradingDestinations?.length || !terrainData?.regions) return
     const regionMap = new Map(terrainData.regions.map(r => [r.id, r]))
     const cellsByRegion = new Map()
-    for (const cell of (terrainData.fineCells || [])) {
+    for (const cell of (terrainData.terrainPlots || [])) {
       if (!cellsByRegion.has(cell.parentRegionId)) cellsByRegion.set(cell.parentRegionId, [])
       cellsByRegion.get(cell.parentRegionId).push(cell)
     }
     for (const trade of tradingDestinations) {
-      let fineCellPath = null, cellMap = null
+      let terrainPlotPath = null, cellMap = null
       if (trade.roadPath?.length >= 2) {
         const result = this._buildFineRoadMesh(trade.roadPath, regionMap, cellsByRegion)
         if (result) {
           if (result.mesh) { this.scene.add(result.mesh); this.roadMeshes.push(result.mesh) }
-          fineCellPath = result.fineCellPath
+          terrainPlotPath = result.terrainPlotPath
           cellMap = result.cellMap
         }
       }
       for (const bridge of (trade.bridges || [])) {
-        if (!fineCellPath || !cellMap) continue
+        if (!terrainPlotPath || !cellMap) continue
         let crossA = null, crossB = null
-        for (let i = 0; i < fineCellPath.length - 1; i++) {
-          const ca = cellMap.get(fineCellPath[i])
-          const cb = cellMap.get(fineCellPath[i + 1])
+        for (let i = 0; i < terrainPlotPath.length - 1; i++) {
+          const ca = cellMap.get(terrainPlotPath[i])
+          const cb = cellMap.get(terrainPlotPath[i + 1])
           if (!ca || !cb) continue
           if (ca.parentRegionId === bridge.fromRegionId && cb.parentRegionId === bridge.toRegionId) { crossA = ca; crossB = cb; break }
           if (ca.parentRegionId === bridge.toRegionId && cb.parentRegionId === bridge.fromRegionId) { crossA = cb; crossB = ca; break }
@@ -565,11 +565,11 @@ export default class TerrainRenderer {
 
     const queue = [[startCell.id, [startCell.id]]]
     const visited = new Set([startCell.id])
-    let fineCellPath = null
+    let terrainPlotPath = null
 
     bfs: while (queue.length > 0) {
       const [curr, currPath] = queue.shift()
-      if (cityIds.has(curr)) { fineCellPath = currPath; break bfs }
+      if (cityIds.has(curr)) { terrainPlotPath = currPath; break bfs }
       for (const next of (adj.get(curr) || [])) {
         if (visited.has(next)) continue
         const nextCell = cellMap.get(next)
@@ -579,9 +579,9 @@ export default class TerrainRenderer {
       }
     }
 
-    if (!fineCellPath || fineCellPath.length < 2) return null
+    if (!terrainPlotPath || terrainPlotPath.length < 2) return null
 
-    // A waypoint is "wet" when its fine cell belongs to a Sea/Lake region — no road
+    // A waypoint is "wet" when its terrain plot belongs to a Sea/Lake region — no road
     // is drawn over water (bridges span the crossing instead).
     const isWater = (cell) => {
       const r = cell && regionMap.get(cell.parentRegionId)
@@ -590,11 +590,11 @@ export default class TerrainRenderer {
 
     const waypoints = []
     const waterFlags = []
-    for (let i = 0; i < fineCellPath.length - 1; i++) {
-      const cell = cellMap.get(fineCellPath[i])
+    for (let i = 0; i < terrainPlotPath.length - 1; i++) {
+      const cell = cellMap.get(terrainPlotPath[i])
       if (cell) { waypoints.push({ x: cell.seedPoint.x, y: cell.seedPoint.y }); waterFlags.push(isWater(cell)) }
     }
-    const cityCell = cellMap.get(fineCellPath[fineCellPath.length - 1])
+    const cityCell = cellMap.get(terrainPlotPath[terrainPlotPath.length - 1])
     if (cityCell && waypoints.length > 0) {
       const last = waypoints[waypoints.length - 1]
       waypoints.push({
@@ -614,7 +614,7 @@ export default class TerrainRenderer {
     const t = Math.min(...candidates.filter(b => b > 1e-9))
     if (isFinite(t)) waypoints[0] = { x: w0.x + t * dx, y: w0.y + t * dy }
 
-    return { mesh: this._buildRoadStripMesh(waypoints, waterFlags), fineCellPath, cellMap }
+    return { mesh: this._buildRoadStripMesh(waypoints, waterFlags), terrainPlotPath, cellMap }
   }
 
   _buildRoadStripMesh(waypoints, waterFlags = []) {
@@ -644,7 +644,7 @@ export default class TerrainRenderer {
     return new THREE.Mesh(geometry, mat)
   }
 
-  // Remove just the fine-cell trade-road ribbon (the setup-phase preview). In the
+  // Remove the terrain-plot trade-road ribbon (the setup-phase preview). In the
   // city phase the trade road is a real street-graph member rendered by
   // StreetRenderer, so the ribbon is cleared to avoid double-rendering the path.
   clearTradeRoadRibbon() {
@@ -670,28 +670,28 @@ export default class TerrainRenderer {
   deleteCityTerrainCells() {
     const cityRegion = this.terrainData?.regions?.find(r => r.assignedType === 'City')
     if (!cityRegion) return
-    const cellIds = this.regionFineCells.get(cityRegion.id) || []
+    const cellIds = this.regionTerrainPlots.get(cityRegion.id) || []
     for (const cellId of cellIds) {
-      const mesh = this.fineCellMeshes.get(cellId)
-      if (mesh) { this.scene.remove(mesh); this.fineCellMeshes.delete(cellId) }
+      const mesh = this.terrainPlotMeshes.get(cellId)
+      if (mesh) { this.scene.remove(mesh); this.terrainPlotMeshes.delete(cellId) }
     }
-    this.regionFineCells.delete(cityRegion.id)
+    this.regionTerrainPlots.delete(cityRegion.id)
     const regionMesh = this.regionMeshes.get(cityRegion.id)
     if (regionMesh) { this.scene.remove(regionMesh); this.regionMeshes.delete(cityRegion.id) }
   }
 
-  // Remove all non-city terrain fine cell meshes — called when terrain plots take over
+  // Remove all non-city terrain plot meshes — called when ground terrain plots take over
   // rendering of the terrain outside the city with gutter-aligned boundaries.
-  deleteNonCityFineCells() {
+  deleteNonCityTerrainPlots() {
     const cityRegion = this.terrainData?.regions?.find(r => r.assignedType === 'City')
     const cityRegionId = cityRegion?.id ?? -1
-    for (const [regionId, cellIds] of this.regionFineCells) {
+    for (const [regionId, cellIds] of this.regionTerrainPlots) {
       if (regionId === cityRegionId) continue
       for (const cellId of cellIds) {
-        const mesh = this.fineCellMeshes.get(cellId)
-        if (mesh) { this.scene.remove(mesh); this.fineCellMeshes.delete(cellId) }
+        const mesh = this.terrainPlotMeshes.get(cellId)
+        if (mesh) { this.scene.remove(mesh); this.terrainPlotMeshes.delete(cellId) }
       }
-      this.regionFineCells.delete(regionId)
+      this.regionTerrainPlots.delete(regionId)
     }
   }
 
@@ -699,10 +699,10 @@ export default class TerrainRenderer {
 
   getRegionAtWorldPos(worldX, worldY) {
     if (!this.terrainData) return null
-    const fineCells = this.terrainData.fineCells
-    if (fineCells && fineCells.length > 0) {
+    const terrainPlots = this.terrainData.terrainPlots
+    if (terrainPlots && terrainPlots.length > 0) {
       const regionMap = new Map(this.terrainData.regions.map(r => [r.id, r]))
-      for (const cell of fineCells) {
+      for (const cell of terrainPlots) {
         if (cell.polygon && pointInPolygon(worldX, worldY, cell.polygon)) {
           return regionMap.get(cell.parentRegionId) || null
         }
@@ -811,9 +811,9 @@ export default class TerrainRenderer {
   // ── Private helpers ─────────────────────────────────────────────────────────
 
   _applyRegionColor(regionId, color) {
-    const cellIds = this.regionFineCells.get(regionId) || []
+    const cellIds = this.regionTerrainPlots.get(regionId) || []
     for (const cellId of cellIds) {
-      const mesh = this.fineCellMeshes.get(cellId)
+      const mesh = this.terrainPlotMeshes.get(cellId)
       if (mesh) { mesh.material.color.setHex(color); mesh.material.emissive?.setHex(color) }
     }
     const rm = this.regionMeshes.get(regionId)
@@ -826,8 +826,8 @@ export default class TerrainRenderer {
   }
 
   _cellsForRegion(regionId) {
-    const cellIds = this.regionFineCells.get(regionId) || []
-    const cellMap = new Map((this.terrainData?.fineCells || []).map(c => [c.id, c]))
+    const cellIds = this.regionTerrainPlots.get(regionId) || []
+    const cellMap = new Map((this.terrainData?.terrainPlots || []).map(p => [p.id, p]))
     return cellIds.map(id => cellMap.get(id)).filter(Boolean)
   }
 

@@ -161,7 +161,7 @@ export default class FeatureManager {
 
   _spawnOne(gltf, x, z, scale, rotY, rotX = 0, rotZ = 0, billboard = false, loop = false, skipAnimation = false) {
     // Wrapper holds world position/rotation/scale so the animation on the inner
-    // scene cannot displace the prop from its fine-cell seed point.
+    // scene cannot displace the prop from its terrain plot seed point.
     const inner = skeletonClone(gltf.scene)
     inner.position.set(0, 0, 0)  // clear any baked-in GLB root offset
 

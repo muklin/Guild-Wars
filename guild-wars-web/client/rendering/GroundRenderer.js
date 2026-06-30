@@ -530,7 +530,7 @@ export default class GroundRenderer {
     const junctions = streetGraph?.junctions
     if (!junctions?.length) return
 
-    const Y = GROUND_Y + 0.002
+    const Y = GROUND_Y
     const verts = []
     const junctionById = new Map(junctions.map(j => [j.id, j]))
 
@@ -665,7 +665,7 @@ export default class GroundRenderer {
     if (len === 0) return
     const r = (0.0875 * 1.2) / 2
     const px = (-dy / len) * r, py = (dx / len) * r
-    const Y = GROUND_Y + 0.003
+    const Y = GROUND_Y
     const verts = new Float32Array([
       a.x - px, Y, a.y - py,
       a.x + px, Y, a.y + py,
@@ -693,7 +693,7 @@ export default class GroundRenderer {
     const geo = new THREE.CylinderGeometry(r, r, 0.002, 16)
     const mat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
     const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(junction.x, GROUND_Y + 0.010, junction.y)
+    mesh.position.set(junction.x, GROUND_Y, junction.y)
     this.scene.add(mesh)
     this._junctionHoverMesh = mesh
     this.hoveredJunctionId = junctionId
@@ -722,7 +722,8 @@ export default class GroundRenderer {
         const distSq = (worldX - px) ** 2 + (worldY - py) ** 2
         if (distSq < thrSq && distSq < bestDistSq) {
           bestDistSq = distSq
-          bestEdge = { nodeA: j.id, nodeB: conn.toId, id: conn.roadId, type: conn.type, districtId: conn.districtId }
+          bestEdge = { nodeA: j.id, nodeB: conn.toId, id: conn.roadId, type: conn.type,
+            districtId: conn.districtId, left: conn.left, right: conn.right }
           bestT = t
         }
       }
@@ -735,6 +736,8 @@ export default class GroundRenderer {
       id: bestEdge.id ?? null,
       type: bestEdge.type ?? null,
       districtId: bestEdge.districtId ?? null,
+      left: bestEdge.left ?? null,
+      right: bestEdge.right ?? null,
       nodeA: bestEdge.nodeA,
       nodeB: bestEdge.nodeB,
       length,
@@ -770,7 +773,7 @@ export default class GroundRenderer {
       if (!poly?.length) continue
       for (let i = 0; i < poly.length; i++) {
         const a = poly[i], b = poly[(i + 1) % poly.length]
-        blockLineVerts.push(a.x, GROUND_Y + 0.005, a.y, b.x, GROUND_Y + 0.005, b.y)
+        blockLineVerts.push(a.x, GROUND_Y , a.y, b.x, GROUND_Y, b.y)
       }
     }
     if (blockLineVerts.length === 0) return
@@ -794,7 +797,7 @@ export default class GroundRenderer {
     const verts = []
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i], b = poly[(i + 1) % poly.length]
-      verts.push(a.x, GROUND_Y + 0.010, a.y, b.x, GROUND_Y + 0.010, b.y)
+      verts.push(a.x, GROUND_Y, a.y, b.x, GROUND_Y, b.y)
     }
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
@@ -846,7 +849,31 @@ export default class GroundRenderer {
 
     const plotBase = (districtId) => this.finishedGround ? GRASSY_BROWN : getColor(districtId)
 
+    const TERRAIN_FILL_COLORS = {
+      Plains: 0xb2de69, Desert: 0xedca72, Mountains: 0x8d8d8d,
+      Forest: 0x218c21, Lake:   0x1a5abf, Sea:       0x0e6e6c,
+      Hills:  0x699B4F, Swamp:  0x4a6b4a, 'Ice Sheet': 0xf4f8ff, unassigned: 0xb8a680,
+    }
+
     for (const plot of plots) {
+      // ── Terrain plots: simple fill, no fences or buildings ──────────────────
+      if (plot.type === 'terrain') {
+        const baseColor = TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
+        const seed = this._polySeed(plot.blockCorners)
+        const color = this._jitterColor(baseColor, seed)
+        const mesh = this._makeFill(plot.blockCorners, color, GROUND_Y, { roughness: 0.6, emissiveIntensity: 0.2 })
+        if (!mesh) continue
+        if (this.showDebug) {
+          this.originalMaterials.set(mesh, mesh.material)
+          mesh.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6), side: THREE.DoubleSide })
+        }
+        this.scene.add(mesh)
+        this.plotMeshes.push(mesh)
+        this._terrainPlots.push(plot)
+        if (plot.id) this._terrainPlotMeshMap.set(plot.id, mesh)
+        continue
+      }
+
       const isSquare = plot.blockType === 'square'
       const seed = this._polySeed(plot.blockCorners)
 
@@ -880,7 +907,7 @@ export default class GroundRenderer {
 
     // Buildings are placed first (synchronous part of render() — mesh assembly is async
     // but footprints are ready immediately) so fences below can avoid their footprints.
-    this.buildingRenderer.render(this.scene, plots, districtData)
+    this.buildingRenderer.render(this.scene, plots.filter(p => p.type !== 'terrain'), districtData)
 
     // World-space wing polygons per plot, for every building that actually got built
     // there (townhouses AND free-standing houses — both are polygon-wing footprints).
@@ -946,8 +973,15 @@ export default class GroundRenderer {
       if (m) wallMatByPlot.set(plot, m)
     }
 
+    // Only plots that actually received a building are eligible for fences.
+    const plotsWithBuildings = new Set()
+    for (const { plot } of (this.buildingRenderer._lastPolyWingEntries ?? [])) plotsWithBuildings.add(plot)
+    for (const { plot }  of (this.buildingRenderer._lastGlbFootprints   ?? [])) plotsWithBuildings.add(plot)
+
     for (const plot of plots) {
+      if (plot.type === 'terrain') continue   // no fences on open terrain
       if (plot.blockType === 'square') continue
+      if (!plotsWithBuildings.has(plot)) continue   // no building → no fence
       const poly = plot.blockCorners
       if (!poly?.length) continue
       let fcx = 0, fcy = 0
@@ -1199,40 +1233,8 @@ export default class GroundRenderer {
     this._fenceMeshes = []
     this._districtHighlight = []
     this.buildingRenderer.clear(this.scene)
-  }
-
-  // Render terrain fine Voronoi cells as plot fills, replacing TerrainRenderer's
-  // fine-cell meshes at the city boundary with gutter-aligned polygons.
-  renderTerrainPlots(terrainPlots) {
-    this.clearTerrainPlotLayer()
-    if (!terrainPlots?.length) return
-    this._terrainPlots = terrainPlots
-    const TERRAIN_FILL_COLORS = {
-      Plains:   0xb2de69, Desert:  0xedca72, Mountains: 0x8d8d8d,
-      Forest:   0x218c21, Lake:    0x1a5abf, Sea:       0x0e6e6c,
-      Hills:    0x699B4F, Swamp:   0x4a6b4a, 'Ice Sheet': 0xf4f8ff, unassigned: 0xb8a680,
-    }
-    let terrainFailed = 0
-    for (const plot of terrainPlots) {
-      const baseColor = TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
-      const seed  = this._polySeed(plot.blockCorners)
-      const color = this._jitterColor(baseColor, seed)
-      const mesh = this._makeFill(plot.blockCorners, color, GROUND_Y - 0.001, { roughness: 0.6, emissiveIntensity: 0.2 })
-      if (!mesh) { terrainFailed++; continue }
-      this.scene.add(mesh)
-      if (this.showDebug) {
-        mesh.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6), side: THREE.DoubleSide })
-      }
-      this._terrainPlotMeshes.push(mesh)
-      if (plot.id) this._terrainPlotMeshMap.set(plot.id, mesh)
-    }
-    if (terrainFailed > 0) console.warn(`[GroundRenderer] terrain plot _makeFill failures: ${terrainFailed} / ${terrainPlots.length}`)
-  }
-
-  clearTerrainPlotLayer() {
+    // Terrain plots are now part of the unified plots array — clear their state here too
     this.clearTerrainPlotHighlight()
-    for (const m of this._terrainPlotMeshes) this.scene.remove(m)
-    this._terrainPlotMeshes = []
     this._terrainPlotMeshMap.clear()
     this._terrainPlots = []
   }
@@ -1245,7 +1247,7 @@ export default class GroundRenderer {
     const verts = []
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i], b = poly[(i + 1) % poly.length]
-      verts.push(a.x, GROUND_Y + 0.002, a.y, b.x, GROUND_Y + 0.002, b.y)
+      verts.push(a.x, GROUND_Y, a.y, b.x, GROUND_Y, b.y)
     }
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
@@ -1308,7 +1310,7 @@ export default class GroundRenderer {
     const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 })
     for (const j of junctions) {
       const m = new THREE.Mesh(geo, mat)
-      m.position.set(j.x, GROUND_Y + 0.105, j.y)
+      m.position.set(j.x, GROUND_Y + 0.100, j.y)
       m.visible = this.showDebug && this._streetSeedsVisible
       m.userData = { kind: 'streetSeed', id: j.id, type: j.type, districtId: j.districtId, connections: j.connections?.length ?? 0, x: j.x, y: j.y }
       this.scene.add(m)
@@ -1331,7 +1333,7 @@ export default class GroundRenderer {
       if (!poly?.length) continue
       const c = { x: poly.reduce((s, v) => s + v.x, 0) / poly.length, y: poly.reduce((s, v) => s + v.y, 0) / poly.length }
       const mesh = new THREE.Mesh(blockGeo, blockMat)
-      mesh.position.set(c.x, GROUND_Y + 0.015, c.y)
+      mesh.position.set(c.x, GROUND_Y + 0.100, c.y)
       mesh.userData = { kind: 'block', id: b.id, blockType: b.blockType, districtId: b.districtId }
       mesh.visible = this.showDebug && this._blockCentersVisible
       this.scene.add(mesh)
@@ -1340,7 +1342,7 @@ export default class GroundRenderer {
 
       for (const s of (b.seeds || [])) {
         const sm = new THREE.Mesh(seedGeo, seedMat)
-        sm.position.set(s.x, GROUND_Y + 0.017, s.y)
+        sm.position.set(s.x, GROUND_Y + 0.100, s.y)
         sm.visible = this.showDebug && this._blockCentersVisible
         this.scene.add(sm)
         this.debugObjects.push(sm)
@@ -1359,7 +1361,7 @@ export default class GroundRenderer {
       const cx = poly.reduce((s, v) => s + v.x, 0) / poly.length
       const cy = poly.reduce((s, v) => s + v.y, 0) / poly.length
       const m = new THREE.Mesh(geo, mat)
-      m.position.set(cx, GROUND_Y + 0.016, cy)
+      m.position.set(cx, GROUND_Y + 0.100, cy)
       m.visible = this.showDebug && this._plotCentersVisible
       m.userData = { kind: 'plot', id: p.id, blockId: p.blockId, districtId: p.districtId, blockType: p.blockType ?? 'normal', streetEdges: p.streetEdges?.length ?? 0 }
       this.scene.add(m)

@@ -1,12 +1,14 @@
 import TerrainVoronoiGenerator from './CityGenerator/TerrainVoronoiGenerator.js'
 import StreetVoronoiGenerator from './CityGenerator/StreetVoronoiGenerator.js'
-import CityBlockGenerator, { majorityStreetType, extractOuterGutterPolygon } from './CityGenerator/CityBlockGenerator.js'
+import CityBlockGenerator, { majorityStreetType, gutterRoadEdges } from './CityGenerator/CityBlockGenerator.js'
 import PlotVoronoiGenerator, { markSquareBlocks } from './CityGenerator/PlotVoronoiGenerator.js'
 import LandmarkPlacer from './CityGenerator/buildings/LandmarkPlacer.js'
 import BuildingTemplateGenerator from './CityGenerator/buildings/BuildingTemplateGenerator.js'
 import TextureTemplateGenerator from './CityGenerator/buildings/TextureTemplateGenerator.js'
 import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
 import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
+import { buildPointRegistry } from './CityGenerator/PointRegistry.js'
+import { pip, clipPolygonToSide, polygonCrossesSegment } from './voronoi/VoronoiUtils.js'
 import { getDistrictConfig, districtConfigKey } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
 import { readFileSync } from 'fs'
@@ -124,6 +126,105 @@ function generateRecruits(n) {
   })
 }
 
+// For each outer boundary street, cast test points perpendicular to the road and use
+// pip to find which terrain plot it faces. Records streetEdges on the terrain plot.
+// Boundary connections are identified by: has left/right sides AND right is not a
+// city district ID (i.e. not a number) — the "!city" condition.
+function computeTerrainPlotStreetAdjacency(streetGraph, terrainPlots) {
+  if (!terrainPlots.length || !streetGraph?.junctions?.length) return
+
+  const jPos = new Map(streetGraph.junctions.map(j => [j.id, j]))
+  const seenRoads = new Set()
+  const TEST_DISTS = [0.1, 0.5, 1.0, 2.0, 5.0]
+
+  for (const j of streetGraph.junctions) {
+    for (const conn of (j.connections || [])) {
+      // Outer boundary: has left/right fields AND right is not a city district ID
+      if (conn.left == null || typeof conn.right === 'number') continue
+      if (seenRoads.has(conn.roadId)) continue
+      seenRoads.add(conn.roadId)
+
+      const jB = jPos.get(conn.toId)
+      if (!jB) continue
+
+      const dx = jB.x - j.x, dy = jB.y - j.y
+      const len = Math.sqrt(dx * dx + dy * dy)
+      if (len < 1e-10) continue
+
+      const ux = dx / len, uy = dy / len
+      const mx = (j.x + jB.x) / 2, my = (j.y + jB.y) / 2
+
+      // Both A→B and B→A connections carry identical left/right, so we don't know
+      // which perpendicular is outward. Try both — terrain plots are outside the city
+      // so only the outward direction will ever match pip.
+      // Probe at 0.25, 0.5, 0.75 fractions along the road to handle short roads where
+      // the midpoint probe lands in a junction gap rather than a terrain cell.
+      const FRACS = [0.25, 0.5, 0.75]
+      let foundPlot = null
+      outer: for (const frac of FRACS) {
+        const px = j.x + frac * (jB.x - j.x), py = j.y + frac * (jB.y - j.y)
+        for (const d of TEST_DISTS) {
+          for (const [ox, oy] of [[uy, -ux], [-uy, ux]]) {
+            const tx = px + ox * d, ty = py + oy * d
+            for (const plot of terrainPlots) {
+              if (pip(tx, ty, plot.blockCorners)) { foundPlot = plot; break outer }
+            }
+          }
+        }
+      }
+
+      if (!foundPlot) continue
+
+      // Closest polygon edge of the terrain plot to the street midpoint (by edge midpoint)
+      const corners = foundPlot.blockCorners
+      const n = corners.length
+      let bestIdx = 0, bestDistSq = Infinity
+      for (let i = 0; i < n; i++) {
+        const va = corners[i], vb = corners[(i + 1) % n]
+        const emx = (va.x + vb.x) / 2, emy = (va.y + vb.y) / 2
+        const dsq = (emx - mx) ** 2 + (emy - my) ** 2
+        if (dsq < bestDistSq) { bestDistSq = dsq; bestIdx = i }
+      }
+
+      foundPlot.streetEdges.push({ index: bestIdx, roadId: conn.roadId, type: conn.type })
+    }
+  }
+}
+
+// Clip boundary-adjacent terrain plots to their actual outer gutter edges.
+// Non-adjacent terrain plots keep their raw polygon (they belong to non-city regions
+// and won't overlap city geometry). Must be called after computeTerrainPlotStreetAdjacency.
+function clipTerrainPlotsToGutters(terrainPlots, roadEdges) {
+  const outerByRoadId = new Map()
+  for (const re of roadEdges) {
+    if (re.isOuter) outerByRoadId.set(re.roadId, re)
+  }
+
+  for (const plot of terrainPlots) {
+    if (plot.streetEdges.length === 0) continue
+    let corners = plot.blockCorners
+    const cx = corners.reduce((s, v) => s + v.x, 0) / corners.length
+    const cy = corners.reduce((s, v) => s + v.y, 0) / corners.length
+    const ref = { x: cx, y: cy }
+
+    for (const { roadId } of plot.streetEdges) {
+      const re = outerByRoadId.get(roadId)
+      if (!re) continue
+      const la = { x: re.ax, y: re.ay }, lb = { x: re.bx, y: re.by }
+      // Use infinite-line vertex test instead of finite-segment crossing: a terrain plot
+      // wider than the junction-to-junction segment fails polygonCrossesSegment even
+      // though it still needs clipping (its boundary crosses the LINE outside the segment).
+      const nx = -(lb.y - la.y), ny = lb.x - la.x
+      const sign = nx * (ref.x - la.x) + ny * (ref.y - la.y)
+      if (sign === 0) continue
+      if (!corners.some(v => (nx * (v.x - la.x) + ny * (v.y - la.y)) * sign < -1e-9)) continue
+      const clipped = clipPolygonToSide(corners, la, lb, ref)
+      if (clipped) corners = clipped
+    }
+    plot.blockCorners = corners
+  }
+}
+
 // Distinct guild colours (by creation order), used by the Influence map overlay.
 const GUILD_COLORS = ['#e6453c', '#3c7de6', '#37a85a', '#d9a528', '#9b59d9', '#e67ec2']
 
@@ -183,13 +284,15 @@ export default class SetupPhase {
       region.isNorthEdge = this.touchesNorthBoundary(region, worldSize)
     }
 
-    const cityRegion = this.findCityRegion(worldData.regions, worldData.fineCells)
+    const cityRegion = this.findCityRegion(worldData.regions, worldData.terrainPlots)
     if (cityRegion) {
       cityRegion.assignedType = 'City'
+      for (const cell of worldData.terrainPlots || [])
+        if (cell.parentRegionId === cityRegion.id) cell.assignedType = 'City'
       this.log.push(`Identified city region: Region ${cityRegion.id}`)
 
-      const cityFineCells = worldData.fineCells.filter(c => c.parentRegionId === cityRegion.id)
-      const cityData = this.generateCityDistrictData(cityFineCells)
+      const cityTerrainPlots = worldData.terrainPlots.filter(c => c.parentRegionId === cityRegion.id)
+      const cityData = this.generateCityDistrictData(cityTerrainPlots)
       this.gameStateManager.cityDistrictData = cityData
       this.log.push(`Generated ${cityData.districts.length} city districts`)
     }
@@ -198,16 +301,16 @@ export default class SetupPhase {
     return {
       step: this.currentStep,
       regions: worldData.regions,
-      fineCells: worldData.fineCells,
+      terrainPlots: worldData.terrainPlots,
       edges: worldData.edges,
       edgePoints: worldData.edgePoints,
       log: this.log
     }
   }
 
-  // Build city district data (districts + shared edges) from fine cells inside the city region.
-  generateCityDistrictData(cityFineCells) {
-    const districts = cityFineCells.map((cell, i) => ({
+  // Build city district data (districts + shared edges) from terrain plots inside the city region.
+  generateCityDistrictData(cityTerrainPlots) {
+    const districts = cityTerrainPlots.map((cell, i) => ({
       id: i,
       seedPoint: { x: cell.seedPoint.x, y: cell.seedPoint.y },
       polygon: cell.polygon.map(v => ({ x: v.x, y: v.y })),
@@ -240,8 +343,8 @@ export default class SetupPhase {
 
     // Map each polygon segment to the district(s) that contain it.
     const segmentMap = new Map()
-    for (let dIdx = 0; dIdx < cityFineCells.length; dIdx++) {
-      const poly = cityFineCells[dIdx].polygon
+    for (let dIdx = 0; dIdx < cityTerrainPlots.length; dIdx++) {
+      const poly = cityTerrainPlots[dIdx].polygon
       for (let i = 0; i < poly.length; i++) {
         const va = getVertex(poly[i].x, poly[i].y)
         const vb = getVertex(poly[(i + 1) % poly.length].x, poly[(i + 1) % poly.length].y)
@@ -390,18 +493,18 @@ export default class SetupPhase {
     return chains
   }
 
-  findCityRegion(regions, fineCells) {
-    const fineCellCount = new Map()
-    if (fineCells) {
-      for (const cell of fineCells) {
-        fineCellCount.set(cell.parentRegionId, (fineCellCount.get(cell.parentRegionId) || 0) + 1)
+  findCityRegion(regions, terrainPlots) {
+    const terrainPlotCount = new Map()
+    if (terrainPlots) {
+      for (const cell of terrainPlots) {
+        terrainPlotCount.set(cell.parentRegionId, (terrainPlotCount.get(cell.parentRegionId) || 0) + 1)
       }
     }
     const centralRegions = regions.filter(r => !this.touchesBoundary(r, 50))
     const pool = centralRegions.length > 0 ? centralRegions : regions
-    if (fineCellCount.size > 0) {
+    if (terrainPlotCount.size > 0) {
       return pool.reduce((a, b) =>
-        (fineCellCount.get(a.id) || 0) >= (fineCellCount.get(b.id) || 0) ? a : b
+        (terrainPlotCount.get(a.id) || 0) >= (terrainPlotCount.get(b.id) || 0) ? a : b
       )
     }
     return pool.reduce((a, b) => a.polygon.length > b.polygon.length ? a : b)
@@ -464,6 +567,9 @@ export default class SetupPhase {
     region.assignedType = terrainType
     region.description = description
     region.name = name?.trim() || ''
+    const rawCells = this.gameStateManager.worldTerrainData?.terrainPlots || []
+    for (const cell of rawCells)
+      if (cell.parentRegionId === region.id) cell.assignedType = terrainType
     this.terrainPlacements.push({ regionId, terrainType, description, name: region.name })
     this.log.push(`Assigned ${terrainType} to region ${regionId}`)
 
@@ -746,19 +852,19 @@ export default class SetupPhase {
     return { path: [startRegionId], bridges: [] }
   }
 
-  // Centreline waypoints of a trade road, following the same fine-cell BFS the
+  // Centreline waypoints of a trade road, following the same terrain-plot BFS the
   // client uses to draw the rendered (red) trade road, so the street road matches
   // it exactly. Returns [{x,y}] (off-map destination → near the city) or null.
   _tradeRoadWaypoints(roadPath) {
     const wt = this.gameStateManager.worldTerrainData
-    const fineCells = wt?.fineCells || []
+    const terrainPlots = wt?.terrainPlots || []
     const W = wt?.worldSize ?? 50
-    if (!roadPath || roadPath.length < 2 || fineCells.length === 0) return null
+    if (!roadPath || roadPath.length < 2 || terrainPlots.length === 0) return null
 
     const pathSet = new Set(roadPath)
     const cityRegionId = roadPath[roadPath.length - 1]
     const cellsByRegion = new Map()
-    for (const cell of fineCells) {
+    for (const cell of terrainPlots) {
       if (!cellsByRegion.has(cell.parentRegionId)) cellsByRegion.set(cell.parentRegionId, [])
       cellsByRegion.get(cell.parentRegionId).push(cell)
     }
@@ -768,7 +874,7 @@ export default class SetupPhase {
     if (pathCells.length === 0) return null
     const cellMap = new Map(pathCells.map(c => [c.id, c]))
 
-    // Adjacency: fine cells sharing a (quantised) polygon vertex are neighbours.
+    // Adjacency: terrain plots sharing a (quantised) polygon vertex are neighbours.
     const adj = new Map(), vertToCells = new Map()
     for (const cell of pathCells) {
       for (const v of (cell.polygon || [])) {
@@ -798,10 +904,10 @@ export default class SetupPhase {
     const cityIds = new Set((cellsByRegion.get(cityRegionId) || []).map(c => c.id))
     const queue = [[startCell.id, [startCell.id]]]
     const visited = new Set([startCell.id])
-    let fineCellPath = null
+    let terrainPlotPath = null
     while (queue.length > 0) {
       const [curr, currPath] = queue.shift()
-      if (cityIds.has(curr)) { fineCellPath = currPath; break }
+      if (cityIds.has(curr)) { terrainPlotPath = currPath; break }
       for (const next of (adj.get(curr) || [])) {
         if (visited.has(next)) continue
         const nextCell = cellMap.get(next)
@@ -810,14 +916,14 @@ export default class SetupPhase {
         queue.push([next, [...currPath, next]])
       }
     }
-    if (!fineCellPath || fineCellPath.length < 2) return null
+    if (!terrainPlotPath || terrainPlotPath.length < 2) return null
 
     const waypoints = []
-    for (let i = 0; i < fineCellPath.length - 1; i++) {
-      const cell = cellMap.get(fineCellPath[i])
+    for (let i = 0; i < terrainPlotPath.length - 1; i++) {
+      const cell = cellMap.get(terrainPlotPath[i])
       if (cell) waypoints.push({ x: cell.seedPoint.x, y: cell.seedPoint.y })
     }
-    const cityCell = cellMap.get(fineCellPath[fineCellPath.length - 1])
+    const cityCell = cellMap.get(terrainPlotPath[terrainPlotPath.length - 1])
     if (cityCell && waypoints.length > 0) {
       const last = waypoints[waypoints.length - 1]
       waypoints.push({ x: (last.x + cityCell.seedPoint.x) / 2, y: (last.y + cityCell.seedPoint.y) / 2 })
@@ -1075,10 +1181,12 @@ export default class SetupPhase {
         }
       }
       if (district.streetSeed == null) district.streetSeed = district.id
-      district.locked = true
     }
+    // Generation must succeed before we commit the locked state — if it throws,
+    // districts remain unlocked so the player can retry without a broken state.
     this.generateForLocked()
     this._rebuildFactions()
+    for (const district of districts) district.locked = true
     this.currentStep = 'GuildCreation'
     this.log.push('City subdivision complete. Moving to guild creation.')
     return { ok: true, log: this.log }
@@ -1200,35 +1308,105 @@ export default class SetupPhase {
     const townhouseCount = blocks.filter(b => b.blockType === 'townhouse').length
     console.log(`[perf]   plots: ${(performance.now()-tPlots).toFixed(1)}ms (${plots.length} plots, ${townhouseCount} townhouse blocks)`)
 
-    // Convert world terrain fine cells to plot objects, clipped to the city gutter boundary.
+    // Convert raw world terrain plots (no polygon clip — clipping now done by
+    // clipTerrainPlotsToGutters after streetEdges are computed).
     const tTerrain = performance.now()
-    const outerGutterPoly = extractOuterGutterPolygon(blocks)
     const wt = this.gameStateManager.worldTerrainData
-    const terrainFineCells = wt?.fineCells || []
+    const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
+    const rawTerrainPlots = (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId)
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    cityData.terrainPlots = convertTerrainCellsToPlots(terrainFineCells, outerGutterPoly, tradeRoadWaypoints, wt?.regions || [])
-    console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${cityData.terrainPlots.length} plots)`)
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [])
+    cityData.plots = [...cityData.plots, ...terrainPlots]
+    console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${terrainPlots.length} plots)`)
+
+    // Outer boundary streets (right: null at generation time) now border terrain plots.
+    // Update right to 'terrain' so they are recognised as inter-plot streets, not exterior.
+    if (terrainPlots.length > 0) {
+      for (const edge of (cityData.streetGraph?.edges || []))
+        if (edge.right === null) edge.right = 'terrain'
+      for (const junction of (cityData.streetGraph?.junctions || [])) {
+        if (junction.right === null) junction.right = 'terrain'
+        for (const conn of (junction.connections || []))
+          if (conn.right === null) conn.right = 'terrain'
+      }
+      computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
+      clipTerrainPlotsToGutters(terrainPlots, roadEdges)
+    }
+
+    buildPointRegistry(cityData)   // additive shared-vertex store + seam diagnostic (ADR-0018)
 
     console.log(`[perf]   _generateBuildings total: ${(performance.now()-t0).toFixed(1)}ms`)
-    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares, ${cityData.terrainPlots.length} terrain plots`)
+    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares, ${terrainPlots.length} terrain plots`)
   }
 
-  // Re-derive terrain plots from the current world fine cells — run on save-load so
+  // Re-derive terrain plots from the current world terrain plots — run on save-load so
   // that saved terrain plots always reflect the latest conversion code.
   regenerateTerrainPlots() {
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.blocks?.length) return 0
     const wt = this.gameStateManager.worldTerrainData
-    const terrainFineCells = wt?.fineCells || []
-    if (!terrainFineCells.length) return 0
-    const outerGutterPoly = extractOuterGutterPolygon(cityData.blocks)
+    if (!(wt?.terrainPlots?.length)) return 0
+    const cityRegionId = (wt.regions || []).find(r => r.assignedType === 'City')?.id
+    const rawTerrainPlots = wt.terrainPlots.filter(p => p.parentRegionId !== cityRegionId)
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    cityData.terrainPlots = convertTerrainCellsToPlots(terrainFineCells, outerGutterPoly, tradeRoadWaypoints, wt?.regions || [])
-    return cityData.terrainPlots.length
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [])
+    cityData.plots = [...(cityData.plots || []).filter(p => p.type !== 'terrain'), ...terrainPlots]
+    if (terrainPlots.length > 0) {
+      const junctions = cityData.streetGraph?.junctions || []
+      const roadEdges = gutterRoadEdges(junctions)
+      computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
+      clipTerrainPlotsToGutters(terrainPlots, roadEdges)
+    }
+    buildPointRegistry(cityData)   // additive shared-vertex store + seam diagnostic (ADR-0018)
+    return terrainPlots.length
+  }
+
+  // Re-derive all plots on load: city block plots (from saved blocks + junctions) and
+  // terrain plots (from worldTerrainData). Replaces both old saved plot arrays.
+  // Returns the total number of plots generated.
+  regeneratePlots() {
+    const cityData = this.gameStateManager.cityDistrictData
+    if (!cityData?.blocks?.length || !cityData?.streetGraph) return 0
+
+    const districts = Array.from(this.gameStateManager.districts.values())
+    const blocks    = cityData.blocks
+    const junctions = cityData.streetGraph.junctions || []
+    const roadEdges = gutterRoadEdges(junctions)
+
+    markSquareBlocks(blocks, districts)
+    const { footprints } = new LandmarkPlacer().generate(blocks, districts)
+    const { plots } = new PlotVoronoiGenerator().generate(blocks, districts, junctions, roadEdges, footprints)
+    markTownhouseBlocks(blocks, plots, districts)
+
+    const wt = this.gameStateManager.worldTerrainData
+    const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
+    const rawTerrainPlots = (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId)
+    const tradeRoadWaypoints = (this.tradingDestinations || [])
+      .map(td => this._tradeRoadWaypoints(td.roadPath || []))
+      .filter(Boolean)
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [])
+
+    cityData.plots = [...plots, ...terrainPlots]
+
+    if (terrainPlots.length > 0) {
+      for (const edge of (cityData.streetGraph?.edges || []))
+        if (edge.right === null) edge.right = 'terrain'
+      for (const junction of (cityData.streetGraph?.junctions || [])) {
+        if (junction.right === null) junction.right = 'terrain'
+        for (const conn of (junction.connections || []))
+          if (conn.right === null) conn.right = 'terrain'
+      }
+      computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
+      clipTerrainPlotsToGutters(terrainPlots, roadEdges)
+    }
+
+    buildPointRegistry(cityData)   // additive shared-vertex store + seam diagnostic (ADR-0018)
+
+    return cityData.plots.length
   }
 
   assignTerrainDistrict(regionId, plotId, districtType, description = '', producedResource = '', consumedResources = [], name = '', resourceDefs = []) {

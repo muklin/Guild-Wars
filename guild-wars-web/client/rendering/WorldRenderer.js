@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import CameraController, { FLOOR_SCROLL_MAX } from '../input/CameraController.js'
 import WalkMode from './WalkMode.js'
+import Minimap from './Minimap.js'
 
 import TerrainRenderer from './TerrainRenderer.js'
 import DistrictRenderer from './DistrictRenderer.js'
@@ -33,6 +34,7 @@ export default class WorldRenderer {
     this.terrainRenderer  = null
     this.districtRenderer = null
     this.groundRenderer   = null
+    this.minimap           = null
 
     this._walkMode = null
     this._walkModeOnExit = null
@@ -162,6 +164,7 @@ export default class WorldRenderer {
     this.districtRenderer = new DistrictRenderer(this.scene)
     this.groundRenderer   = new GroundRenderer(this.scene, this.originalMaterials)
     this.groundRenderer.buildingRenderer.setDirtyCallback(() => this.markDirty())
+    this.minimap          = new Minimap()
 
     window.addEventListener('resize', () => this.onWindowResize())
 
@@ -182,6 +185,8 @@ export default class WorldRenderer {
     if (this._walkMode) {
       this._walkMode.update(delta)
       this.renderer.render(this.scene, this._walkMode.camera)
+      const { x, z } = this._walkMode.characterPosition
+      this.minimap.update(x, z, this._walkMode.yaw)
       return
     }
 
@@ -314,12 +319,12 @@ export default class WorldRenderer {
 
   // ── Terrain delegation ──────────────────────────────────────────────────────
 
-  setTerrainData(regions, edges, fineCells, edgePoints) {
-    return this.terrainRenderer.setTerrainData(regions, edges, fineCells, edgePoints)
+  setTerrainData(regions, edges, terrainPlots, edgePoints) {
+    return this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints)
   }
 
-  renderTerrain(regions, fineCells) {
-    return this.terrainRenderer.renderTerrain(regions, fineCells)
+  renderTerrain(regions, terrainPlots) {
+    return this.terrainRenderer.renderTerrain(regions, terrainPlots)
   }
 
   renderEdges(edges) {
@@ -402,22 +407,22 @@ export default class WorldRenderer {
     return this.terrainRenderer.getRegionAtWorldPos(worldX, worldY)
   }
 
-  getFineCellAtWorldPos(worldX, worldY) {
-    return this.terrainRenderer.getFineCellAtWorldPos(worldX, worldY)
+  getTerrainSetupPlotAtWorldPos(worldX, worldY) {
+    return this.terrainRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
   }
 
-  setFineCellHover(cellId) {
-    this.terrainRenderer.setFineCellHover(cellId)
+  setTerrainPlotHover(plotId) {
+    this.terrainRenderer.setTerrainPlotHover(plotId)
     this._needsRender = true
   }
 
-  setFineCellSelected(cellId) {
-    this.terrainRenderer.setFineCellSelected(cellId)
+  setTerrainPlotSelected(plotId) {
+    this.terrainRenderer.setTerrainPlotSelected(plotId)
     this._needsRender = true
   }
 
-  clearFineCellSelected() {
-    this.terrainRenderer.clearFineCellSelected()
+  clearTerrainPlotSelected() {
+    this.terrainRenderer.clearTerrainPlotSelected()
     this._needsRender = true
   }
 
@@ -654,13 +659,12 @@ export default class WorldRenderer {
 
   renderPlots(plots, districtData) {
     if (!RENDER_PLOTS) return
+    // Terrain plots are now part of the unified plots array. When present, retire the
+    // coarse TerrainRenderer fills so fine city-boundary plots take over without double-render.
+    if ((plots || []).some(p => p.type === 'terrain')) {
+      this.terrainRenderer.deleteNonCityTerrainPlots()
+    }
     return this.groundRenderer.renderPlots(plots, districtData)
-  }
-
-  renderTerrainPlots(terrainPlots) {
-    if (!terrainPlots?.length) return
-    this.terrainRenderer.deleteNonCityFineCells()
-    this.groundRenderer.renderTerrainPlots(terrainPlots)
   }
 
   clearPlotLayer() {
@@ -686,8 +690,7 @@ export default class WorldRenderer {
   clearDerivedLayers() {
     this.groundRenderer.clearGutterLayer()
     this.groundRenderer.clearBlockLayer()
-    this.groundRenderer.clearPlotLayer()
-    this.groundRenderer.clearTerrainPlotLayer()
+    this.groundRenderer.clearPlotLayer()   // also clears terrain plot state
   }
 
 
@@ -783,8 +786,8 @@ export default class WorldRenderer {
     return this.groundRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
   }
 
-  getTerrainPlotByFineCellId(fineCellId) {
-    return this.groundRenderer._terrainPlots.find(p => p.fineCellId === fineCellId) ?? null
+  getTerrainPlotBySourceId(rawPlotId) {
+    return this.groundRenderer._terrainPlots.find(p => p.terrainPlotId === rawPlotId) ?? null
   }
 
   // Switch plot bases to/from the finished grassy-brown ground (leaving District Setup).
@@ -872,12 +875,18 @@ export default class WorldRenderer {
       const streetGraph   = this.districtRenderer.cityDistrictData?.streetGraph
       const targetPos     = { x: this.cameraController.targetPosition.x, z: this.cameraController.targetPosition.z }
       const initialYaw    = this.cameraController.azimuth
+      // Capture the minimap snapshot before WalkMode exists — its Avatar mesh hasn't
+      // been added to the scene yet (so it can't get baked into the bitmap), and the
+      // main renderer hasn't switched to WalkMode's camera yet (so the player never
+      // sees this frame).
+      this.minimap.captureSnapshot(this.renderer, this.scene, targetPos.x, targetPos.z)
       this._walkMode = new WalkMode(
         this.scene, this.renderer, streetGraph, targetPos, initialYaw,
         () => this._exitWalkMode(), this.groundRenderer.buildingRenderer, this.groundRenderer._fenceSegments,
       )
       this.cameraController.setEnabled(false)
       this.terrainRenderer.setFPBandsVisible(false)
+      this.minimap.show()
       return true
     } else {
       this._exitWalkMode()
@@ -890,6 +899,7 @@ export default class WorldRenderer {
     const { x, z } = this._walkMode.characterPosition
     this._walkMode.destroy()
     this._walkMode = null
+    this.minimap.hide()
     this.terrainRenderer.setFPBandsVisible(true)
     this._clearFloorScrollClip()   // back to iso — always unclipped, never inherits walk/top-down state
     // Re-centre the iso camera on the character's last position at max zoom
@@ -981,7 +991,7 @@ export default class WorldRenderer {
     const district = (cd?.districts || []).find(d => d.id === plot.districtId)
     const sink = this.groundRenderer.buildingRenderer.debugTownhouseWingPasses(plot, district)
 
-    const Y = BUILDING_GROUND_Y + 0.01
+    const Y = BUILDING_GROUND_Y
     const mkLine = (corners, color, y) => {
       if (!corners?.length) return
       const pts = [...corners, corners[0]].map(c => new THREE.Vector3(c.x, y, c.y))

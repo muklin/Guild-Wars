@@ -87,8 +87,8 @@ export default class InputHandler {
       const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
       if (district) { this.eventBus.emit('DISTRICT_CLICKED', district.id); return }
       if (!this.renderer.guildSetupActive) {
-        const fineCell = this.renderer.getFineCellAtWorldPos(worldPos.x, worldPos.y)
-        if (fineCell) { this.eventBus.emit('TERRAIN_FINE_CELL_CLICKED', fineCell); return }
+        const rawPlot = this.renderer.getTerrainSetupPlotAtWorldPos(worldPos.x, worldPos.y)
+        if (rawPlot) { this.eventBus.emit('TERRAIN_PLOT_CLICKED', rawPlot); return }
         const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
         if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
       }
@@ -158,7 +158,7 @@ export default class InputHandler {
             this._showTooltip(
               `<div style="font-weight:bold">Plot ${dot.id}</div>` +
               `<div style="font-size:0.9em;margin-top:2px">block: ${dot.blockId ?? '?'} &nbsp;|&nbsp; district: ${dot.districtId ?? '?'}</div>` +
-              `<div style="font-size:0.85em;opacity:0.85">blockType: ${dot.blockType} &nbsp;|&nbsp; streetEdges: ${dot.streetEdges}</div>`,
+              `<div style="font-size:0.85em;opacity:0.85">blockType: ${dot.blockType} &nbsp;|&nbsp; streetEdges: ${dot.streetEdges?.length ?? 0}</div>`,
               e)
           } else if (dot.kind === 'streetSeed') {
             this._showTooltip(
@@ -191,7 +191,7 @@ export default class InputHandler {
           const idStr = edge.id !== null && edge.id !== undefined ? String(edge.id) : '?'
           this._showTooltip(
             `<div style="font-weight:bold">Street ${idStr}</div>` +
-            `<div style="font-size:0.9em;margin-top:2px">type: ${edge.type ?? '?'} &nbsp;|&nbsp; district: ${edge.districtId ?? '?'}</div>` +
+            `<div style="font-size:0.9em;margin-top:2px">type: ${edge.type ?? '?'} &nbsp;|&nbsp; district: ${edge.districtId != null ? edge.districtId : (edge.left != null || edge.right != null) ? `${edge.left ?? '?'} → ${edge.right ?? 'ext'}` : '?'}</div>` +
             `<div style="font-size:0.85em;margin-top:2px;opacity:0.85">nodes: ${edge.nodeA}→${edge.nodeB} &nbsp;|&nbsp; len: ${edge.length.toFixed(3)}</div>`,
             e)
           this.renderer.setStreetEdgeHover(edge)
@@ -218,14 +218,14 @@ export default class InputHandler {
       }
 
       // Standard non-debug hover: district was already checked above; now check
-      // terrain edges, fine cells, and regions. Return after the first hit so
+      // terrain edges, terrain plots, and regions. Return after the first hit so
       // clearHover() only fires when nothing is under the cursor.
       if (district) return  // district hover already set; don't clear it
       if (!this.renderer.guildSetupActive) {
         const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
         if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); this._hideTooltip(); return }
-        const fineCell = this.renderer.getFineCellAtWorldPos(worldPos.x, worldPos.y)
-        if (fineCell) { this.renderer.setFineCellHover(fineCell.id); this._hideTooltip(); return }
+        const rawPlot = this.renderer.getTerrainSetupPlotAtWorldPos(worldPos.x, worldPos.y)
+        if (rawPlot) { this.renderer.setTerrainPlotHover(rawPlot.id); this._hideTooltip(); return }
         const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
         if (region) { this.renderer.setRegionHover(region.id); this._hideTooltip(); return }
       }

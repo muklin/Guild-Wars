@@ -117,7 +117,10 @@ export default class GameStateManager {
       cityLeader: this.cityLeader,
       successionMethod: this.successionMethod,
       worldTerrainData: this.worldTerrainData,
-      cityDistrictData: this.cityDistrictData,
+      cityDistrictData: this.cityDistrictData ? {
+        ...this.cityDistrictData,
+        plots: undefined   // re-derived on load via regeneratePlots(); not saved
+      } : this.cityDistrictData,
       buildingData: this.buildingData,
       nextFactionAutoId: this.nextFactionAutoId
     }

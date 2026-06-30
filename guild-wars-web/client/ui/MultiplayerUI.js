@@ -1,6 +1,7 @@
 import GameAPI from '../api/GameAPI.js'
 import config, { setApiBase, setSeatKey, isElectron } from '../config.js'
 import Settings from '../settings.js'
+import RulesWindow from './RulesWindow.js'
 
 // Connect screen + lobby + turn banner for networked play. Renders its own overlay
 // layer above the game. In solo play (no seat joined) it stays out of the way.
@@ -18,6 +19,8 @@ export default class MultiplayerUI {
   }
 
   async mount() {
+    this.rulesWindow = new RulesWindow()
+
     this.root = document.createElement('div')
     this.root.id = 'mp-layer'
     // z-index 100 keeps this layer above phase splash (80), ViewStack windows (50+),
@@ -110,6 +113,15 @@ export default class MultiplayerUI {
     })
     box.appendChild(newGameBtn)
 
+    const rulesBtn = document.createElement('button')
+    rulesBtn.textContent = 'Rules'
+    rulesBtn.style.cssText = 'display:block;width:100%;padding:10px;margin-bottom:10px;background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:4px;cursor:pointer;font-size:13px;text-align:left;box-sizing:border-box'
+    rulesBtn.addEventListener('click', () => {
+      this._clearModal()
+      this.rulesWindow.show()
+    })
+    box.appendChild(rulesBtn)
+
     this._appendSettings(box)
   }
 
@@ -174,6 +186,8 @@ export default class MultiplayerUI {
   }
 
   // ── Initiative roll dialog ────────────────────────────────────────────────────
+  // ORPHAN: no longer called at game start (removed from App.js). Do not delete —
+  // may be re-introduced later. Initiative storage and the server route remain active.
   showInitiativeRoll(mpState) {
     return new Promise(resolve => {
       const back = document.createElement('div')

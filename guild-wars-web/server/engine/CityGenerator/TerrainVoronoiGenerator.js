@@ -96,71 +96,77 @@ export default class TerrainVoronoiGenerator {
 
   generate(regionCount = 15, worldSize = 50, mergeDistance = 0, manhattan = 0) {
     
-    const fineCount = Math.max(regionCount * 10, 150)
-    console.log(`Generating: ${fineCount} fine cells → ${regionCount} merged regions`)
+    const plotCount = Math.max(regionCount * 10, 150)
+    console.log(`Generating: ${plotCount} terrain plots → ${regionCount} merged regions`)
 
-    // Step 1: Single triangulation for all fine cells. Staggered sentinels keep
+    // Step 1: Single triangulation for all terrain plots. Staggered sentinels keep
     // every real seed interior → bounded, valid circumcenter polygons.
-    const { regions: allFineCells } = this.generateRawVoronoi(fineCount, worldSize)
-    let validFineCells = allFineCells.filter(c =>
+    const { regions: allTerrainPlots } = this.generateRawVoronoi(plotCount, worldSize)
+    let validTerrainPlots = allTerrainPlots.filter(c =>
       c.polygon && c.polygon.length >= 3 &&
       c.seedPoint.x >= 0 && c.seedPoint.x <= worldSize &&
       c.seedPoint.y >= 0 && c.seedPoint.y <= worldSize
     )
-    console.log(`${validFineCells.length}/${fineCount} fine cells valid`)
+    console.log(`${validTerrainPlots.length}/${plotCount} terrain plots valid`)
 
     // Step 1.5: Merge circumcenter vertices that are closer than mergeDistance.
     // This eliminates T-junction artefacts where multiple near-coincident
     // circumcenters produce slivers and overlapping edge markers.
     if (mergeDistance > 0) {
-      this.mergeNearbyVertices(validFineCells, mergeDistance)
-      validFineCells = validFineCells.filter(c => c.polygon.length >= 3)
-      console.log(`After vertex merge: ${validFineCells.length} fine cells valid`)
+      this.mergeNearbyVertices(validTerrainPlots, mergeDistance)
+      validTerrainPlots = validTerrainPlots.filter(c => c.polygon.length >= 3)
+      console.log(`After vertex merge: ${validTerrainPlots.length} terrain plots valid`)
     }
 
-    // Step 2: Pick region seeds using greedy farthest-point from interior cells
-    // so seeds are evenly spread across the map, not biased toward large boundary cells.
-    const selectedSeeds = this.selectSeeds(validFineCells, regionCount, worldSize)
+    // Step 2: Pick region seeds using greedy farthest-point from interior plots
+    // so seeds are evenly spread across the map, not biased toward large boundary plots.
+    const selectedSeeds = this.selectSeeds(validTerrainPlots, regionCount, worldSize)
     console.log(`Selected ${selectedSeeds.length} seed points`)
 
-    // Step 3: Assign each fine cell to its nearest seed
-    for (const cell of validFineCells) {
-      cell.parentRegionId = this.findNearestSeed(cell.seedPoint, selectedSeeds)
+    // Step 3: Assign each terrain plot to its nearest seed
+    for (const plot of validTerrainPlots) {
+      plot.parentRegionId = this.findNearestSeed(plot.seedPoint, selectedSeeds)
     }
+
+    // Step 3.5: Resolve exclaves — isolated terrain plots that belong to a region
+    // but are disconnected from that region's main body. Must run here, while
+    // polygon vertices are still shared objects (reference equality gives adjacency).
+    const exclavesFixed = this.resolveExclaves(validTerrainPlots)
+    if (exclavesFixed > 0) console.log(`Resolved ${exclavesFixed} exclave terrain plots`)
 
     // Step 4: Assign global vertex IDs. Must happen before any clipping —
     // clipping creates new vertex objects, breaking the shared circumcenter
     // references that findSharedEdge relies on.
     let nextVertexId = 0
     const seenVertices = new Set()
-    for (const cell of validFineCells) {
-      for (const v of cell.polygon) {
+    for (const plot of validTerrainPlots) {
+      for (const v of plot.polygon) {
         if (!seenVertices.has(v)) { seenVertices.add(v); v.id = nextVertexId++ }
       }
     }
 
     // Step 5: Boundary edges via reference equality on unclipped polygons
-    const { edges, edgePoints } = this.generateBoundaryEdges(validFineCells, regionCount)
+    const { edges, edgePoints } = this.generateBoundaryEdges(validTerrainPlots, regionCount)
     console.log(`Generated ${Object.keys(edges).length} boundary edges, ${edgePoints.length} edge points`)
 
-    // Step 5.5: Clip fine cell polygons to world bounds for client rendering.
+    // Step 5.5: Clip terrain plot polygons to world bounds for client rendering.
     // Must happen AFTER edge detection — clipping creates new vertex objects that
     // break the reference equality used by findSharedEdge. Clipped polygons improve
     // click-detection accuracy and eliminate huge sentinel-extended polys from the renderer.
     const W = worldSize
     const worldRect = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: W }, { x: 0, y: W }]
-    for (const cell of validFineCells) {
-      const clipped = clipToPolygon(cell.polygon, worldRect)
-      if (clipped) cell.polygon = clipped
+    for (const plot of validTerrainPlots) {
+      const clipped = clipToPolygon(plot.polygon, worldRect)
+      if (clipped) plot.polygon = clipped
     }
 
     // Step 6: Build merged region convex hulls (used for click hit-testing fallback)
     const vertsByRegion = new Map()
     for (let i = 0; i < selectedSeeds.length; i++) vertsByRegion.set(i, [])
-    for (const cell of validFineCells) {
-      const bucket = vertsByRegion.get(cell.parentRegionId)
+    for (const plot of validTerrainPlots) {
+      const bucket = vertsByRegion.get(plot.parentRegionId)
       if (bucket) {
-        for (const v of cell.polygon) {
+        for (const v of plot.polygon) {
           if (isFinite(v.x) && isFinite(v.y)) bucket.push(v)
         }
       }
@@ -173,24 +179,104 @@ export default class TerrainVoronoiGenerator {
       description: ''
     }))
 
-    return { worldSize, regions, fineCells: validFineCells, edges, edgePoints }
+    return { worldSize, regions, terrainPlots: validTerrainPlots, edges, edgePoints }
   }
 
-  selectSeeds(fineCells, count, worldSize) {
-    // Prefer interior cells so region seeds are evenly spread, not boundary-biased.
+  // Finds terrain plots that are disconnected from their region's largest contiguous
+  // component and reassigns them to the dominant neighbouring region. Runs once
+  // after the initial nearest-seed assignment; a single pass eliminates isolated
+  // islands (the common case). Adjacency uses shared vertex object references,
+  // which are valid before Step 5.5 clips polygons.
+  resolveExclaves(plots) {
+    // Build vertex → plots map by reference equality
+    const vertexPlots = new Map()
+    for (const plot of plots) {
+      for (const v of plot.polygon) {
+        if (!vertexPlots.has(v)) vertexPlots.set(v, [])
+        vertexPlots.get(v).push(plot)
+      }
+    }
+
+    // Build full plot adjacency (plots sharing at least one vertex)
+    const adj = new Map()
+    for (const plot of plots) adj.set(plot, new Set())
+    for (const group of vertexPlots.values()) {
+      for (let i = 0; i < group.length; i++) {
+        for (let j = i + 1; j < group.length; j++) {
+          adj.get(group[i]).add(group[j])
+          adj.get(group[j]).add(group[i])
+        }
+      }
+    }
+
+    // BFS to find connected components restricted to same-region plots
+    const visited = new Set()
+    const plotComponent = new Map()  // plot → component array
+
+    for (const plot of plots) {
+      if (visited.has(plot)) continue
+      const component = []
+      const queue = [plot]
+      visited.add(plot)
+      while (queue.length) {
+        const cur = queue.shift()
+        component.push(cur)
+        for (const nb of adj.get(cur)) {
+          if (!visited.has(nb) && nb.parentRegionId === cur.parentRegionId) {
+            visited.add(nb)
+            queue.push(nb)
+          }
+        }
+      }
+      for (const p of component) plotComponent.set(p, component)
+    }
+
+    // For each region, keep the largest component; everything else is an exclave
+    const mainByRegion = new Map()
+    for (const [plot, comp] of plotComponent) {
+      const rid = plot.parentRegionId
+      if (!mainByRegion.has(rid) || comp.length > mainByRegion.get(rid).length) {
+        mainByRegion.set(rid, comp)
+      }
+    }
+
+    // Reassign exclave plots to the most common neighbouring region
+    let reassigned = 0
+    for (const plot of plots) {
+      if (plotComponent.get(plot) === mainByRegion.get(plot.parentRegionId)) continue
+
+      const counts = new Map()
+      for (const nb of adj.get(plot)) {
+        const r = nb.parentRegionId
+        if (r !== plot.parentRegionId) counts.set(r, (counts.get(r) || 0) + 1)
+      }
+      if (!counts.size) continue
+
+      let bestRegion = null, bestCount = -1
+      for (const [r, n] of counts) {
+        if (n > bestCount) { bestCount = n; bestRegion = r }
+      }
+      if (bestRegion !== null) { plot.parentRegionId = bestRegion; reassigned++ }
+    }
+
+    return reassigned
+  }
+
+  selectSeeds(plots, count, worldSize) {
+    // Prefer interior plots so region seeds are evenly spread, not boundary-biased.
     const margin = worldSize * 0.15
-    const pool = fineCells.filter(c =>
+    const pool = plots.filter(c =>
       c.seedPoint.x >= margin && c.seedPoint.x <= worldSize - margin &&
       c.seedPoint.y >= margin && c.seedPoint.y <= worldSize - margin
     )
-    const source = pool.length >= count ? pool : fineCells
+    const source = pool.length >= count ? pool : plots
 
     // Greedy farthest-point: each new seed maximises its minimum distance to
     // already-selected seeds, ensuring even spatial coverage.
     const selected = []
     const used = new Set()
 
-    // Start from the cell closest to world centre
+    // Start from the plot closest to world centre
     const cx = worldSize / 2, cy = worldSize / 2
     let bestIdx = 0, bestDist = Infinity
     for (let i = 0; i < source.length; i++) {
@@ -272,11 +358,11 @@ export default class TerrainVoronoiGenerator {
     return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
   }
 
-  mergeNearbyVertices(fineCells, mergeDistance) {
+  mergeNearbyVertices(plots, mergeDistance) {
     // Collect all unique circumcenter vertex objects
     const allVerts = []
     const seen = new Set()
-    for (const cell of fineCells) {
+    for (const cell of plots) {
       for (const v of cell.polygon) {
         if (!seen.has(v)) { seen.add(v); allVerts.push(v) }
       }
@@ -312,7 +398,7 @@ export default class TerrainVoronoiGenerator {
     }
 
     // Apply replacements and deduplicate within each polygon
-    for (const cell of fineCells) {
+    for (const cell of plots) {
       const dedup = new Set()
       cell.polygon = cell.polygon.map(v => find(v)).filter(v => {
         if (dedup.has(v)) return false
@@ -322,11 +408,11 @@ export default class TerrainVoronoiGenerator {
     }
   }
 
-  generateBoundaryEdges(fineCells, regionCount) {
+  generateBoundaryEdges(plots, regionCount) {
     // Build vertex → cells map by reference so we can find which cells share
     // each polygon segment without an O(n²) cell-pair scan.
     const vertexCells = new Map()
-    for (const cell of fineCells) {
+    for (const cell of plots) {
       for (const v of cell.polygon) {
         if (!vertexCells.has(v)) vertexCells.set(v, [])
         vertexCells.get(v).push(cell)
@@ -338,7 +424,7 @@ export default class TerrainVoronoiGenerator {
     const metaByKey     = new Map() // edgeKey → {regionA, regionB}
     const registeredPairs = new Set()
 
-    for (const cell of fineCells) {
+    for (const cell of plots) {
       const regionA = cell.parentRegionId
       const poly    = cell.polygon
       for (let i = 0; i < poly.length; i++) {

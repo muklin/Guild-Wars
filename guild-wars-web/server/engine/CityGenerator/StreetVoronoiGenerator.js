@@ -499,7 +499,7 @@ function pruneAcuteStubs(nodes, edges, minAngleDeg = MIN_STUB_ANGLE_DEG) {
 }
 
 // Append trade-route roads onto the finished street graph. Each route is a list
-// of centreline waypoints in destination→city order (the same fine-cell path the
+// of centreline waypoints in destination→city order (the same terrain-plot path the
 // client draws). One node is created per waypoint and consecutive nodes are
 // joined by Mud edges whose ids start with `trade-` so CityBlockGenerator excludes
 // them from blocks/plots. The city end is linked to the nearest existing junction

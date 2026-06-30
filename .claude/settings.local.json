@@ -46,7 +46,9 @@
       "Read(//k/k/UnityProjects/Guild-Wars/guild-wars-web/client/rendering/**)",
       "Bash(node -e ' *)",
       "Bash(node --check server/engine/voronoi/VoronoiUtils.js)",
-      "Bash(node --input-type=module -e ' *)"
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(node --check server/engine/CityGenerator/CityBlockGenerator.js)",
+      "Bash(node --check server/engine/CityGenerator/PlotVoronoiGenerator.js)"
     ]
   }
 }

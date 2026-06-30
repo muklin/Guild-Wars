@@ -48,7 +48,7 @@ export default class PlotVoronoiGenerator {
       // paved square plot and move on.
       if (block.blockType === 'square') {
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, blockType: 'square' })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, blockType: 'square', type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
         continue
       }
 
@@ -56,7 +56,7 @@ export default class PlotVoronoiGenerator {
       if (blockCorners.length > MAX_BLOCK_VERTS) {
         block.blockType = 'single'
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
         continue
       }
 
@@ -68,7 +68,7 @@ export default class PlotVoronoiGenerator {
       if (minPlotSize > 0 && area < minPlotSize) {
         block.blockType = 'single'
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
         continue
       }
 
@@ -77,7 +77,7 @@ export default class PlotVoronoiGenerator {
       if (seeds.length === 0) {
         block.blockType = 'single'
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
         continue
       }
 
@@ -90,37 +90,36 @@ export default class PlotVoronoiGenerator {
         // the CONVEX Voronoi cell. Unlike Sutherland–Hodgman, disconnected results
         // produce separate pieces rather than bridging across concave notches (which was
         // the root cause of plots leaking into the street on concave blocks).
-        // We pick the largest-area piece — seeds sit on the block boundary so pip is ambiguous.
         const pieces = clipPolygonByConvex(blockCorners, cell.polygon)
         if (!pieces.length) {
           console.error('[PlotVoronoiGenerator] plot clipped to zero — seed', cell.seedPoint, 'block', block.id)
           return acc
         }
-        let poly = pieces[0]
-        if (pieces.length > 1) {
-          let bestA = 0
-          for (const p of pieces) {
-            let a = 0
-            for (let i = 0; i < p.length; i++) { const pi = p[i], qi = p[(i + 1) % p.length]; a += pi.x * qi.y - qi.x * pi.y }
-            if (Math.abs(a) > bestA) { bestA = Math.abs(a); poly = p }
+        // Keep EVERY piece, not just the largest. A concave block (the notch on the inner
+        // side of a winding street, or a dead-end U) splits a cell into a main region plus
+        // slivers; discarding the slivers left triangular gaps in the plot tiling — the
+        // "missing corners". All pieces are clipped to the block, so none leak into the
+        // street, and Voronoi cells are mutually disjoint, so pieces never overlap.
+        // _mergeSmallPlots then absorbs slivers into neighbours, filling the gaps without
+        // spawning tiny plots.
+        for (let poly of pieces) {
+          // A thin block finger can still leave a plot spiking across a road. Clip the
+          // piece to its seed's side of every road centreline it crosses.
+          for (const r of roadLines) {
+            if (polygonCrossesSegment(poly, r[0], r[1])) {
+              const clipped = clipPolygonToSide(poly, r[0], r[1], cell.seedPoint)
+              if (clipped) poly = clipped
+            }
           }
+          acc.push({ ...cell, polygon: poly })
         }
-        // A thin block finger can still leave a plot spiking across a road. Clip
-        // the cell to its seed's side of every road centreline it crosses.
-        for (const r of roadLines) {
-          if (polygonCrossesSegment(poly, r[0], r[1])) {
-            const clipped = clipPolygonToSide(poly, r[0], r[1], cell.seedPoint)
-            if (clipped) poly = clipped
-          }
-        }
-        acc.push({ ...cell, polygon: poly })
         return acc
       }, [])
 
       if (plotCells.length === 0) {
         block.blockType = 'single'
         block.seeds = seeds
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
       } else {
         block.blockType = 'subdivided'
         block.seeds = seeds
@@ -139,6 +138,8 @@ export default class PlotVoronoiGenerator {
               ...roadEdges,
               ...roadLines.map(([a, b]) => ({ roadId: 'centreline', type: 'Mud', ax: a.x, ay: a.y, bx: b.x, by: b.y })),
             ]),
+            type: 'block',
+            assignedType: district?.assignedType ?? null,
           })
         }
       }

@@ -1,9 +1,33 @@
-import { distToSegSq, ptOnSeg, pip, segIntersect } from '../voronoi/VoronoiUtils.js'
+import { distToSegSq, pip, segIntersect } from '../voronoi/VoronoiUtils.js'
 import { STREET_HALF_WIDTH, getDistrictParams, halfWidthForDistrict } from './StreetVoronoiGenerator.js'
 
 
 // Street priority for tie-breaking (paved hierarchy: Stone > Brick > Mud).
 export const STREET_TYPE_PRIORITY = { Stone: 2, Brick: 1, Mud: 0 }
+
+// Centroid + bbox area of a face, for the bug-4 reject diagnostics (correlate a dropped
+// face's world position with a visible black hole on the map). Cheap; debug-only.
+function faceCentroidArea(verts) {
+  let cx = 0, cy = 0, minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const v of verts) {
+    cx += v.x; cy += v.y
+    if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x
+    if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y
+  }
+  const n = verts.length || 1
+  return { x: cx / n, y: cy / n, bbox: (maxX - minX) * (maxY - minY) }
+}
+
+// Log the N largest rejects in a category with their world centroids. For enclosesNode
+// rejects each entry also carries `degrees` (the degrees of the gutter nodes it enclosed):
+// deg[1] = a dangling dead-end stub (likely a REAL block wrongly dropped); deg[3+] = a
+// true junction wraparound (correctly dropped).
+function logRejects(label, rejects, n = 5) {
+  if (!rejects.length) return
+  const top = [...rejects].sort((a, b) => b.bbox - a.bbox).slice(0, n)
+    .map(r => `(${r.x.toFixed(3)},${r.y.toFixed(3)}${r.degrees != null ? ` deg[${r.degrees}]` : ''})`).join(' ')
+  console.log(`  [bug4] ${label}: ${rejects.length} rejected — largest at ${top}`)
+}
 
 // The street type bordering the majority of a block's street-facing edges.
 // Ties break toward the higher-priority (more paved) type. Returns null if none.
@@ -46,49 +70,10 @@ export function findStreetFacingEdges(vertices, roadEdges) {
   return result
 }
 
-// Extract the outer gutter boundary polygon from the city blocks — the closed ring
-// formed by all block-boundary edges that are NOT shared with any other block.
-// Returns [{x,y}] ordered polygon, or null if extraction fails.
-export function extractOuterGutterPolygon(blocks) {
-  if (!blocks?.length) return null
-  const pk  = (p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
-  const hek = (a, b) => `${pk(a)}_${pk(b)}`
-
-  const fwdSet  = new Set()
-  const edgeMap = new Map()  // key → {a, b}
-
-  for (const block of blocks) {
-    const c = block.blockCorners, n = c.length
-    for (let i = 0; i < n; i++) {
-      const a = c[i], b = c[(i + 1) % n]
-      const k = hek(a, b)
-      if (!edgeMap.has(k)) edgeMap.set(k, { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } })
-      fwdSet.add(k)
-    }
-  }
-
-  // Outer edges: A→B appears in some block but B→A appears in no block
-  const outerEdges = []
-  for (const [, edge] of edgeMap) {
-    if (!fwdSet.has(hek(edge.b, edge.a))) outerEdges.push(edge)
-  }
-  if (outerEdges.length < 3) return null
-
-  // Chain into a closed polygon by following endpoint adjacency
-  const outgoing = new Map()
-  for (const edge of outerEdges) outgoing.set(pk(edge.a), edge)
-
-  const poly = []
-  let cur = outerEdges[0]
-  const start = pk(cur.a)
-  for (let i = 0; i <= outerEdges.length; i++) {
-    poly.push({ x: cur.a.x, y: cur.a.y })
-    const next = outgoing.get(pk(cur.b))
-    if (!next || pk(next.a) === start) break
-    cur = next
-  }
-
-  return poly.length >= 3 ? poly : null
+// Derive just the road-edge segments from saved junction gutter data, without
+// running the full block-tracing pipeline. Used by regeneratePlots() on load.
+export function gutterRoadEdges(junctions) {
+  return new CityBlockGenerator()._gutterGraphFromJunctions(junctions).roadEdges
 }
 
 export default class CityBlockGenerator {
@@ -100,6 +85,19 @@ export default class CityBlockGenerator {
 
     const { gutterNodes, gutterEdges, roadEdges } = this._gutterGraphFromJunctions(junctions)
     const { nodes: planarNodes, edges: planarEdges } = this._planarizeGutterGraph(gutterNodes, gutterEdges)
+
+    // bug-4 diagnostic: a healthy gutter graph is all closed loops, so every node has
+    // degree ≥ 2. A degree-0/1 node is a dangling gutter endpoint — the face beside it
+    // can't close, so a whole block goes untraced (a void). Log their world positions;
+    // they should sit on the edge of any big black region.
+    {
+      const deg = new Map(planarNodes.map(n => [n.id, 0]))
+      for (const e of planarEdges) { deg.set(e.nodeA, (deg.get(e.nodeA) || 0) + 1); deg.set(e.nodeB, (deg.get(e.nodeB) || 0) + 1) }
+      const byId = new Map(planarNodes.map(n => [n.id, n]))
+      const dangling = [...deg.entries()].filter(([, d]) => d <= 1)
+        .map(([id, d]) => { const n = byId.get(id); return n ? `(${n.x.toFixed(3)},${n.y.toFixed(3)})d${d}` : null }).filter(Boolean)
+      if (dangling.length) console.log(`  [bug4] ${dangling.length} dangling gutter node(s) (broken loop → untraced void): ${dangling.slice(0, 12).join(' ')}`)
+    }
 
     const streetNodes = junctions.map(j => ({ id: j.id, x: j.x, y: j.y }))
     const streetEdges = []
@@ -120,6 +118,8 @@ export default class CityBlockGenerator {
     const allFaces = this._traceFaces(planarNodes, planarEdges)
     const roadFacePolys = []
     let rejectedRoad = 0, rejectedArea = 0, rejectedNotch = 0
+    // bug-4 diagnostics: collect centroids of every dropped face by cause.
+    const dbgRoad1 = [], dbgRoad2 = [], dbgArea = []
 
     // Pass 1: reject road strips + junction fills (interior point close to centreline).
     const faceCandidates = []
@@ -128,6 +128,7 @@ export default class CityBlockGenerator {
       if (this._isRoadFace(rawVertices, streetNodes, streetEdges)) {
         roadFacePolys.push(rawVertices)
         rejectedRoad++
+        dbgRoad1.push(faceCentroidArea(rawVertices))
       } else {
         faceCandidates.push(rawVertices)
       }
@@ -154,6 +155,7 @@ export default class CityBlockGenerator {
       if (surroundedByRoad) {
         roadFacePolys.push(rawVertices)
         rejectedRoad++
+        dbgRoad2.push(faceCentroidArea(rawVertices))
       } else {
         blockFaces.push(rawVertices)
       }
@@ -178,8 +180,6 @@ export default class CityBlockGenerator {
       const districtId = this._findDistrict(rawVertices, districts)
       const notchLimit = Math.max(halfWidthForDistrict(districtById.get(districtId)), STREET_HALF_WIDTH) * 2.5
       const vertices = rawVertices
-      //const vertices = this._simplifyReflexNotches(rawVertices, notchLimit)
-      //if (vertices.length < 3) { rejectedNotch++; continue }
       
       let area = 0
       for (let i = 0; i < vertices.length; i++) {
@@ -187,7 +187,7 @@ export default class CityBlockGenerator {
         area += a.x * b.y - b.x * a.y
       }
       area = Math.abs(area) / 2
-      if (area < 1e-6) { rejectedArea++; continue }
+      if (area < 1e-6) { rejectedArea++; dbgArea.push(faceCentroidArea(vertices)); continue }
 
       const block = {
         id: blockId++,
@@ -211,45 +211,45 @@ export default class CityBlockGenerator {
 
     this._mergeSquareClusters(blocks, roadFacePolys, roadEdges)
 
+    // Overlapping/duplicate block faces: near-dup gutter nodes (see the topology repair's
+    // "near-dup node(s)" count) let _traceFaces walk two overlapping faces over the same
+    // ground, which z-fight as a visible "double layer". Flag block pairs whose centres sit
+    // within OVERLAP_TOL. Diagnostic only — cheap spatial hash.
+    {
+      const OVERLAP_TOL = 0.08
+      const cen = blocks.map(b => ({ id: b.id, ...faceCentroidArea(b.blockCorners) }))
+      const buckets = new Map()
+      for (const p of cen) {
+        const k = `${Math.floor(p.x / OVERLAP_TOL)},${Math.floor(p.y / OVERLAP_TOL)}`
+        if (!buckets.has(k)) buckets.set(k, [])
+        buckets.get(k).push(p)
+      }
+      const pairs = []
+      for (const p of cen) {
+        const gx = Math.floor(p.x / OVERLAP_TOL), gy = Math.floor(p.y / OVERLAP_TOL)
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          const arr = buckets.get(`${gx + dx},${gy + dy}`)
+          if (!arr) continue
+          for (const q of arr) {
+            if (q.id <= p.id) continue
+            if ((p.x - q.x) ** 2 + (p.y - q.y) ** 2 < OVERLAP_TOL * OVERLAP_TOL) pairs.push(`#${p.id}~#${q.id}@(${p.x.toFixed(3)},${p.y.toFixed(3)})`)
+          }
+        }
+      }
+      if (pairs.length) console.log(`  [overlap] ${pairs.length} block pair(s) with near-coincident centres (double-layer/z-fight): ${pairs.slice(0, 12).join(' ')}`)
+    }
+
     console.log(`CityBlockGenerator: ${blocks.length} blocks traced from ${allFaces.length} faces (road=${rejectedRoad}, degenerate-area=${rejectedArea}, over-notched=${rejectedNotch})`)
+    // bug-4 diagnostics: where did dropped faces go? Correlate these world centroids with
+    // the visible black holes. `enclosesNode` rejects are clockwise faces _traceFaces threw
+    // out for wrapping a gutter node (a large/concave block can legitimately do this).
+    logRejects('road-pass1 (interior near centreline)', dbgRoad1)
+    logRejects('road-pass2 (surrounded by road)', dbgRoad2)
+    logRejects('degenerate-area', dbgArea)
+    logRejects('enclosesNode (face wraps a gutter node)', this._dbgEnclosedRejects || [])
     return { blocks, roadEdges }
   }
 
-  // Removes shallow reflex (concave) vertices from a traced block polygon — see the
-  // call site comment in generate() for why these appear. A vertex is dropped (bridging
-  // directly between its neighbours) only if it's BOTH reflex AND shallow (its
-  // perpendicular distance from the chord between its neighbours is small relative to
-  // `notchLimit`, the calling district's own actual street half-width — districts can
-  // have very different street_width values now, so this is NOT just STREET_HALF_WIDTH
-  // anymore) — a genuine large-scale concave block shape stays untouched. Iterative:
-  // removing one vertex changes the local geometry around its former neighbours, so
-  // each pass re-scans from scratch until nothing more qualifies.
-  _simplifyReflexNotches(vertices, notchLimit = STREET_HALF_WIDTH * 2.5) {
-    const NOTCH_DEPTH_LIMIT = notchLimit
-    let verts = vertices
-    let changed = true
-    let guard = 0
-    while (changed && verts.length > 3 && guard++ < 20) {
-      changed = false
-      const n = verts.length
-      for (let i = 0; i < n; i++) {
-        const A = verts[(i - 1 + n) % n], B = verts[i], C = verts[(i + 1) % n]
-        // Z-component of (B-A)×(C-B): positive = left turn = reflex, for the CW
-        // (negative-area) winding _traceFaces produces.
-        const cross = (B.x - A.x) * (C.y - B.y) - (B.y - A.y) * (C.x - B.x)
-        if (cross <= 0) continue
-        const acx = C.x - A.x, acy = C.y - A.y
-        const acLen = Math.hypot(acx, acy) || 1
-        const dist = Math.abs((B.x - A.x) * acy - (B.y - A.y) * acx) / acLen
-        if (dist < NOTCH_DEPTH_LIMIT) {
-          verts = verts.slice(0, i).concat(verts.slice(i + 1))
-          changed = true
-          break
-        }
-      }
-    }
-    return verts
-  }
 
   // Returns true if the face is road surface (junction fill or road strip).
   _isRoadFace(vertices, streetNodes, streetEdges) {
@@ -422,8 +422,8 @@ export default class CityBlockGenerator {
         if (!conn2) continue
         addEdge(getNode(conn.gutterLeft),  getNode(conn2.gutterRight))
         addEdge(getNode(conn.gutterRight), getNode(conn2.gutterLeft))
-        roadEdges.push({ roadId: conn.roadId, type: conn.type, ax: conn.gutterLeft.x,  ay: conn.gutterLeft.y,  bx: conn2.gutterRight.x, by: conn2.gutterRight.y })
-        roadEdges.push({ roadId: conn.roadId, type: conn.type, ax: conn.gutterRight.x, ay: conn.gutterRight.y, bx: conn2.gutterLeft.x,  by: conn2.gutterLeft.y })
+        roadEdges.push({ roadId: conn.roadId, type: conn.type, ax: conn.gutterLeft.x,  ay: conn.gutterLeft.y,  bx: conn2.gutterRight.x, by: conn2.gutterRight.y, isOuter: false })
+        roadEdges.push({ roadId: conn.roadId, type: conn.type, ax: conn.gutterRight.x, ay: conn.gutterRight.y, bx: conn2.gutterLeft.x,  by: conn2.gutterLeft.y, isOuter: typeof conn.right !== 'number' })
       }
 
       if (n === 1) {
@@ -447,6 +447,7 @@ export default class CityBlockGenerator {
   // Trace all interior faces of the planar gutter graph.
   // Interior faces have clockwise winding (negative signed area).
   _traceFaces(nodes, edges) {
+    this._dbgEnclosedRejects = []   // bug-4: clockwise faces dropped for enclosing a node
     if (!nodes.length || !edges.length) return []
 
     const nodeById = new Map(nodes.map(n => [n.id, n]))
@@ -498,23 +499,26 @@ export default class CityBlockGenerator {
 
     const visited = new Set()
     const faces   = []
-    const maxSteps = Math.min(200, nodes.length + 2)
 
     for (const edge of edges) {
       for (const [u, v] of [[edge.nodeA, edge.nodeB], [edge.nodeB, edge.nodeA]]) {
         if (visited.has(`${u},${v}`)) continue
 
         const faceVerts = []
-        let cu = u, cv = v, steps = 0
+        const faceEdges = new Set()  // per-face: detect sub-cycles in getNext
+        let cu = u, cv = v
 
         do {
-          visited.add(`${cu},${cv}`)
+          const key = `${cu},${cv}`
+          if (faceEdges.has(key)) break  // sub-cycle: getNext looped without closing face
+          faceEdges.add(key)
+          visited.add(key)
           const node = nodeById.get(cu)
           if (node) faceVerts.push({ x: node.x, y: node.y })
           const next = getNext(cu, cv)
           if (next == null) break
           cu = cv; cv = next
-        } while ((cu !== u || cv !== v) && ++steps < maxSteps)
+        } while (cu !== u || cv !== v)
 
         if (faceVerts.length < 3) continue
 
@@ -526,21 +530,30 @@ export default class CityBlockGenerator {
         // Keep clockwise (negative-area) faces, but reject any that encloses
         // another gutter node — those are outer/wraparound faces, not minimal
         // blocks. A true block face is empty of interior nodes.
-        if (area < 0 && !this._enclosesNode(faceVerts, nodes)) faces.push(faceVerts)
+        if (area < 0) {
+          const enclosed = this._enclosedNodes(faceVerts, nodes)
+          if (enclosed.length) {
+            const info = faceCentroidArea(faceVerts)
+            info.degrees = enclosed.map(nd => (adj.get(nd.id) || []).length).sort((a, b) => a - b).join(',')
+            this._dbgEnclosedRejects.push(info)
+          } else {
+            faces.push(faceVerts)
+          }
+        }
       }
     }
 
     return faces
   }
 
-  // True if any gutter node lies strictly inside `poly` (further than a small
-  // margin from every edge). Nodes on the face's own boundary sit at distance ~0
-  // and are naturally excluded by the margin.
-  _enclosesNode(poly, nodes) {
+  // Gutter nodes lying strictly inside `poly` (further than a small margin from every
+  // edge). Nodes on the face's own boundary sit at distance ~0 and are excluded.
+  _enclosedNodes(poly, nodes) {
     // Boundary nodes of this face sit at dist ≈ 0; use a small epsilon that's well
     // above floating-point noise but well below STREET_HALF_WIDTH (~0.044) so that
     // a nearby-but-genuinely-interior node in a narrow block isn't falsely excluded.
     const MARGIN_SQ = 1e-5   // ~0.003 world units
+    const out = []
     for (const nd of nodes) {
       if (!pip(nd.x, nd.y, poly)) continue
       let minD2 = Infinity
@@ -550,9 +563,14 @@ export default class CityBlockGenerator {
         if (d2 < minD2) minD2 = d2
         if (minD2 <= MARGIN_SQ) break
       }
-      if (minD2 > MARGIN_SQ) return true
+      if (minD2 > MARGIN_SQ) out.push(nd)
     }
-    return false
+    return out
+  }
+
+  // True if any gutter node lies strictly inside `poly`.
+  _enclosesNode(poly, nodes) {
+    return this._enclosedNodes(poly, nodes).length > 0
   }
 
   _findDistrict(vertices, districts) {

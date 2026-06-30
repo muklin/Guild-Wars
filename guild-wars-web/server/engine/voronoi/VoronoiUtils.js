@@ -1,6 +1,3 @@
-import Point from './Point.js'
-import DelaunayTriangulator from './DelaunayTriangulator.js'
-
 // ── Primitive geometry ────────────────────────────────────────────────────────
 
 export function pip(px, py, polygon) {
@@ -21,16 +18,6 @@ export function distToSegSq(px, py, ax, ay, bx, by) {
   if (lenSq === 0) return (px - ax) ** 2 + (py - ay) ** 2
   const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq))
   return (px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2
-}
-
-// True if point (px,py) lies on segment (ax,ay)–(bx,by) within `tol`.
-export function ptOnSeg(px, py, ax, ay, bx, by, tol = 1e-4) {
-  const dx = bx - ax, dy = by - ay
-  const lenSq = dx * dx + dy * dy
-  if (lenSq < 1e-12) return Math.hypot(px - ax, py - ay) < tol
-  const t = ((px - ax) * dx + (py - ay) * dy) / lenSq
-  if (t < -0.02 || t > 1.02) return false
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy) < tol
 }
 
 // Axis-aligned bounding box of a vertex array, returned as a 4-point polygon.
@@ -175,107 +162,6 @@ export function generateGridSeeds(polygon, density, xyRatio = 1.0, jitter = 0.3,
     }
   }
   return seeds
-}
-
-// Compute the intersection of two simple polygons.
-// `subject` should be convex (Voronoi cell). `clip` may be non-convex.
-// Strategy: collect all candidate points (subject verts inside clip, clip verts inside
-// subject, edge–edge intersections), then angle-sort around their centroid.
-// Correct for any star-shaped intersection; degenerate concave intersections may produce
-// slightly incorrect shapes, but never crashes and never drops cells entirely.
-export function intersectPolygons(subject, clip) {
-  const n_s = subject.length, n_c = clip.length
-  if (n_s < 3 || n_c < 3) return null
-
-  const segSeg = (ax, ay, bx, by, cx, cy, dx, dy) => {
-    const rx = bx - ax, ry = by - ay, sx = dx - cx, sy = dy - cy
-    const d = rx * sy - ry * sx
-    if (Math.abs(d) < 1e-12) return null
-    const t = ((cx - ax) * sy - (cy - ay) * sx) / d
-    const u = ((cx - ax) * ry - (cy - ay) * rx) / d
-    if (t < 0 || t > 1 || u < 0 || u > 1) return null
-    return { x: ax + t * rx, y: ay + t * ry }
-  }
-
-  const pts = []
-  for (const v of subject) { if (pip(v.x, v.y, clip))    pts.push(v) }
-  for (const v of clip)    { if (pip(v.x, v.y, subject)) pts.push(v) }
-  for (let i = 0; i < n_s; i++) {
-    const sa = subject[i], sb = subject[(i + 1) % n_s]
-    for (let j = 0; j < n_c; j++) {
-      const ca = clip[j], cb = clip[(j + 1) % n_c]
-      const p = segSeg(sa.x, sa.y, sb.x, sb.y, ca.x, ca.y, cb.x, cb.y)
-      if (p) pts.push(p)
-    }
-  }
-
-  if (pts.length < 3) return null
-
-  const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
-  const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length
-  pts.sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx))
-
-  const EPS_SQ = 1e-10
-  const out = [pts[0]]
-  for (let i = 1; i < pts.length; i++) {
-    const p = pts[i], q = out[out.length - 1]
-    if ((p.x - q.x) ** 2 + (p.y - q.y) ** 2 > EPS_SQ) out.push(p)
-  }
-  const last = out[out.length - 1], first = out[0]
-  if ((last.x - first.x) ** 2 + (last.y - first.y) ** 2 <= EPS_SQ) out.pop()
-
-  return out.length >= 3 ? out : null
-}
-
-// Full pipeline: seeds → Delaunay → cell vertices per seed → angle-sort → clip.
-// Returns [{seedPoint: {x,y}, polygon: [{x,y}]}] — degenerate cells omitted.
-// Use this when a known bounding polygon exists (district, world bbox, etc.).
-// metric: 'euclidean' (default) | 'chebyshev' | 'manhattan' | 'centroid'
-export function computeVoronoiCells(seeds, clipPolygon, metric = 'euclidean') {
-  if (!seeds.length) return []
-
-  // Add 3 super-seeds forming a large outer triangle so every real seed gets
-  // ≥3 Delaunay triangles — boundary seeds otherwise produce no Voronoi cell.
-  const xs = seeds.map(s => s.x).concat(clipPolygon.map(v => v.x))
-  const ys = seeds.map(s => s.y).concat(clipPolygon.map(v => v.y))
-  const minX = Math.min(...xs), maxX = Math.max(...xs)
-  const minY = Math.min(...ys), maxY = Math.max(...ys)
-  const pad = Math.max(maxX - minX, maxY - minY) * 3 + 1
-  const n = seeds.length
-  const allSeeds = [
-    ...seeds,
-    { x: (minX + maxX) / 2, y: minY - pad },
-    { x: maxX + pad,        y: maxY + pad },
-    { x: minX - pad,        y: maxY + pad },
-  ]
-
-  const points = allSeeds.map(s => new Point(s.x, s.y))
-  const triangulator = DelaunayTriangulator.createFromPoints(points)
-
-  const vertexTris = new Map()
-  for (const tri of triangulator.triangulation) {
-    for (const v of tri.vertices) {
-      if (!vertexTris.has(v._id)) vertexTris.set(v._id, [])
-      vertexTris.get(v._id).push(tri)
-    }
-  }
-
-  const cells = []
-  for (let i = 0; i < n; i++) {  // n = original seed count, excludes super-seeds
-    const seed = seeds[i], point = points[i]
-    const corners = []
-    for (const tri of (vertexTris.get(point._id) || [])) {
-      const c = triangleCenter(tri, metric)
-      if (c) corners.push(c)
-    }
-    if (corners.length < 3) continue
-    corners.sort((a, b) =>
-      Math.atan2(a.y - seed.y, a.x - seed.x) - Math.atan2(b.y - seed.y, b.x - seed.x)
-    )
-    const polygon = clipToPolygon(corners, clipPolygon)
-    if (polygon) cells.push({ seedPoint: seed, polygon })
-  }
-  return cells
 }
 
 // Clip convex `poly` to the half-plane { p : nx·p.x + ny·p.y <= d }.

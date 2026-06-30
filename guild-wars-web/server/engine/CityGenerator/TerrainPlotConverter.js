@@ -23,18 +23,13 @@ function inferTerrainType(cell, regionTypeById, worldRegions) {
   return bestType ?? 'Plains'
 }
 
-// Convert world-level terrain fine Voronoi cells into plot objects.
-// City plots render on top at GROUND_Y, terrain plots at GROUND_Y - 0.001, so
-// terrain is not visible under the city without needing an explicit gutter clip.
-//
-// outerGutterPolygon: kept as parameter for backward compatibility but not used.
-// tradeRoadWaypoints: array of waypoint arrays [[{x,y}, ...], ...] — consecutive
-// pairs form road centreline segments. Terrain plots crossed by a road are flagged
-// with `hasRoad: true` for future road-side building placement.
-// worldRegions: coarse terrain region array — fine cells always have assignedType: null,
-// so we look it up from the parent region (City-region cells get the nearest non-City
-// region's type so the gap strip between gutter and Voronoi boundary looks correct).
-export function convertTerrainCellsToPlots(terrainFineCells, outerGutterPolygon, tradeRoadWaypoints = [], worldRegions = []) {
+// Convert raw terrain plots (Voronoi cells from TerrainVoronoiGenerator) into
+// renderable plot objects. Boundary-adjacent plots are clipped to actual outer gutter
+// edges by clipTerrainPlotsToGutters() in SetupPhase.js after streetEdges are computed.
+// tradeRoadWaypoints: array of waypoint arrays [[{x,y}, ...], ...] — consecutive pairs
+// form road centreline segments. Plots crossed by a road are flagged `hasRoad: true`.
+// worldRegions: coarse terrain region array for assignedType lookup.
+export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = [], worldRegions = []) {
   const regionTypeById = new Map(worldRegions.map(r => [r.id, r.assignedType]))
 
   // Flatten trade road waypoints into segments [{a,b}]
@@ -48,11 +43,7 @@ export function convertTerrainCellsToPlots(terrainFineCells, outerGutterPolygon,
   const plots = []
   let plotId = 0
 
-  for (const cell of terrainFineCells) {
-    // Use the cell polygon as-is (no gutter clip). The star-shaped city gutter
-    // polygon is non-convex, so edge-by-edge half-plane clipping produces incorrect
-    // results near concave gutter corners. City plots render on top of terrain plots
-    // at the same Y, so unclipped terrain plots are invisible under the city.
+  for (const cell of terrainPlots) {
     const poly = cell.polygon.map(v => ({ x: v.x, y: v.y }))
     if (!poly || poly.length < 3) continue
 
@@ -60,7 +51,7 @@ export function convertTerrainCellsToPlots(terrainFineCells, outerGutterPolygon,
 
     plots.push({
       id: `t${plotId++}`,
-      fineCellId: cell.id,
+      terrainPlotId: cell.id,
       regionId: cell.parentRegionId,
       blockId: null,
       districtId: null,
@@ -72,7 +63,7 @@ export function convertTerrainCellsToPlots(terrainFineCells, outerGutterPolygon,
     })
   }
 
-  const failed = terrainFineCells.length - plots.length
-  console.log(`TerrainPlotConverter: ${plots.length} terrain plots from ${terrainFineCells.length} cells (${failed} clipped/degenerate)`)
+  const failed = terrainPlots.length - plots.length
+  console.log(`TerrainPlotConverter: ${plots.length} terrain plots from ${terrainPlots.length} raw plots (${failed} degenerate)`)
   return plots
 }
