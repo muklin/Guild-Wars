@@ -312,7 +312,10 @@ export default class MultiplayerUI {
     const joined = !!(mp && mp.meSeatId)
     if (!joined) { this._clearLobby(); this._clearBanner(); return }
     if (this.root?.querySelector('#mp-initiative')) { this._clearLobby(); this._clearBanner(); return }
-    if (!mp.started) { this._clearBanner(); this._renderLobby(mp) }
+    // Lobby (Roll Initiative / Start Game) removed — not needed. The turn banner still
+    // shows for an already-started multiplayer game; a not-started game just plays freely
+    // (server turn-gating is bypassed while !started). _renderLobby is kept but uncalled.
+    if (!mp.started) { this._clearBanner(); this._clearLobby() }
     else { this._clearLobby(); this._renderBanner(mp, setupStep) }
   }
 

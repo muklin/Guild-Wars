@@ -10,7 +10,6 @@
 
 
 # Features:
-
 ## Districts
 - Don't auto identify a Leadership district at start of District Setup.  
 - Ensure exactly one Leadership District is selected by the end of District Setup.  
@@ -18,16 +17,15 @@
 - Add Tutorial text around Leadership districts. 
 - Allow non city plots to be made into District plots, when they're adjacent to the existing city. 
 - Monarchy + Tyrant Leadership Districts MUST be a castle.  
-- Add a "% walled" and "% external walled  feature to District specs.  That percentage of the district is walled.  
+- Add a "% walled" and "% external walled feature to District specs, default 0% & 0%.  That percentage of the district is walled.  
  - Monarchy, Tyrant are 100% & 100%
- - Noble are 50% & 100%
+ - Noble and Military are 50% & 100%
  - Market is 0% & 100%
- - Religious is 10% & 100%
- - Religious is 10% & 100%
+ - Religious is 10% & 80%
+
 
 ## Buildings 
 ### Special Junctions
-
 Junctions that are "wall" should have a chance of being a gate.  use the t1.glb model for now.
 Junctions that are "Canal" should have a chance of being a bridge.  
 

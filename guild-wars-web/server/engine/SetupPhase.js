@@ -9,6 +9,7 @@ import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
 import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
 import { buildPointRegistry } from './CityGenerator/PointRegistry.js'
 import { pip, clipPolygonToSide, polygonCrossesSegment } from './voronoi/VoronoiUtils.js'
+import pc from 'polygon-clipping'
 import { getDistrictConfig, districtConfigKey } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
 import { readFileSync } from 'fs'
@@ -191,38 +192,70 @@ function computeTerrainPlotStreetAdjacency(streetGraph, terrainPlots) {
   }
 }
 
-// Clip boundary-adjacent terrain plots to their actual outer gutter edges.
-// Non-adjacent terrain plots keep their raw polygon (they belong to non-city regions
-// and won't overlap city geometry). Must be called after computeTerrainPlotStreetAdjacency.
-function clipTerrainPlotsToGutters(terrainPlots, roadEdges) {
-  const outerByRoadId = new Map()
-  for (const re of roadEdges) {
-    if (re.isOuter) outerByRoadId.set(re.roadId, re)
-  }
+// Clip boundary-adjacent terrain plots back to the city's outer gutter via a robust
+// polygon difference (polygon-clipping). Terrain plots are world Voronoi cells that abut
+// the city REGION boundary (≈ the outer street centreline), so they overlap the outer half
+// of every perimeter road (bug 2) and don't reconstruct corners (bug 3). The fix: build the
+// city ground footprint OUT TO THE OUTER GUTTER as union(districts ∪ junction fans ∪ road
+// quads) — its outer edge IS the outer gutter loop — then subtract it from each terrain
+// plot. Half-plane/infinite-line clipping can't do this (a segment's line spans the whole
+// city); a real polygon difference can, corners and through-cuts included.
+const _toMP = (pts) => [[pts.map(p => [p.x, p.y])]]
+function _ringArea(ring) { let a = 0; for (let k = 0; k < ring.length; k++) { const p = ring[k], q = ring[(k + 1) % ring.length]; a += p[0] * q[1] - q[0] * p[1] } return Math.abs(a / 2) }
+function _polyArea(pts) { let a = 0; for (let k = 0; k < pts.length; k++) { const p = pts[k], q = pts[(k + 1) % pts.length]; a += p.x * q.y - q.x * p.y } return Math.abs(a / 2) }
 
-  for (const plot of terrainPlots) {
-    if (plot.streetEdges.length === 0) continue
-    let corners = plot.blockCorners
-    const cx = corners.reduce((s, v) => s + v.x, 0) / corners.length
-    const cy = corners.reduce((s, v) => s + v.y, 0) / corners.length
-    const ref = { x: cx, y: cy }
+function clipTerrainPlotsToCityFootprint(terrainPlots, cityData) {
+  if (!terrainPlots?.length) return
+  const districts = cityData?.districts || []
+  const junctions = cityData?.streetGraph?.junctions || []
+  if (!junctions.length) return
 
-    for (const { roadId } of plot.streetEdges) {
-      const re = outerByRoadId.get(roadId)
-      if (!re) continue
-      const la = { x: re.ax, y: re.ay }, lb = { x: re.bx, y: re.by }
-      // Use infinite-line vertex test instead of finite-segment crossing: a terrain plot
-      // wider than the junction-to-junction segment fails polygonCrossesSegment even
-      // though it still needs clipping (its boundary crosses the LINE outside the segment).
-      const nx = -(lb.y - la.y), ny = lb.x - la.x
-      const sign = nx * (ref.x - la.x) + ny * (ref.y - la.y)
-      if (sign === 0) continue
-      if (!corners.some(v => (nx * (v.x - la.x) + ny * (v.y - la.y)) * sign < -1e-9)) continue
-      const clipped = clipPolygonToSide(corners, la, lb, ref)
-      if (clipped) corners = clipped
+  // Build the footprint pieces: each district polygon (covers to the centreline), each
+  // junction fan (gutter points around the centre, angularly ordered), and each road quad
+  // (between the two gutter lines) — together they fill the city out to the outer gutter.
+  const pieces = []
+  for (const d of districts) if (d.polygon?.length >= 3) pieces.push(_toMP(d.polygon))
+  const jById = new Map(junctions.map(j => [j.id, j]))
+  for (const j of junctions) {
+    const gpts = []
+    for (const c of (j.connections || [])) { if (c.gutterLeft) gpts.push(c.gutterLeft); if (c.gutterRight) gpts.push(c.gutterRight) }
+    if (gpts.length >= 3) {
+      const ang = gpts.map(p => ({ p, a: Math.atan2(p.y - j.y, p.x - j.x) })).sort((u, v) => u.a - v.a).map(o => o.p)
+      pieces.push(_toMP(ang))
     }
-    plot.blockCorners = corners
+    for (const c of (j.connections || [])) {
+      if (c.toId <= j.id) continue
+      const j2 = jById.get(c.toId); if (!j2) continue
+      const c2 = (j2.connections || []).find(x => x.toId === j.id); if (!c2) continue
+      if (c.gutterLeft && c.gutterRight && c2.gutterLeft && c2.gutterRight)
+        pieces.push(_toMP([c.gutterLeft, c2.gutterRight, c2.gutterLeft, c.gutterRight]))
+    }
   }
+  if (!pieces.length) return
+
+  let footprint
+  try { footprint = pc.union(...pieces) } catch (e) { console.warn('clipTerrainPlotsToCityFootprint: footprint union failed —', e.message); return }
+
+  let clipped = 0
+  for (const plot of terrainPlots) {
+    const corners = plot.blockCorners
+    if (!corners || corners.length < 3) continue
+    let result
+    try { result = pc.difference([[corners.map(p => [p.x, p.y])]], footprint) } catch { continue }
+    if (!result.length) continue   // fully inside the footprint (shouldn't happen) — keep original
+
+    // Largest exterior ring of the difference is the plot's exterior portion.
+    let best = null, bestA = -1
+    for (const poly of result) {
+      const a = _ringArea(poly[0])
+      if (a > bestA) { bestA = a; best = poly[0] }
+    }
+    if (!best || best.length < 3) continue
+    if (bestA > _polyArea(corners) - 1e-6) continue   // unchanged (no overlap) — keep original exactly
+    plot.blockCorners = best.map(([x, y]) => ({ x, y }))
+    clipped++
+  }
+  if (clipped) console.log(`clipTerrainPlotsToCityFootprint: clipped ${clipped} terrain plots to the city outer gutter`)
 }
 
 // Distinct guild colours (by creation order), used by the Influence map overlay.
@@ -1332,7 +1365,7 @@ export default class SetupPhase {
           if (conn.right === null) conn.right = 'terrain'
       }
       computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
-      clipTerrainPlotsToGutters(terrainPlots, roadEdges)
+      clipTerrainPlotsToCityFootprint(terrainPlots, cityData)
     }
 
     buildPointRegistry(cityData)   // additive shared-vertex store + seam diagnostic (ADR-0018)
@@ -1359,7 +1392,7 @@ export default class SetupPhase {
       const junctions = cityData.streetGraph?.junctions || []
       const roadEdges = gutterRoadEdges(junctions)
       computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
-      clipTerrainPlotsToGutters(terrainPlots, roadEdges)
+      clipTerrainPlotsToCityFootprint(terrainPlots, cityData)
     }
     buildPointRegistry(cityData)   // additive shared-vertex store + seam diagnostic (ADR-0018)
     return terrainPlots.length
@@ -1401,7 +1434,7 @@ export default class SetupPhase {
           if (conn.right === null) conn.right = 'terrain'
       }
       computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
-      clipTerrainPlotsToGutters(terrainPlots, roadEdges)
+      clipTerrainPlotsToCityFootprint(terrainPlots, cityData)
     }
 
     buildPointRegistry(cityData)   // additive shared-vertex store + seam diagnostic (ADR-0018)
