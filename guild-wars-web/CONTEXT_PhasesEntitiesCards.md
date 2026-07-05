@@ -6,21 +6,23 @@ Game concepts for setup/round phases, guilds, factions, and card mechanics. Load
 
 ### Phases
 
-**Setup Phase**:
-The pre-game phase covering Terrain Setup, City Subdivision, and Guild Creation, in that order. Shared but **turn-ordered by Initiative** — players act in turn, not freely in parallel.
+#### **Setup Phase**:
+The pre-game phase covering Terrain Setup, City Subdivision, and Guild Creation, in that order. Shared but **turn-ordered by Initiative** — players act freely in parallel.
 _Avoid_: initialization, game creation
 
 **Terrain Setup**:
 The first Setup sub-phase — players assign terrain types to regions and edge types to boundaries. Players also define Foreign Powers, Gods, and a Magic System via buttons in the Terrain Setup panel.
 _Avoid_: world generation, map creation
 
-**City Subdivision**:
-The second Setup sub-phase — the city region is divided into named districts. Assigning a district its type immediately generates that district's streets, blocks, plots, and buildings; the player may regenerate (reseed) it, then lock it in.
+**District Setup**:
+The second Setup sub-phase — the city region is divided into named districts. Assigning a district its type immediately generates that district's streets, blocks, plots, and buildings; the player may regenerate (reseed) it, then lock it in.  This is the only time players can edit streets or Districts at large. 
 _Avoid_: district creation, city planning, street setup
 
 **Guild Creation**:
 The third and final Setup sub-phase — players define guilds, recruit characters, and allocate starting Resources and Services.
 _Avoid_: guild setup, character creation
+
+#### **Actual Game**:
 
 **Upkeep Phase**:
 The first segment of a game round. Sequence: (1) each faction produces Resources and Services from prior-round stockpiles scaled by Faction Health; (2) the shared trade queue resolves — all factions and guilds compete to buy and sell at Standing-adjusted Market Values; (3) Market Values recalculate based on new stockpile levels vs the World-Creation Baseline.
@@ -29,6 +31,10 @@ _Avoid_: income phase, production phase
 **Planning Phase**:
 The main segment of a game round: guilds declare and execute actions (PvP, PvE, trade, district control).
 _Avoid_: action phase, main phase
+
+**Activities Phase**:
+The majority of Game play, whe actions planned take place. 
+
 
 **Pay the Bills**:
 The closing segment of a game round: guilds pay consumption costs for districts they control and salaries for their characters.

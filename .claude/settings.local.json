@@ -48,7 +48,27 @@
       "Bash(node --check server/engine/voronoi/VoronoiUtils.js)",
       "Bash(node --input-type=module -e ' *)",
       "Bash(node --check server/engine/CityGenerator/CityBlockGenerator.js)",
-      "Bash(node --check server/engine/CityGenerator/PlotVoronoiGenerator.js)"
+      "Bash(node --check server/engine/CityGenerator/PlotVoronoiGenerator.js)",
+      "Bash(node --check \"K:/UnityProjects/Guild-Wars/guild-wars-web/server/engine/SetupPhase.js\")",
+      "Bash(node --check \"K:/UnityProjects/Guild-Wars/guild-wars-web/client/App.js\")",
+      "Bash(node --check \"K:/UnityProjects/Guild-Wars/guild-wars-web/client/ui/DistrictTypePanel.js\")",
+      "Bash(curl -s http://localhost:3001/api/state -o \"K:/UnityProjects/Guild-Wars/guild-wars-web/.state_check.json\" --max-time 5)",
+      "Bash(curl -s -X POST http://localhost:3001/api/setup/city/promote-terrain-plot -H 'Content-Type: application/json' -H 'X-Seat-Key: 73adc717b53465dc6519e4946e2fd570' -d '{\"plotId\":__TRACKED_VAR__}')",
+      "Bash(curl -s http://localhost:3001/api/state --max-time 5 -o \"K:/UnityProjects/Guild-Wars/guild-wars-web/.state_check.json\")",
+      "Bash(curl -s -X POST http://localhost:3001/api/setup/city/promote-terrain-plot -H 'Content-Type: application/json' -H 'X-Seat-Key: 73adc717b53465dc6519e4946e2fd570' -d '{\"plotId\":4}' -o K:/UnityProjects/Guild-Wars/guild-wars-web/.promote_result.json)",
+      "Bash(curl -s -X POST http://localhost:3001/api/setup/city/promote-terrain-plot -H 'Content-Type: application/json' -H 'X-Seat-Key: 73adc717b53465dc6519e4946e2fd570' -d '{\"plotId\":38}' -o K:/UnityProjects/Guild-Wars/guild-wars-web/.promote_result.json)",
+      "Bash(curl -s -X POST http://localhost:3001/api/setup/city/preview -H 'Content-Type: application/json' -H 'X-Seat-Key: 73adc717b53465dc6519e4946e2fd570' -d '{\"districtId\":12,\"districtType\":\"Leadership\",\"LeadershipClass\":\"Monarchy\"}' -o K:/UnityProjects/Guild-Wars/guild-wars-web/.preview_result.json)",
+      "Bash(node -e \"const r=require\\('K:/UnityProjects/Guild-Wars/guild-wars-web/.preview_result.json'\\); console.log\\('preview ok:', r.ok, r.error||''\\)\")",
+      "Bash(curl -s -X POST http://localhost:3001/api/setup/city/regenerate -H 'Content-Type: application/json' -H 'X-Seat-Key: 73adc717b53465dc6519e4946e2fd570' -d '{\"districtId\":12}' -o K:/UnityProjects/Guild-Wars/guild-wars-web/.regen_result.json)",
+      "Bash(node -e \"const r=require\\('K:/UnityProjects/Guild-Wars/guild-wars-web/.regen_result.json'\\); console.log\\('regen ok:', r.ok, r.error||''\\)\")",
+      "Bash(curl -s http://localhost:3001/api/state --max-time 5)",
+      "Bash(node --check \"K:/UnityProjects/Guild-Wars/guild-wars-web/server/index.js\")",
+      "Bash(node --check \"K:/UnityProjects/Guild-Wars/guild-wars-web/client/rendering/utils/BuildingRenderer.js\")",
+      "Bash(node --check \"K:/UnityProjects/Guild-Wars/guild-wars-web/client/rendering/buildings/ParametricBuilding.js\")",
+      "Bash(node --check client/preview/blockpreview.js)",
+      "Bash(node --check server/engine/SetupPhase.js)",
+      "Read(//k/UnityProjects/learning/.claude/skills/teach/**)",
+      "Read(//k/UnityProjects/learning/.claude/skills/**)"
     ]
   }
 }

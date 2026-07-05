@@ -21,7 +21,16 @@ export default class PartLibrary {
   }
 
   async load() {
-    const manifest = await fetch(`${this.base}/manifest.json`).then((r) => r.json())
+    // Retry up to 3 times — the Vite dev-server proxy occasionally returns an empty
+    // response on the first request after a hot reload (race during server warm-up).
+    let manifest
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const r = await fetch(`${this.base}/manifest.json`)
+      const text = await r.text()
+      if (text.trim()) { manifest = JSON.parse(text); break }
+      if (attempt < 2) await new Promise(res => setTimeout(res, 200))
+    }
+    if (!manifest) throw new Error(`PartLibrary: failed to load ${this.base}/manifest.json after 3 attempts`)
     this.grid = manifest.grid
     this.regions = manifest.atlasRegions
 

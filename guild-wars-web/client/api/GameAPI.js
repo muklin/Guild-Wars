@@ -59,8 +59,8 @@ export default class GameAPI {
     return this.request('/setup/threat', 'POST', { regionId, description, name })
   }
 
-  static async addTrade(regionId, description = '', name = '', buys = [], sells = []) {
-    return this.request('/setup/trade', 'POST', { regionId, description, name, buys, sells })
+  static async addTrade(regionId, description = '', name = '', buys = [], sells = [], resourceDefs = []) {
+    return this.request('/setup/trade', 'POST', { regionId, description, name, buys, sells, resourceDefs })
   }
 
   static async assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '', resourceDefs = []) {
@@ -79,16 +79,28 @@ export default class GameAPI {
     return this.request('/setup/city/preview', 'POST', { districtId, districtType, residentialClass, LeadershipClass })
   }
 
-  static async regenerateDistrict(districtId) {
-    return this.request('/setup/city/regenerate', 'POST', { districtId })
+  static async regenerateDistrict(districtId, configOverrides) {
+    return this.request('/setup/city/regenerate', 'POST', { districtId, configOverrides })
+  }
+
+  static async saveDistrictOverrides(districtId, configOverrides) {
+    return this.request('/setup/city/district-overrides', 'POST', { districtId, configOverrides })
   }
 
   static async revertDistrict(districtId) {
     return this.request('/setup/city/revert', 'POST', { districtId })
   }
 
-  static async finishSubdivision() {
-    return this.request('/setup/subdivision/done', 'POST')
+  static async finishSubdivision({ skipLeadershipCheck = false } = {}) {
+    return this.request('/setup/subdivision/done', 'POST', { skipLeadershipCheck })
+  }
+
+  static async autoAssignLeadership() {
+    return this.request('/setup/city/auto-assign-leadership', 'POST')
+  }
+
+  static async promoteTerrainPlot(plotId) {
+    return this.request('/setup/city/promote-terrain-plot', 'POST', { plotId })
   }
 
   // Create the player's guild. headquarters = { kind:'plot'|'landmark', refId } | null.

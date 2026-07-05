@@ -41,9 +41,10 @@ const FIT_FACTOR = 0.92    // a model must fit within this fraction of the plot 
 const FIT_TOLERANCE = 0.12    // models within this coverage of the best fit are randomised between
 
 // ── BuildingRenderer ──────────────────────────────────────────────────────────
-// Places one street-facing model in the front half of each plot, using the plot's
-// recorded streetEdges to find the frontage. Every plot gets a GLB model (closest
-// fit); there are no procedural box houses.
+// Places a building on every plot, using the plot's recorded streetEdges to find its
+// frontage(s). Per-plot, seeded, client-side rolls (ADR-0019) decide Custom Model (a
+// fixed GLB, closest fit) vs Parametric Building, and — for Parametric — Attached
+// (flush, party-wall eligible) vs Freestanding (set back on every side).
 
 export const GROUND_Y = 0   // ground surface is Y=0; buildings seat here
 
@@ -63,9 +64,12 @@ const TREE_MIN_FRONTAGE = 0.16   // plot frontage below which we skip trees
 
 // Degenerate-wing thresholds (model units / bounding-box aspect ratio) — wings clipped
 // against neighbours/plot bounds can come out as slivers too thin or small to read as
-// a building; these get dropped in _spawnTownhouse's pass 3.
+// a building; these get dropped in _spawnWingBuilding's pass 3.
 const MIN_WING_AREA = 1.0   // model units² — roughly one bay²
 const MAX_WING_ASPECT = 6     // bounding-box long:short side ratio
+// Engine-wide floor for a split wing's width (bays) — see Wing, CONTEXT_BuildingsRoofs.md.
+// The matching ceiling (`maxWingWidth`) is per-district, in shared/districtConfig.js.
+const MIN_WING_WIDTH = 3
 
 // True if polygon `vertices` ([[x,z],…]) is self-intersecting (any two non-adjacent
 // edges cross). A self-intersecting "bowtie" wing — the known failure mode of the
@@ -166,7 +170,7 @@ function clipConvexToPolygon(subject, clip) {
 }
 
 // Sutherland-Hodgman half-plane clip: keep the part of `poly` ([{x,y},…], any simple
-// polygon) where (P - origin)·normal >= offset. Used by _spawnTownhouse's wing passes —
+// polygon) where (P - origin)·normal >= offset. Used by _spawnWingBuilding's wing passes —
 // setback-strip subtraction and convex polygon difference both reduce to this.
 function halfPlaneClip(poly, originX, originY, nx, ny, offset) {
   const out = []
@@ -366,11 +370,12 @@ export default class BuildingRenderer {
         console.error('[BuildingRenderer] failed to build a spec for a plot — skipping it', e, plot)
       }
     }
-    // Party-wall suppression only applies to townhouses (deliberately built as attached row
-    // houses) — free-standing houses are standalone and shouldn't have walls suppressed just
-    // because another building happens to be nearby in the same block.
+    // Party-wall suppression only applies to Attached buildings (deliberately built flush
+    // against the street, party-wall eligible) — Freestanding buildings are set back on
+    // every side and shouldn't have walls suppressed just because another building
+    // happens to be nearby in the same block (see Attached/Freestanding, ADR-0019).
     if (!this.skipPartyWalls) {
-      this._suppressPartyWalls(polyWingEntries.filter(({ plot }) => plot.blockType === 'townhouse'))
+      this._suppressPartyWalls(polyWingEntries.filter(({ plot }) => plot.attached))
     }
     // Expose the computed para entries (specs + transforms) for debug overlays. Built
     // synchronously; available as soon as render() returns (before async mesh assembly).
@@ -387,7 +392,11 @@ export default class BuildingRenderer {
     // the recorded placements.
     for (const lb of (districtData?.landmarkBuildings || [])) {
       const m = MODEL_BY_NAME.get(lb.name)
-      if (m) housePlacements.push({ x: lb.x, z: lb.z, rotY: lb.rotY ?? 0, glbPath: m.glbPath, scale: MODEL_SCALE })
+      if (m) {
+        const style = this._districtStyle(districtById?.get(lb.districtId))
+        const { buildingTypes, buildingSubtype } = this._rollBuildingTypes(style, posHash(lb.x, lb.z) + this._seedOffset)
+        housePlacements.push({ x: lb.x, z: lb.z, rotY: lb.rotY ?? 0, glbPath: m.glbPath, scale: MODEL_SCALE, buildingTypes, buildingSubtype })
+      }
     }
 
     const tDispatch = performance.now()
@@ -459,12 +468,65 @@ export default class BuildingRenderer {
     return (s >>> 0) / 0x100000000
   }
 
+  // Split one street edge's frontage (in bays) into 1+ side-by-side wing segments no
+  // wider than maxWidth, each a seeded-random width no smaller than MIN_WING_WIDTH bays.
+  // A remainder too small to stand alone on its own is folded into the last drawn width
+  // and that combined length re-split within bounds, rather than left as a sliver (e.g.
+  // 13 → 6,6,1 becomes 6,4,3; 7 → 6,1 becomes 4,3). Returns [{ startT, endT,
+  // centreSetback }] as fractions (0..1) along the edge — an odd-count split gets a
+  // small seeded chance for its centre wing to sit back one bay (see Wing,
+  // CONTEXT_BuildingsRoofs.md). Only ever called on the plot's actual street edges.
+  _splitFrontage(frontageBays, maxWidth, seedBase) {
+    if (!(frontageBays > maxWidth)) return [{ startT: 0, endT: 1, centreSetback: false }]
+
+    const widths = []
+    let remaining = frontageBays
+    let i = 0
+    while (remaining > maxWidth) {
+      const w = MIN_WING_WIDTH + this._rand(seedBase + i * 13) * (maxWidth - MIN_WING_WIDTH)
+      widths.push(w)
+      remaining -= w
+      i++
+    }
+    if (remaining < MIN_WING_WIDTH && widths.length > 0) {
+      const last = widths.pop()
+      const combined = last + remaining
+      const w1 = Math.min(maxWidth, Math.max(MIN_WING_WIDTH, combined - MIN_WING_WIDTH))
+      widths.push(w1, combined - w1)
+    } else {
+      widths.push(remaining)
+    }
+
+    const total = widths.reduce((s, w) => s + w, 0)
+    const segments = []
+    let acc = 0
+    for (const w of widths) {
+      segments.push({ startT: acc / total, endT: (acc + w) / total, centreSetback: false })
+      acc += w
+    }
+    if (segments.length >= 3 && segments.length % 2 === 1) {
+      const mid = (segments.length - 1) / 2
+      if (this._rand(seedBase + 9973) < 0.15) segments[mid].centreSetback = true
+    }
+    return segments
+  }
+
   // District type → DISTRICT_BUILDING_STYLES/DISTRICTS key — same scheme as
   // shared/districtConfig.js's districtConfigKey (Leadership split by ruling-body
   // subclass too, now that every per-district table is unified onto that scheme),
   // just defaulting to the literal string 'default' instead of null.
   _districtKey(district) {
     return districtConfigKey(district) ?? 'default'
+  }
+
+  // Merged building style: base from the static DISTRICTS table, overridden by any
+  // per-district configOverrides.buildingStyle set via the cog/settings dialog.
+  _districtStyle(district) {
+    const key = this._districtKey(district)
+    const base = DISTRICT_BUILDING_STYLES[key] ?? DEFAULT_BUILDING_STYLE
+    const overrides = district?.configOverrides?.buildingStyle
+    if (!overrides) return base
+    return { ...base, ...overrides }
   }
 
   // Pick a model for a plot of footprint bw×bd in the given district. Models are
@@ -477,7 +539,7 @@ export default class BuildingRenderer {
   // _spawn for the world-space footprint rectangle built from these) — null only if no
   // models exist at all.
   _selectModel(district, bw, bd, seed) {
-    const style = DISTRICT_BUILDING_STYLES[this._districtKey(district)] ?? DEFAULT_BUILDING_STYLE
+    const style = this._districtStyle(district)
     let weights = style.modelWeights
     if (!weights || Object.keys(weights).length === 0) {
       weights = Object.fromEntries([...MODEL_BY_NAME.keys()].map(name => [name, 1]))
@@ -514,71 +576,67 @@ export default class BuildingRenderer {
     return null
   }
 
-  // True for plots that should use Parametric Buildings instead of a fixed GLB. Every
-  // district now builds townhouses (this used to be Residential-only) — the only
-  // remaining GLB path is the freestanding/custom slot inside a townhouse block, which
-  // picks its model from that district's own DISTRICT_BUILDING_STYLES.modelWeights.
-  _isParametric(district, plot) {
-    if (plot?.blockType === 'townhouse' && plot.freestanding) return false
-    return true
-  }
-
-  // Build a { spec, x, z, rotY } entry for a parametric residential building.
-  // Returns null if the plot is too small to build on.
-  _spawnParametric(plot, district, housePlacements) {
-    if (plot.blockType === 'townhouse') return this._spawnTownhouse(plot, district, housePlacements)
-    const poly = plot.blockCorners
-    const streetEdges = plot.streetEdges || []
-    if (!poly || poly.length < 3 || streetEdges.length === 0) return null
-
-    // Primary frontage = longest street-facing edge (same logic as _spawn).
-    let a = null, b = null, len = -1
-    for (const se of streetEdges) {
-      const va = poly[se.index], vb = poly[(se.index + 1) % poly.length]
-      if (!va || !vb) continue
-      const l = Math.hypot(vb.x - va.x, vb.y - va.y)
-      if (l > len) { len = l; a = va; b = vb }
-    }
-    if (!a || len < 0.06) return null
-
-    const ex = (b.x - a.x) / len, ey = (b.y - a.y) / len
-    let nx = -ey, ny = ex
+  // Deterministic per-plot seed from its centroid — shared by every per-building roll
+  // (Custom Model vs Parametric, Attached vs Freestanding, Building Type) so they're
+  // all reproducible from plot geometry alone, no server round-trip (ADR-0019).
+  _plotHash(plot) {
+    const poly = plot?.blockCorners
+    if (!poly || poly.length === 0) return this._seedOffset
     let cx = 0, cy = 0
     for (const v of poly) { cx += v.x; cy += v.y }
     cx /= poly.length; cy /= poly.length
-    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
-    if ((cx - mx) * nx + (cy - my) * ny < 0) { nx = -nx; ny = -ny }
-
-    let depth = 0
-    for (const v of poly) { const d = (v.x - a.x) * nx + (v.y - a.y) * ny; if (d > depth) depth = d }
-
-    const distKey = this._districtKey(district)
-    // Townhouse districts occupy a fixed front portion; others fill most of the plot.
-    const isRow = distKey.includes('Noble') || distKey.includes('Middle')
-    const worldBw = len * 0.90                                    // full frontage width (shared wall style)
-    const worldBd = isRow ? Math.min(depth * 0.45, 3.0) : Math.min(depth * 0.50, worldBw * 1.5) * 0.9
-    if (worldBw < 0.06 || worldBd < 0.05) return null
-    // Same degenerate-footprint guard as _spawnTownhouse's pass 3 (aspect ratio is
-    // scale-invariant; area converted to model units² to compare against MIN_WING_AREA).
-    const freeAspect = Math.max(worldBw, worldBd) / Math.min(worldBw, worldBd)
-    const freeArea = (worldBw * worldBd) / (PARA_SCALE * PARA_SCALE)
-    if (freeArea < MIN_WING_AREA || freeAspect > MAX_WING_ASPECT) return null
-
-    const setback = Math.min(0.04, depth * 0.10)
-    const x = mx + nx * (setback + worldBd / 2)
-    const z = my + ny * (setback + worldBd / 2)
-    const rotY = Math.atan2(-nx, -ny)
-
-    // Convert world dimensions to model units (assemble() works in model space; PARA_SCALE applied later).
-    const bw = worldBw / PARA_SCALE, bd = worldBd / PARA_SCALE
-    const spec = this._buildSpec(distKey, bw, bd, x, z)
-    if (housePlacements) {
-      this._scatterBackTrees(plot, poly, mx, my, ex, ey, nx, ny, len, setback + worldBd, depth, housePlacements)
-    }
-    return { spec, x, z, rotY }
+    return posHash(cx, cy) + this._seedOffset
   }
 
-  // Debug helper (dev tools only) — runs _spawnTownhouse for one plot and returns the
+  // Roll up to two Building Types for a building (gameplay classification, not a
+  // geometry driver — see Building Type/Subtype, CONTEXT_BuildingsRoofs.md), weighted
+  // by the district's buildingTypeWeights. Applies uniformly to every building —
+  // Parametric (Attached/Freestanding), Custom Model, and Landmark alike. Subtype is
+  // reserved but deliberately left unassigned: future work, once Building Type itself
+  // is validated in practice.
+  _rollBuildingTypes(style, seed) {
+    const weights = style?.buildingTypeWeights ?? { Residential: 1 }
+    const entries = Object.entries(weights).filter(([, w]) => w > 0)
+    if (!entries.length) return { buildingTypes: [], buildingSubtype: null }
+    const pick = (excludeType, seedOffset) => {
+      const pool = excludeType ? entries.filter(([t]) => t !== excludeType) : entries
+      const poolTotal = pool.reduce((s, [, w]) => s + w, 0)
+      if (!poolTotal) return null
+      let r = this._rand(seed + seedOffset) * poolTotal
+      for (const [t, w] of pool) { if ((r -= w) <= 0) return t }
+      return pool[pool.length - 1][0]
+    }
+    const first = pick(null, 701)
+    const buildingTypes = first ? [first] : []
+    if (first && this._rand(seed + 709) < 0.4) {
+      const second = pick(first, 719)
+      if (second) buildingTypes.push(second)
+    }
+    return { buildingTypes, buildingSubtype: null }
+  }
+
+  // True for plots that get a Parametric Building instead of a fixed GLB (Custom
+  // Model). Independent per-plot roll on the district's `customModelChance` —
+  // replaces the old blockType==='townhouse'+freestanding check (ADR-0019).
+  _isParametric(district, plot) {
+    const style = this._districtStyle(district)
+    const hash = this._plotHash(plot)
+    return this._rand(hash + 101) >= (style.customModelChance ?? 0.05)
+  }
+
+  // Build a { spec, x, z, rotY } entry for a Parametric Building. Rolls Attached vs
+  // Freestanding per-plot (district `freestandingChance`) and records the result on
+  // the plot itself so _suppressPartyWalls (and Archway eligibility) can read it back.
+  // Both cases run through the same wing-list pipeline (_spawnWingBuilding) — see
+  // ADR-0019 and the Attached/Freestanding glossary entries.
+  _spawnParametric(plot, district, housePlacements) {
+    const style = this._districtStyle(district)
+    const hash = this._plotHash(plot)
+    plot.attached = this._rand(hash + 103) >= (style.freestandingChance ?? 0.05)
+    return this._spawnWingBuilding(plot, district, housePlacements, null, plot.attached)
+  }
+
+  // Debug helper (dev tools only) — runs _spawnWingBuilding for one plot and returns the
   // per-wing-pass geometry (world space) instead of a built spec: white = pass-1 full
   // (setback+depthBays) quad, grey = that edge's own setback-only strip, red = white
   // minus grey (the "naive" single-edge setback delta), blue = pass-4 corner nudges
@@ -588,23 +646,31 @@ export default class BuildingRenderer {
   // beyond the single-edge setback you'd naively expect.
   debugTownhouseWingPasses(plot, district) {
     const debugSink = []
-    this._spawnTownhouse(plot, district, null, debugSink)
+    this._spawnWingBuilding(plot, district, null, debugSink, plot.attached ?? true)
     return debugSink
   }
 
-  // Build a { spec, x, z, rotY } entry for a townhouse plot.
-  // Computes polygon wings (one per street edge) in world space; group sits at origin with no rotation.
-  // `debugSink` (optional, dev tools only) — see debugTownhouseWingPasses() above.
-  _spawnTownhouse(plot, district, housePlacements, debugSink) {
+  // Build a { spec, x, z, rotY } entry for a plot's Wing-list footprint (Attached or
+  // Freestanding — see ADR-0019 and the Wing/Wing-list footprint glossary entries).
+  // `attached` controls front setback (0 vs a seeded gap on every edge) and party-wall
+  // suppression eligibility downstream; splitting, depth, and merging are identical
+  // either way. Computes polygon wings in world space; group sits at origin with no
+  // rotation. `debugSink` (optional, dev tools only) — see debugTownhouseWingPasses().
+  _spawnWingBuilding(plot, district, housePlacements, debugSink, attached) {
     const poly = plot.blockCorners
     const n = poly?.length ?? 0
     const streetEdges = plot.streetEdges || []
     if (!poly || n < 3 || streetEdges.length === 0) return null
 
     const distKey = this._districtKey(district)
-    const style = DISTRICT_BUILDING_STYLES[distKey] ?? DEFAULT_BUILDING_STYLE
+    const style = this._districtStyle(district)
     const wingDepths = style.wingDepths ?? [2, 3, 4, 5]
     const floorWeights = style.floors ?? { 2: 0.5, 3: 0.5 }
+    const maxWingWidth = style.maxWingWidth ?? 6
+    // World units per bay. Mirrors GroundRenderer's own `bayWorld` fallback — the
+    // PartLibrary manifest isn't guaranteed loaded yet at spec-building time, and its
+    // grid.bayWidth default is 1, so PARA_SCALE alone already IS one bay in world units.
+    const bayWorld = PARA_SCALE
 
     // Polygon centroid for inward-normal checks
     let pcx = 0, pcy = 0
@@ -613,9 +679,11 @@ export default class BuildingRenderer {
 
     const hash = posHash(pcx, pcy) + this._seedOffset
 
-    // Pass 1 — extrude one wing per street edge, inward by depthBays, as a world-space
-    // quad [A, B, Bp, Ap] (A,B = frontage/street endpoints; Ap,Bp = back corners). No
-    // setback here — that's its own pass now, applied uniformly below.
+    // Pass 1 — extrude one-or-more wings per street edge, inward by depthBays, as a
+    // world-space quad [A, B, Bp, Ap] (A,B = frontage/street endpoints; Ap,Bp = back
+    // corners). A frontage longer than the district's maxWingWidth is first split into
+    // several side-by-side wings (see _splitFrontage) — splitting only ever operates on
+    // the plot's actual street edges, never on a wing's own generated back/side edges.
     const raw = []
     // Records EVERY street edge, even ones dropped before a wing is ever built — so the
     // debug viewer can show "this plot has N streetEdges but only built M wings" instead
@@ -623,6 +691,7 @@ export default class BuildingRenderer {
     const dropEarly = (wi, se, reason) => {
       if (debugSink) debugSink.push({ debugId: wi, edgeIndex: se.index, dropped: reason, white: null, grey: null, red: null, blue: null, green: null })
     }
+    let wingSeed = 0   // unique per-wing counter across all edges & splits, for seed variety
     for (let wi = 0; wi < streetEdges.length; wi++) {
       const se = streetEdges[wi]
       const A = poly[se.index], B = poly[(se.index + 1) % n]
@@ -637,77 +706,106 @@ export default class BuildingRenderer {
       const midX = (A.x + B.x) / 2, midZ = (A.y + B.y) / 2
       if ((pcx - midX) * nx + (pcy - midZ) * nz < 0) { nx = -nx; nz = -nz }
 
-      // Depth available behind this frontage — sampled at several points ALONG the
-      // frontage (not just the single deepest vertex anywhere in the plot), taking the
-      // MINIMUM ray-exit distance. A plot with a notch/reflex lobe (e.g. beside a star
-      // intersection) narrows well before its single farthest vertex; using that one
-      // farthest point as the depth budget for the WHOLE frontage width produces a wing
-      // that overshoots the notch and has to be carved up by the plot-boundary clip
-      // afterward, instead of never reaching the notch in the first place.
-      const DEPTH_SAMPLES = 5
-      let maxD = Infinity
-      for (let s = 0; s <= DEPTH_SAMPLES; s++) {
-        const st = s / DEPTH_SAMPLES
-        const sx = A.x + (B.x - A.x) * st, sy = A.y + (B.y - A.y) * st
-        const exitDist = rayPolyExitDist(sx, sy, nx, nz, poly)
-        if (exitDist < maxD) maxD = exitDist
-      }
-      if (!isFinite(maxD)) maxD = 0
+      const segments = this._splitFrontage(L / bayWorld, maxWingWidth, hash + wi * 977)
 
-      const setback = Math.min(frontSetbackFor(style), maxD * 0.5)
-      const depthBays = wingDepths[Math.floor(this._rand(hash + 2 + wi * 7) * wingDepths.length)]
-      // Extrude by setback + depthBays worth of depth, NOT just depthBays — pass 2 below
-      // subtracts this same setback strip back off the front, so depthBays still ends up
-      // as the wing's actual net (post-setback) depth, exactly like before setback became
-      // its own pass.
-      const worldD = Math.min(setback + depthBays * PARA_SCALE, maxD * 0.92)
-      if (worldD < 0.04) { dropEarly(wi, se, `no depth available behind frontage (worldD ${worldD.toFixed(4)} < 0.04, maxD ${maxD.toFixed(4)})`); continue }
+      for (let si = 0; si < segments.length; si++) {
+        const seg = segments[si]
+        const segId = wingSeed++
+        const segA = { x: A.x + dx * seg.startT, y: A.y + dz * seg.startT }
+        const segB = { x: A.x + dx * seg.endT, y: A.y + dz * seg.endT }
+        const segL = L * (seg.endT - seg.startT)
 
-      const r_wing = this._rand(hash + 3 + wi * 7)
-      let wingFloorCount = 2, wingFloorCum = 0
-      for (const [f, w] of Object.entries(floorWeights)) {
-        wingFloorCum += w
-        wingFloorCount = parseInt(f)
-        if (r_wing < wingFloorCum) break
-      }
-      const Ap = { x: A.x + nx * worldD, y: A.y + nz * worldD }
-      const Bp = { x: B.x + nx * worldD, y: B.y + nz * worldD }
-      raw.push({
-        edgeIndex: se.index,
-        poly: [{ x: A.x, y: A.y }, { x: B.x, y: B.y }, Bp, Ap],
-        worldD,
-        floorCount: wingFloorCount,
-        forceRidgeAlongX: Math.abs(ux) >= Math.abs(uz),
-        setback,                                  // this edge's own setback depth
-        origAp: Ap, origBp: Bp,                   // pass-1 (un-clipped) back corners, for pass 4's gap test
-        streetA: { x: A.x, y: A.y }, streetB: { x: B.x, y: B.y },   // original street edge, for jetty capping
-        nx, nz,                                   // inward normal, for jetty's forward push
-        _debugId: wi,
-      })
+        // Depth available behind THIS segment only — sampled at several points ALONG
+        // the segment (not just the single deepest vertex anywhere in the plot), taking
+        // the MINIMUM ray-exit distance. A plot with a notch/reflex lobe (e.g. beside a
+        // star intersection) narrows well before its single farthest vertex; using that
+        // one farthest point as the depth budget for the WHOLE segment produces a wing
+        // that overshoots the notch and has to be carved up by the plot-boundary clip
+        // afterward, instead of never reaching the notch in the first place.
+        const DEPTH_SAMPLES = 5
+        let maxD = Infinity
+        for (let s = 0; s <= DEPTH_SAMPLES; s++) {
+          const st = s / DEPTH_SAMPLES
+          const sx = segA.x + (segB.x - segA.x) * st, sy = segA.y + (segB.y - segA.y) * st
+          const exitDist = rayPolyExitDist(sx, sy, nx, nz, poly)
+          if (exitDist < maxD) maxD = exitDist
+        }
+        if (!isFinite(maxD)) maxD = 0
 
-      if (debugSink) {
-        // white = pass 1's full quad. grey = this edge's OWN setback-only strip (a
-        // reference shape — the "pushback region" itself, not a wing snapshot). red =
-        // white minus grey (the naive single-edge-only setback result). blue/green are
-        // filled in below as REAL wing-polygon snapshots after pass 4 / pass 5 actually
-        // run — comparing green against red shows how much MORE got removed by
-        // cross-edge setback subtraction (pass 2) and wing-vs-wing overlap (pass 3)
-        // beyond what a single edge's own setback would naively remove.
-        const Af = { x: A.x + nx * setback, y: A.y + nz * setback }
-        const Bf = { x: B.x + nx * setback, y: B.y + nz * setback }
-        const white = clonePoly(raw[raw.length - 1].poly)
-        const grey = [{ x: A.x, y: A.y }, { x: B.x, y: B.y }, Bf, Af]
-        debugSink.push({
-          debugId: wi, edgeIndex: se.index,
-          white, grey, red: convexDifferencePieces(white, grey).filter(p => polyAreaXY(p) > 1e-6),
-          blue: null,   // pass 4 snapshot — filled in below once that pass runs
-          green: null,  // pass 5 snapshot (final survivor) — stays null if dropped
+        // A centre wing (odd-count split, seeded 15% chance — see _splitFrontage) sits
+        // one bay back from the street; its front wall is frontA-frontB instead of the
+        // segment's own street corners. The flanking wings either side are built
+        // completely normally (full depth, full side walls) — their unmodified side
+        // walls, running the full depth from street to their own back corners, already
+        // pass right along the notch's side boundary and read as its return wall, so no
+        // separate return-wall geometry is needed.
+        const centreBack = seg.centreSetback ? bayWorld : 0
+        const frontA = seg.centreSetback ? { x: segA.x + nx * bayWorld, y: segA.y + nz * bayWorld } : segA
+        const frontB = seg.centreSetback ? { x: segB.x + nx * bayWorld, y: segB.y + nz * bayWorld } : segB
+
+        // `jettyBudget` is the forward distance a jettied upper floor may overhang into
+        // the street. It used to double as a front SETBACK (the wing was pushed back
+        // this far from the frontage); for Attached buildings the setback is removed —
+        // the front wall sits on the plot's street edge and the jetty spends this
+        // budget OUTWARD into the street instead of inward. Freestanding buildings get a
+        // real setback on every edge instead (seeded, `style.frontSetback` up to 15% of
+        // this segment's own frontage length).
+        const jettyBudget = Math.min(frontSetbackFor(style), maxD * 0.5)
+        const setback = attached ? 0
+          : frontSetbackFor(style) + this._rand(hash + 971 + segId * 11) * Math.max(0, segL * 0.15 - frontSetbackFor(style))
+        const depthBays = wingDepths[Math.floor(this._rand(hash + 2 + segId * 7) * wingDepths.length)]
+        const availD = Math.max(0, maxD - centreBack)
+        // Extrude straight back from the (possibly recessed) front wall by the wing's depth.
+        const worldD = Math.min(depthBays * PARA_SCALE, availD * 0.92)
+        if (worldD < 0.04) { dropEarly(segId, se, `no depth available behind frontage (worldD ${worldD.toFixed(4)} < 0.04, maxD ${maxD.toFixed(4)})`); continue }
+
+        const r_wing = this._rand(hash + 3 + segId * 7)
+        let wingFloorCount = 2, wingFloorCum = 0
+        for (const [f, w] of Object.entries(floorWeights)) {
+          wingFloorCum += w
+          wingFloorCount = parseInt(f)
+          if (r_wing < wingFloorCum) break
+        }
+        const Ap = { x: frontA.x + nx * worldD, y: frontA.y + nz * worldD }
+        const Bp = { x: frontB.x + nx * worldD, y: frontB.y + nz * worldD }
+        raw.push({
+          edgeIndex: se.index,
+          poly: [{ x: frontA.x, y: frontA.y }, { x: frontB.x, y: frontB.y }, Bp, Ap],
+          worldD,
+          floorCount: wingFloorCount,
+          forceRidgeAlongX: Math.abs(ux) >= Math.abs(uz),
+          setback,                                  // Attached: 0 (pass 2 no-ops). Freestanding: seeded gap.
+          jettyBudget,                              // forward projection budget for a jettied upper floor (into the street)
+          origAp: Ap, origBp: Bp,                   // pass-1 (un-clipped) back corners, for pass 4's gap test
+          streetA: { x: frontA.x, y: frontA.y }, streetB: { x: frontB.x, y: frontB.y },   // this wing's own front edge (recessed for a centre wing), for jetty capping
+          nx, nz,                                   // inward normal, for jetty's forward push
+          _debugId: segId,
         })
-      }
 
-      // Scatter trees behind the primary wing only
-      if (wi === 0 && housePlacements) {
-        this._scatterBackTrees(plot, poly, midX, midZ, ux, uz, nx, nz, L, worldD, maxD, housePlacements)
+        if (debugSink) {
+          // white = pass 1's full quad. grey = this wing's OWN setback-only strip (a
+          // reference shape — the "pushback region" itself, not a wing snapshot). red =
+          // white minus grey (the naive single-wing-only setback result). blue/green are
+          // filled in below as REAL wing-polygon snapshots after pass 4 / pass 5 actually
+          // run — comparing green against red shows how much MORE got removed by
+          // cross-edge setback subtraction (pass 2) and wing-vs-wing overlap (pass 3)
+          // beyond what a single wing's own setback would naively remove.
+          const Af = { x: frontA.x + nx * jettyBudget, y: frontA.y + nz * jettyBudget }
+          const Bf = { x: frontB.x + nx * jettyBudget, y: frontB.y + nz * jettyBudget }
+          const white = clonePoly(raw[raw.length - 1].poly)
+          const grey = [{ x: frontA.x, y: frontA.y }, { x: frontB.x, y: frontB.y }, Bf, Af]
+          debugSink.push({
+            debugId: segId, edgeIndex: se.index,
+            white, grey, red: convexDifferencePieces(white, grey).filter(p => polyAreaXY(p) > 1e-6),
+            blue: null,   // pass 4 snapshot — filled in below once that pass runs
+            green: null,  // pass 5 snapshot (final survivor) — stays null if dropped
+          })
+        }
+
+        // Scatter trees behind the primary wing only
+        if (wi === 0 && si === 0 && housePlacements) {
+          this._scatterBackTrees(plot, poly, midX, midZ, ux, uz, nx, nz, L, worldD, maxD, housePlacements)
+        }
       }
     }
     if (raw.length === 0) return null
@@ -715,12 +813,15 @@ export default class BuildingRenderer {
     // Pass 2 — remove each wing's own street-edge setback strip. Cross-setbacks between
     // ADJACENT street edges (sharing a corner vertex) are skipped — at acute corners they
     // clip too aggressively; pass 3's wing-vs-wing subtraction handles that separation.
-    // Non-adjacent edges still cross-clip to keep distant wings clear of each other's yards.
+    // Sibling wings split from the SAME edge are skipped too — they're collinear, so
+    // clipping one against another's setback line would level every sibling to whichever
+    // one has the largest setback instead of keeping each split wing's own. Non-adjacent,
+    // non-sibling edges still cross-clip to keep distant wings clear of each other's yards.
     for (const rw of raw) {
       for (const edge of raw) {
         if (edge !== rw) {
           const diff = Math.abs(rw.edgeIndex - edge.edgeIndex)
-          if (diff === 1 || diff === n - 1) continue   // adjacent edge — skip cross-setback
+          if (diff === 1 || diff === n - 1 || edge.edgeIndex === rw.edgeIndex) continue   // adjacent or sibling edge — skip cross-setback
         }
         rw.poly = halfPlaneClip(rw.poly, edge.streetA.x, edge.streetA.y, edge.nx, edge.nz, edge.setback)
         if (rw.poly.length < 3) break
@@ -822,25 +923,40 @@ export default class BuildingRenderer {
         // Street-facing front edge (model space), preserved through clipping so the
         // assembler can guarantee a door on the frontage.
         front: [[fp.x / S, fp.y / S], [fq.x / S, fq.y / S]],
-        // For the jetty mechanic (added in _buildTownhouseSpec): how far the front wall
-        // already sits back from the street (model space), the forward direction to push a
-        // jettied upper floor back toward that street line, and that original street edge.
-        setback: rw.setback / S,
+        // For the jetty mechanic (_buildTownhouseSpec): how far a jettied upper floor may
+        // overhang FORWARD into the street (model space), the forward push direction, and the
+        // original street edge. The front wall sits on the street edge now (no setback), so
+        // the jetty projects past it into the street.
+        jettyProjection: rw.jettyBudget / S,
         jettyDir: [-rw.nx, -rw.nz],
         streetFront: [[rw.streetA.x / S, rw.streetA.y / S], [rw.streetB.x / S, rw.streetB.y / S]],
+        // This wing's own depth in bays (model units), for Archway eligibility (≤4 bays).
+        depthBays: rw.worldD / S,
       })
     }
     if (wings.length === 0) return null   // every wing was degenerate — no building here
 
     const primaryFloors = Math.max(...wings.map(w => w.floorCount))
-    const spec = this._buildTownhouseSpec(distKey, wings, primaryFloors, hash)
+    const spec = this._buildTownhouseSpec(distKey, wings, primaryFloors, hash, style, attached)
     return { spec, x: 0, z: 0, rotY: 0 }
   }
 
-  _buildTownhouseSpec(distKey, wings, floors, hash) {
-    const style = DISTRICT_BUILDING_STYLES[distKey] ?? DEFAULT_BUILDING_STYLE
+  _buildTownhouseSpec(distKey, wings, floors, hash, style, attached) {
+    style = style ?? (DISTRICT_BUILDING_STYLES[distKey] ?? DEFAULT_BUILDING_STYLE)
     const r1 = this._rand(hash + 11), r2 = this._rand(hash + 17)
     const r4 = this._rand(hash + 23), r5 = this._rand(hash + 29), r6 = this._rand(hash + 37)
+
+    // roof ridge height — weighted pick, in floor-height units (entries iterated in
+    // definition order); converted to riseHalfUnits (1 unit = 0.5 floor-heights) so
+    // ParametricBuilding can use it directly instead of deriving rise from footprint span.
+    const r9 = this._rand(hash + 53)
+    let ridgeHeight = 0, ridgeCum = 0
+    for (const [h, w] of Object.entries(style.roofRidgeHeight ?? { 1: 1.0 })) {
+      ridgeCum += w
+      ridgeHeight = parseFloat(h)
+      if (r9 < ridgeCum) break
+    }
+    const roofRiseHalfUnits = Math.round(ridgeHeight / 0.5)
 
     const nonstone = r1 < style.woodChance ? 'wood' : 'plaster'
     const stone = r4 < style.graniteChance ? 'granite'
@@ -867,92 +983,63 @@ export default class BuildingRenderer {
       wing.floors = this._buildFloorList(hash, 200 + wi * 13, wing.floorCount, wallMaterial, startZ)
       delete wing.floorCount
     }
+    // Archway: one seeded roll per building (never more than one), only once every
+    // wing's floor list (and so ground-floor clearance) is known — see Archway,
+    // CONTEXT_BuildingsRoofs.md, and ADR-0019 (Attached-only).
+    this._assignArchway(wings, style, hash, attached)
     // Jetty: a stone/granite/brick ground floor can carry a jettied (overhanging) upper
     // storey, historically timber-over-masonry. Building-level decision (one roll for the
-    // whole row-house unit); each wing then jetties its own front by a random amount
-    // capped at that wing's own setback, so the jettied face can reach but never cross
-    // the original (un-set-back) street line.
+    // whole row-house unit); each wing then jetties its own front by a random amount up to
+    // its jettyProjection budget, overhanging FORWARD into the street (the ground floor now
+    // sits on the street edge — front setback removed).
     const r7 = this._rand(hash + 43)
     const canJetty = STONE_MATS.has(wallMaterial[0]) && floors > 1
     const jettied = canJetty && r7 < 0.5
     if (jettied) {
       for (const [wi, wing] of wings.entries()) {
-        if (wing.setback <= 0) continue
+        if (!(wing.jettyProjection > 0)) continue
         const rJ = this._rand(hash + 47 + wi * 5)
-        wing.jetty = { amount: rJ * wing.setback, fromFloor: 1 }
+        wing.jetty = { amount: rJ * wing.jettyProjection, fromFloor: 1 }
       }
     }
+    const { buildingTypes, buildingSubtype } = this._rollBuildingTypes(style, hash)
     return {
       seed: hash + 1000,
       floors,
       footprint: { type: 'wings', wings },
-      roof: { shape: 'gable', material: roofMat, pitch: 0.55 + r6 * 0.45, overhangMin: style.overhangMin ?? 0.14, overhangMax: style.overhangMax ?? 0.48 },
+      roof: { shape: 'gable', material: roofMat, pitch: 0.55 + r6 * 0.45, overhangMin: style.overhangMin ?? 0.14, overhangMax: style.overhangMax ?? 0.48, riseHalfUnits: roofRiseHalfUnits },
       suppressedFaces: [],
+      buildingTypes,
+      buildingSubtype,
     }
   }
 
-  // Build a Building Spec for a residential plot.
-  // Deterministic by position when _seedOffset is 0 (main game); randomised in
-  // preview tools by setting _seedOffset via randomizeSeed().
-  _buildSpec(distKey, bw, bd, worldX, worldZ) {
-    const hash = posHash(worldX, worldZ) + this._seedOffset
-    const r0 = this._rand(hash), r1 = this._rand(hash + 7)
-    const r2 = this._rand(hash + 13)
-    const r4 = this._rand(hash + 23), r5 = this._rand(hash + 29)
-
-    const style = DISTRICT_BUILDING_STYLES[distKey] ?? DEFAULT_BUILDING_STYLE
-
-    // floors — weighted pick (entries iterated in definition order)
-    let floors = 1, floorCum = 0
-    for (const [f, w] of Object.entries(style.floors)) {
-      floorCum += w
-      floors = parseInt(f)
-      if (r0 < floorCum) break
-    }
-
-    // wall materials — stone ground floor only; upper floors always nonstone
-    const nonstone = r1 < style.woodChance ? 'wood' : 'plaster'
-    const stone = r4 < style.graniteChance ? 'granite'
-      : r4 < style.graniteChance + (style.brickChance ?? 0) ? 'brick' : 'stone'
-    let wallMaterial
-    if (r2 < style.stoneChance) {
-      wallMaterial = Array.from({ length: floors }, (_, f) => f === 0 ? stone : nonstone)
-    } else {
-      wallMaterial = Array.from({ length: floors }, () => nonstone)
-    }
-
-    // roof material — weighted pick
-    let roofMat = 'thatch', roofCum = 0
-    for (const [mat, w] of Object.entries(style.roof)) {
-      roofCum += w
-      roofMat = mat
-      if (r5 < roofCum) break
-    }
-
-    // Foundation: derived from the ground floor's material (decision #5), gated on that
-    // floor being stone/granite/brick.
-    const r6 = this._rand(hash + 31)
-    const hasFoundation = STONE_MATS.has(wallMaterial[0]) && r6 < 0.35
-    const startZ = hasFoundation ? 0.5 : 0
-    const floorList = this._buildFloorList(hash, 100, floors, wallMaterial, startZ)
-
-    return {
-      seed: hash,
-      floors,
-      // Single rectangular wing in local model space — the degenerate case of the
-      // polygon-wing format Path A expects. `front`/`vertices` use the same corner order
-      // as the old rect footprint (front edge = local -Z side), matching the x/z/rotY
-      // placement already computed by the caller, so no placement logic changes.
-      footprint: {
-        type: 'wings', wings: [{
-          vertices: [[-bw / 2, -bd / 2], [bw / 2, -bd / 2], [bw / 2, bd / 2], [-bw / 2, bd / 2]],
-          front: [[-bw / 2, -bd / 2], [bw / 2, -bd / 2]],
-          floors: floorList,
-        }]
-      },
-      roof: { shape: 'gable', material: roofMat, pitch: 0.55 + r0 * 0.45, overhangMin: style.overhangMin, overhangMax: style.overhangMax },
-      suppressedFaces: [],   // server will populate this for townhouse adjacency
-    }
+  // Pick at most one wing to carry an Archway (see Archway, CONTEXT_BuildingsRoofs.md):
+  // a ground-floor passage tunnelling the wing's full depth to the Courtyard behind.
+  // Attached-only; eligible wings are ≤4 bays deep with ≥1.5 floor-heights of clearance
+  // below floor 2 (a tall-rolled ground floor, or a Foundation under a normal one).
+  // Mutates the chosen wing with `wing.archway = { startT, endT, bays }` — fractions
+  // along `wing.front` for the assembler to snap to its own bay grid.
+  // NOTE: centred placement only. The TODO'd "edge-adjacent, if a neighbouring wing
+  // exists to back onto" variant needs each wing's same-block *and* neighbour-building
+  // wings, and neighbour-building wings aren't attached to the spec until
+  // _suppressPartyWalls runs — after every plot's spec already exists. Deferred rather
+  // than guessed at here.
+  _assignArchway(wings, style, hash, attached) {
+    if (!attached) return
+    if (this._rand(hash + 601) >= (style.archChance ?? 0.15)) return
+    const eligible = wings.filter(w => {
+      const f0 = w.floors[0]
+      return (w.depthBays ?? Infinity) <= 4 && (f0.zHeight + f0.height) >= 1.5
+    })
+    if (!eligible.length) return
+    const wing = eligible[Math.floor(this._rand(hash + 607) * eligible.length)]
+    const [fx0, fz0] = wing.front[0], [fx1, fz1] = wing.front[1]
+    const frontLen = Math.hypot(fx1 - fx0, fz1 - fz0)
+    const bays = Math.min(3, Math.max(1, Math.floor(frontLen)))
+    if (frontLen < bays) return   // frontage too narrow for even a 1-bay archway
+    const startT = (frontLen - bays) / 2 / frontLen
+    wing.archway = { startT, endT: startT + bays / frontLen, bays }
   }
 
   // Record a placement for a district-appropriate model in this plot's front half.
@@ -1005,9 +1092,11 @@ export default class BuildingRenderer {
     // Every plot gets a district-appropriate model (closest fit), placed at the
     // footprint centre and seated on the ground. No procedural box houses. Seeded by
     // position (not plot id) so the choice is stable when neighbouring districts change.
-    const sel = this._selectModel(districtById?.get(plot.districtId), bw, bd, posHash(ccx, ccy) + this._seedOffset)
+    const glbHash = posHash(ccx, ccy) + this._seedOffset
+    const sel = this._selectModel(districtById?.get(plot.districtId), bw, bd, glbHash)
     if (sel) {
-      housePlacements.push({ x: ccx, z: ccy, rotY: theta, glbPath: sel.glbPath, scale: MODEL_SCALE })
+      const { buildingTypes, buildingSubtype } = this._rollBuildingTypes(this._districtStyle(districtById?.get(plot.districtId)), glbHash)
+      housePlacements.push({ x: ccx, z: ccy, rotY: theta, glbPath: sel.glbPath, scale: MODEL_SCALE, buildingTypes, buildingSubtype })
       if (glbFootprints) {
         const poly = footprintRectWorld(ccx, ccy, theta, (sel.width * MODEL_SCALE) / 2, (sel.depth * MODEL_SCALE) / 2)
         glbFootprints.push({ plot, poly })
@@ -1021,11 +1110,15 @@ export default class BuildingRenderer {
   // Scatter small trees in the back of a plot (perpendicular distance from `frontDepth`
   // to the plot's full `depth`), skipped unless the back yard is sizeable. `frontDepth`
   // is the building's back edge, so trees never land on the street-facing front.
-  // Attach each townhouse building's same-block neighbours' wings to its spec. All townhouse
-  // entries share one model space (each group sits at origin), so the assembler can test a
-  // building's walls directly against neighbour wings to suppress shared party walls — up to
-  // each neighbour's height (a taller building keeps the wall above a shorter neighbour).
-  // Freestanding plots are GLB models (not entries), so walls facing them stay exposed.
+  // Attach each Attached building's same-block neighbours' wings to its spec (`entries`
+  // is already filtered to plot.attached ones by the caller). All entries share one
+  // model space (each group sits at origin), so the assembler can test a building's
+  // walls directly against neighbour wings to suppress shared party walls — up to each
+  // neighbour's height (a taller building keeps the wall above a shorter neighbour). A
+  // Freestanding neighbour is set back on every side, so nothing is ever flush against
+  // it and its shared-boundary face naturally stays unsuppressed with no special-casing
+  // (see Attached/Freestanding, ADR-0019) — Custom Model plots are GLB models (not
+  // entries at all), so walls facing them also stay exposed.
   _suppressPartyWalls(entries) {
     const byBlock = new Map()
     for (const e of entries) {
@@ -1049,7 +1142,11 @@ export default class BuildingRenderer {
   }
 
   _scatterBackTrees(plot, poly, mx, my, ex, ey, nx, ny, len, frontDepth, depth, placements) {
-    const backStart = frontDepth + 0.04
+    // Push trees toward the back of the plot: skip the first 55% of the back yard and
+    // only scatter in the rear zone, so trees cluster at the plot boundary rather than
+    // right behind the building.
+    const yard = depth - (frontDepth + 0.04)
+    const backStart = frontDepth + 0.04 + yard * 0.55
     if (depth - backStart < TREE_MIN_BACK_DEPTH || len < TREE_MIN_FRONTAGE) return
     const halfLen = len / 2 - 0.03
     let placed = 0

@@ -14,6 +14,8 @@ _Avoid_: biome, tile type, land type
 The boundary line between two adjacent Terrains, which can be assigned a type (River, Cliff, etc.).
 _Avoid_: border, boundary
 
+River and Cliff edges render as a fixed-thickness polyline centred **on** the edge (not a filled region like Sea/Lake), so they extend into both neighbouring terrain plots' nominal area. A District (a typed terrain plot) must inset its usable polygon inward by half that thickness along any River/Cliff edge before street/block generation, so its real boundary is the river bank/cliff face rather than the raw Voronoi cell edge. Sea/Lake need no such pullback — their polygon already is the water's boundary.
+
 **River** (edge type):
 An edge marked as a river channel. A valid River selection must satisfy all four rules:
 
@@ -25,6 +27,14 @@ An edge marked as a river channel. A valid River selection must satisfy all four
 
 **City Terrain**: 
 The Terrain identified to become the City, in this game, made up of Districts, and District Edges.
+
+**City Expansion**:
+The player-initiated promotion of an eligible adjacent terrain ==plot== into a full city District during District Setup. The plot must be unassigned (no Forestry, Agriculture, Mining, or Fishing assignment) and within the Living Boundary. Distinct from the initial City Terrain region established during Terrain Setup.
+_Avoid_: annexation, absorption
+
+**Living Boundary**:
+The ever-growing set of terrain ==plot==s eligible for City Expansion: any terrain plot sharing an edge with a plot already in `cityDistrictData.districts`, including previously promoted plots. Expands outward as each new District is added.
+_Avoid_: city edge, expansion zone
 
 **==Plot==**:
 A ==plot== whose source is a Voronoi cell from the world terrain generation (`TerrainVoronoiGenerator`). ==Plot==s that fall inside the City Terrain region are able to be selected as city Districts. They are stored in raw form as `worldTerrainData.terrainPlots` and re-derived on load via `regenerateTerrainPlots().`
@@ -80,6 +90,10 @@ _Avoid_: city edge, district border, district boundary
 A fortified city-edge forming a defensive barrier between or around districts.
 _Avoid_: fence, barrier, rampart
 
+**Auto-Walling**:
+The probabilistic assignment of Wall District Edges at District lock time, driven by the locking district's `walledChance` (internal district-to-district edges) and `externalWalledChance` (outer city-boundary edges) config values. Pre-existing manual District Edge assignments are never overridden; when two districts share an edge, the first to lock determines the outcome.
+_Avoid_: auto-wall generation, automatic walls
+
 **MainRoad** (district edge type):
 A major road city-edge indicating a primary transit corridor between two districts.
 _Avoid_: highway, main street
@@ -89,11 +103,15 @@ A navigable waterway city-edge connecting districts; requires adjacent water ter
 _Avoid_: channel, waterway
 
 **Docks** (district edge type):
-A maritime city-edge placed where the city meets a Sea, Lake, or River region, enabling water-based trade.
+A maritime city-edge placed where the city meets a Sea, Lake, or River region, enabling water-based trade. Like Wall/Canal, gets its own Alley (wood surface) for ==plot== frontage, plus a row of Piers. Both are only generated along the segments of the Docks edge that are actually adjacent to water (checked per street-chain segment, not once for the whole edge as `_cityEdgeIsNearWater` does at assignment time) — segments of a Docks edge that border ordinary land remain plain road.
 _Avoid_: port, harbor
 
+**Pier**:
+A discrete wood jetty projecting from a Docks Alley out into the water, with mooring space for boats along its length (no boats placed yet — future work). Spaced one per block-frontage, same cadence as ==plot==s along an ordinary street (street → cross Alley → Pier). Never projects past half the width of a River (the water body's centreline); Sea/Lake piers have no such cap.
+_Avoid_: jetty (as the canonical term), wharf, quay
+
 **Alley**:
-A narrow street generated automatically on each side of a Wall or Canal District Edge, providing ==plot== frontage where the structure would otherwise leave ==plot==s landlocked. Stone surface beside Canals; Mud surface beside Walls.
+A narrow street generated automatically on each side of a Wall, Canal, or Docks District Edge, providing ==plot== frontage where the structure would otherwise leave ==plot==s landlocked. Stone surface beside Canals, Mud beside Walls, Wood beside Docks.
 _Avoid_: service road, back lane
 
 ---

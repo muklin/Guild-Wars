@@ -80,7 +80,6 @@ export default class UIManager {
     document.body.appendChild(uiContainer)
 
     this.createResourceBar(uiContainer)
-    this.createLeftPanels(uiContainer)
     this.createRightPanel(uiContainer)
     this.createCenterPanels(uiContainer)
     this.createErrorPopup(uiContainer)
@@ -447,12 +446,7 @@ export default class UIManager {
     const isNewPhase = step !== this.currentStep
     this.currentStep = step
 
-    const leftPanel = this.panels.get('left')
-    leftPanel.innerHTML = ''
-
     if (step === 'Terrain') {
-      // TerrainTypePanel is now floating — hide the left panel
-      leftPanel.style.display = 'none'
       this._resourceBar.style.display = 'none'
       this.guildPanel.hide()
       this.factionsPanel.hide()
@@ -463,7 +457,7 @@ export default class UIManager {
         this._showPhaseSplash('Terrain Setup')
       }
     } else if (step === 'CitySubdivision') {
-      leftPanel.style.display = 'none'
+
       this._resourceBar.style.display = ''
       this.guildPanel.hide()
       this._setFactionsButtonVisible(true)
@@ -474,7 +468,7 @@ export default class UIManager {
         this._showPhaseSplash('City District Setup')
       }
     } else if (step === 'GuildCreation' || step === 'Complete') {
-      leftPanel.style.display = 'none'
+
       this._resourceBar.style.display = ''
       this._setFactionsButtonVisible(true)
       this._updateAdvancePhaseButton(step)

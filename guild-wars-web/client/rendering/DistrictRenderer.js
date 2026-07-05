@@ -125,6 +125,16 @@ export default class DistrictRenderer {
 
   // ── District data ───────────────────────────────────────────────────────────
 
+  // Terrain regions/edges, needed only for Docks' per-segment water check (does the
+  // FAR side of this specific bit of the boundary actually touch Sea/Lake/River, as
+  // opposed to `_cityEdgeIsNearWater`'s coarse whole-edge gate used at assignment
+  // time server-side) — see Docks, CONTEXT_WorldTerrain.md.
+  setTerrainWaterData(regions, edges, edgePoints) {
+    this._terrainRegions = regions || []
+    this._terrainEdges = edges || {}
+    this._terrainEdgePointById = new Map((edgePoints || []).map(p => [p.id, p]))
+  }
+
   setCityDistrictData(data) {
     this._districtById = null
     if (Array.isArray(data)) {
@@ -276,6 +286,16 @@ export default class DistrictRenderer {
           // Pending — show placeholder polyline until 1st adjacent district locks.
           nonWallEdges[edgeId] = edge
         }
+      } else if (edge.assignedType === 'Docks') {
+        // Base polyline always stays visible — buildDocksMesh only adds the Alley+Piers
+        // on top, on whichever segments actually border water; the rest of this Docks
+        // edge stays plain road with no extra geometry.
+        nonWallEdges[edgeId] = edge
+        const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Docks')
+        if (chain) {
+          const mesh = this.buildDocksMesh(chain, edgeId)
+          if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
+        }
       } else {
         const defined = this._edgeHasDefinedDistrict(edge)
         if (!defined) {
@@ -408,6 +428,122 @@ export default class DistrictRenderer {
       right.push({ x: p.x - mx * halfWidth, y: p.y - my * halfWidth })
     }
     return { left, right }
+  }
+
+  // True if the far side of segment a→b actually touches Sea/Lake/River — a finer,
+  // per-segment version of SetupPhase's `_cityEdgeIsNearWater` (which only gates
+  // whether Docks can be ASSIGNED to the whole edge at all). Used to decide which
+  // segments of a Docks edge get an Alley+Piers vs stay plain road. See Docks,
+  // CONTEXT_WorldTerrain.md.
+  _segmentNearWater(a, b) {
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
+    const THRESHOLD = 1.0
+    for (const region of (this._terrainRegions || [])) {
+      if (region.assignedType !== 'Sea' && region.assignedType !== 'Lake') continue
+      const poly = region.polygon
+      if (!poly) continue
+      if (pointInPolygon(mx, my, poly)) return true
+      for (let i = 0; i < poly.length; i++) {
+        const p = poly[i], q = poly[(i + 1) % poly.length]
+        if (distanceToLineSegment(mx, my, p.x, p.y, q.x, q.y) < THRESHOLD) return true
+      }
+    }
+    for (const te of Object.values(this._terrainEdges || {})) {
+      if (te.assignedType !== 'River') continue
+      const pts = (te.pointIds || []).map(id => this._terrainEdgePointById?.get(id)).filter(Boolean)
+      for (let i = 0; i < pts.length - 1; i++) {
+        if (distanceToLineSegment(mx, my, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y) < THRESHOLD) return true
+      }
+    }
+    return false
+  }
+
+  // One discrete wood pier/jetty projecting perpendicular from the Alley into the
+  // water, starting just past the alley's outer edge. `ux,uy` is the alley's own
+  // along-boundary direction (pier width runs along it); `nx,ny` is the outward
+  // (water-ward, away-from-district) direction the pier projects along.
+  _buildPierMesh(base, ux, uy, nx, ny, length, width) {
+    const hw = width / 2
+    const tipX = base.x + nx * length, tipY = base.y + ny * length
+    const v = new Float32Array([
+      base.x - ux * hw, 0.006, base.y - uy * hw,
+      base.x + ux * hw, 0.006, base.y + uy * hw,
+      tipX + ux * hw, 0.006, tipY + uy * hw,
+      tipX - ux * hw, 0.006, tipY - uy * hw,
+    ])
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(v, 3))
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2, 0, 2, 3]), 1))
+    geo.computeVertexNormals()
+    return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x8a6642, roughness: 0.9, metalness: 0, side: THREE.DoubleSide }))
+  }
+
+  // Docks: a wood Alley (frontage strip, like Canal's stone / Wall's mud) plus discrete
+  // wood Piers projecting into the water, spaced one per block-frontage (street → cross
+  // Alley → Pier) — but ONLY on segments of `polyline` whose far side actually touches
+  // Sea/Lake/River; other segments of this same Docks edge get nothing here and stay
+  // plain road. Piers never project past half a River's width (the same
+  // RIVER_CLIFF_HALF_WIDTH margin SetupPhase insets districts by) — for Sea/Lake there's
+  // no opposite bank to worry about, so no such cap applies. See Docks/Pier/Alley,
+  // CONTEXT_WorldTerrain.md.
+  buildDocksMesh(polyline, edgeId) {
+    if (!polyline || polyline.length < 2) return null
+    const W = 0.0875
+    const halfAlley = W * 1.25
+    const alleyY = 0.002
+    const alleyColor = 0xa9855a   // wood
+    const PIER_SPACING = 0.2      // matches typical plot-frontage cadence along a street
+    const PIER_LEN = W * 1.5
+    const PIER_WIDTH = W * 0.6
+
+    // Piers must project water-ward, i.e. away from the district — determined once from
+    // districtA's centroid rather than per-segment (a Docks edge is usually the outer
+    // boundary of a single district, districtB null).
+    const edge = this.cityDistrictData?.edges?.[edgeId]
+    const districts = this.cityDistrictData?.districts || []
+    const districtById = this._districtById || (this._districtById = new Map(districts.map(d => [d.id, d])))
+    const distCentroid = centroid(districtById.get(edge?.districtA)?.polygon) ?? centroid(polyline)
+
+    const { left, right } = this._getMiteredCorners(polyline, halfAlley)
+    const verts = [], idx = []
+    const piers = []
+    let carry = 0
+
+    for (let i = 0; i < polyline.length - 1; i++) {
+      const a = polyline[i], b = polyline[i + 1]
+      if (!this._segmentNearWater(a, b)) { carry = 0; continue }
+
+      const b0 = verts.length / 3
+      verts.push(right[i].x, alleyY, right[i].y, left[i].x, alleyY, left[i].y,
+        left[i + 1].x, alleyY, left[i + 1].y, right[i + 1].x, alleyY, right[i + 1].y)
+      idx.push(b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3)
+
+      const dx = b.x - a.x, dy = b.y - a.y, segLen = Math.hypot(dx, dy) || 1e-6
+      const ux = dx / segLen, uy = dy / segLen
+      let nx = -uy, ny = ux   // perpendicular — flipped below if it points toward the district
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
+      if (distCentroid && (distCentroid.x - mx) * nx + (distCentroid.y - my) * ny > 0) { nx = -nx; ny = -ny }
+      let d = PIER_SPACING - carry
+      while (d < segLen) {
+        const px = a.x + ux * d, py = a.y + uy * d
+        piers.push(this._buildPierMesh({ x: px + nx * halfAlley, y: py + ny * halfAlley }, ux, uy, nx, ny, PIER_LEN, PIER_WIDTH))
+        d += PIER_SPACING
+      }
+      carry = segLen - (d - PIER_SPACING)
+    }
+    if (!verts.length && !piers.length) return null
+
+    const group = new THREE.Group()
+    group.userData = { cityEdgeId: edgeId }
+    if (verts.length) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1))
+      geo.computeVertexNormals()
+      group.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: alleyColor, roughness: 0.85, metalness: 0, side: THREE.DoubleSide })))
+    }
+    for (const pm of piers) group.add(pm)
+    return group.children.length ? group : null
   }
 
   // Build a recessed water channel mesh along `polyline` [{x,y}].
@@ -694,6 +830,17 @@ export default class DistrictRenderer {
         const mesh = this.buildCanalMesh(chain, edgeId)
         if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
         return
+      }
+    }
+    if (type === 'Docks') {
+      const edge = this.cityDistrictData?.edges?.[edgeId]
+      const chain = edge ? this._extractBoundaryChain(edge.districtA, edge.districtB, 'Docks') : null
+      if (chain) {
+        const old = this.cityEdgeMeshes.get(edgeId)
+        if (old) this.scene.remove(old)
+        const mesh = this.buildDocksMesh(chain, edgeId)
+        if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
+        // Base polyline stays visible — buildDocksMesh only covers water-adjacent segments.
       }
     }
     this.cityPolylines?.updateBaseColor(edgeId, DISTRICT_COLORS.get(type) || DISTRICT_COLORS.unassigned)

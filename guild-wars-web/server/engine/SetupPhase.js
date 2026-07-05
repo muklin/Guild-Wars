@@ -10,43 +10,15 @@ import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter
 import { buildPointRegistry } from './CityGenerator/PointRegistry.js'
 import { pip, clipPolygonToSide, polygonCrossesSegment } from './voronoi/VoronoiUtils.js'
 import pc from 'polygon-clipping'
-import { getDistrictConfig, districtConfigKey } from '../../shared/districtConfig.js'
+import { getDistrictConfig } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
-// Townhouse probability per district now lives in shared/districtConfig.js
-// (DISTRICTS[key].townhouseProb) — every district type builds townhouses (was
-// Residential-only), alongside every other per-district-type table.
-
-function _seededRand(seed) {
-  let s = ((seed | 0) * 2654435761) >>> 0
-  s ^= s << 13; s ^= s >>> 17; s ^= s << 5
-  return (s >>> 0) / 0x100000000
-}
-
-function markTownhouseBlocks(blocks, plots, districts) {
-  const districtById = new Map(districts.map(d => [d.id, d]))
-  const plotsByBlock = new Map()
-  for (const plot of plots) {
-    if (!plotsByBlock.has(plot.blockId)) plotsByBlock.set(plot.blockId, [])
-    plotsByBlock.get(plot.blockId).push(plot)
-  }
-  for (const block of blocks) {
-    if (block.blockType === 'square') continue
-    const district = districtById.get(block.districtId)
-    if (!districtConfigKey(district)) continue   // unassigned/untyped — skip
-    const prob = getDistrictConfig(district).townhouseProb
-    if (prob <= 0 || _seededRand(block.id * 7919 + 42) >= prob) continue
-    block.blockType = 'townhouse'
-    for (const plot of (plotsByBlock.get(block.id) || [])) {
-      if (plot.blockType === 'square') continue
-      plot.blockType = 'townhouse'
-      if (_seededRand(plot.id * 13337 + 99) < 0.05) plot.freestanding = true
-    }
-  }
-}
+// Attached/Freestanding/Custom Model are no longer decided here. They're rolled
+// per-building, client-side, entirely from plot geometry (see ADR-0019 and
+// BuildingRenderer.js) — there is no more server-side blockType/'townhouse' pass.
 
 const _dir = dirname(fileURLToPath(import.meta.url))
 let _nameLib = null
@@ -351,19 +323,6 @@ export default class SetupPhase {
       description: ''
     }))
 
-    // Pre-mark the smallest district by area as the Leadership district.
-    const polyArea = (poly) => {
-      let a = 0; const n = poly.length
-      for (let i = 0, j = n - 1; i < n; j = i++) a += (poly[j].x + poly[i].x) * (poly[j].y - poly[i].y)
-      return Math.abs(a) / 2
-    }
-    let leaderIdx = 0, minArea = Infinity
-    for (let i = 0; i < districts.length; i++) {
-      const a = polyArea(districts[i].polygon)
-      if (a < minArea) { minArea = a; leaderIdx = i }
-    }
-    districts[leaderIdx].isLeadershipDistrict = true
-
     // Deduplicate polygon vertices by coordinate so shared borders snap together.
     const eps = 0.001
     const vertexByKey = new Map()
@@ -658,8 +617,6 @@ export default class SetupPhase {
     const district = this.gameStateManager.cityDistrictData.districts.find(d => d.id === districtId)
     if (!district) throw new Error(`District ${districtId} not found`)
     if (district.locked) throw new Error(`District ${districtId} is already locked`)
-    if (district.isLeadershipDistrict && districtType !== 'Leadership') throw new Error('This district is reserved for Leadership')
-    if (!district.isLeadershipDistrict && districtType === 'Leadership') throw new Error('Leadership can only be assigned to the designated Leadership district')
 
     const VALID_RESIDENTIAL_CLASSES = ['Slums', 'Middle', 'Noble']
     const VALID_RULING_BODY_CLASSES = ['Monarchy', 'Republic', 'Tyrant', 'Oligarchy', 'Theocracy', 'Anarchist']
@@ -690,8 +647,11 @@ export default class SetupPhase {
     const normalizedProd = producedResource?.trim().toLowerCase()
     const normalizedProd2 = secondProducedResource?.trim().toLowerCase()
     const isMarket = districtType === 'Market'
+    const isReligious = districtType === 'Religious'
     if (normalizedProd === 'gold' && !isMarket) throw new Error('Gold is produced automatically — choose a different resource or service')
     if (normalizedProd2 === 'gold') throw new Error('Gold is produced automatically — choose a different resource or service')
+    if (normalizedProd?.startsWith('worship of ') && !isReligious) throw new Error('Only Religious districts can produce Worship')
+    if (normalizedProd2?.startsWith('worship of ') && !isReligious) throw new Error('Only Religious districts can produce Worship')
     if (normalizedProd && normalizedProd2 && normalizedProd === normalizedProd2) throw new Error(`Cannot produce the same resource or service twice: "${producedResource}"`)
     if (normalizedProd2 && districtType !== 'Industry') throw new Error('Only Industry districts can produce a second resource or service')
 
@@ -760,10 +720,48 @@ export default class SetupPhase {
     // Commit: freeze the street seed, lock the district, and regenerate.
     if (district.streetSeed == null) district.streetSeed = district.id
     district.locked = true
+
+    // Auto-walling: roll per District Edge adjacent to this newly locked district.
+    // The locking district is the initiator — its probability is used regardless of
+    // the neighbour's. Pre-existing manual assignments are never overridden.
+    this._applyAutoWalling(districtId)
+
     this.generateForLocked()
+    this._retryIfVoid(districtId)
     this._removeAbsorbedDistrictEdgePlacements()
 
     return { ok: true, resourceRegistry: this.resourceRegistry, factions: this.factions, log: this.log }
+  }
+
+  // Roll per-edge Wall assignment for a newly locked district. Uses the locking
+  // district's walledChance (internal edges) and externalWalledChance (outer boundary).
+  // Pre-existing assignedType on any edge is always respected — never overridden.
+  _applyAutoWalling(districtId) {
+    const cityData = this.gameStateManager.cityDistrictData
+    const district = cityData?.districts?.find(d => d.id === districtId)
+    if (!district) return
+    const cfg = getDistrictConfig(district)
+    const walledChance = cfg.walledChance ?? 0
+    const externalWalledChance = cfg.externalWalledChance ?? 0
+    if (walledChance === 0 && externalWalledChance === 0) return
+
+    const edges = cityData.edges || {}
+    // Simple seeded RNG per edge so results are deterministic per street seed.
+    let seed = (district.streetSeed ?? district.id) * 1664525 + 1013904223
+    const rng = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0xFFFFFFFF }
+
+    for (const [edgeId, edge] of Object.entries(edges)) {
+      if (edge.districtA !== districtId && edge.districtB !== districtId) continue
+      if (edge.assignedType) continue  // pre-existing manual assignment — never override
+      const isExternal = edge.districtB == null
+      const chance = isExternal ? externalWalledChance : walledChance
+      if (chance <= 0) continue
+      if (rng() < chance) {
+        edge.assignedType = 'Wall'
+        this.districtEdgePlacements.push({ edgeId, assignedType: 'Wall', districtId })
+        this.log.push(`Auto-walled edge ${edgeId} for district ${districtId}`)
+      }
+    }
   }
 
   // Provisionally set a district's type/class (no resource validation, no lock) and
@@ -773,8 +771,6 @@ export default class SetupPhase {
     const district = this.gameStateManager.cityDistrictData?.districts?.find(d => d.id === districtId)
     if (!district) throw new Error(`District ${districtId} not found`)
     if (district.locked) throw new Error(`District ${districtId} is locked`)
-    if (district.isLeadershipDistrict && districtType !== 'Leadership') throw new Error('This district is reserved for Leadership')
-    if (!district.isLeadershipDistrict && districtType === 'Leadership') throw new Error('Leadership can only be assigned to the designated Leadership district')
 
     const isResidential = districtType === 'Residential'
     const isLeadership = districtType === 'Leadership'
@@ -783,6 +779,7 @@ export default class SetupPhase {
     district.LeadershipClass = isLeadership ? (LeadershipClass || null) : null
     if (district.streetSeed == null) district.streetSeed = district.id
     this.generateForLocked(districtId)
+    this._retryIfVoid(districtId)
     this.log.push(`Previewed ${districtType} on district ${districtId}`)
     return { ok: true, log: this.log }
   }
@@ -814,7 +811,7 @@ export default class SetupPhase {
     return { ok: true, threats: this.threats, log: this.log }
   }
 
-  addTradingDestination(regionId, description = '', name = '', buys = [], sells = []) {
+  addTradingDestination(regionId, description = '', name = '', buys = [], sells = [], resourceDefs = []) {
     const regions = this.gameStateManager.worldTerrainData.regions
     const region = regions.find(r => r.id === regionId)
     if (!region) throw new Error(`Region ${regionId} not found`)
@@ -832,7 +829,12 @@ export default class SetupPhase {
     this.tradingDestinations.push(trade)
     this.log.push(`Added trade '${tradeName}' at region ${regionId}: buys [${cleanBuys.join(', ')}], sells [${cleanSells.join(', ')}]`)
 
-    // Register any newly-defined resources.
+    // Register any newly-defined resources — with their player-set GP value (decision:
+    // every player-defined resource must always have an initial value), same pattern as
+    // assignDistrictType/assignTerrainDistrict/addForeignPowerTrade.
+    for (const def of resourceDefs) {
+      if (def?.name) this._registerResourceDef(def)
+    }
     const PREDEFINED_LOWER = ['gold', 'water', 'labour', 'basic food']
     for (const r of [...cleanBuys, ...cleanSells]) {
       if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
@@ -1042,6 +1044,84 @@ export default class SetupPhase {
     return Math.sqrt((px - x1 - t * dx) ** 2 + (py - y1 - t * dy) ** 2)
   }
 
+  // River and Cliff terrain Edges render as a fixed-thickness polyline CENTRED on the
+  // edge (TerrainRenderer: thickness 0.5), extending RIVER_CLIFF_HALF_WIDTH into both
+  // neighbouring plots' nominal area — so a district's raw Voronoi-cell polygon
+  // otherwise reaches past the river bank / cliff face into the rendered water/rock
+  // (see Edge, CONTEXT_WorldTerrain.md). Sea/Lake need no pullback — they're already
+  // filled region polygons, not a centreline+width polyline.
+  //
+  // Recomputes each district's polygon fresh from a preserved pristine copy every call
+  // (`district._rawPolygon`, set once) rather than insetting in place repeatedly, since
+  // this runs on every street-graph (re)generation over the course of District Setup.
+  _applyRiverCliffPullback(districts) {
+    const RIVER_CLIFF_HALF_WIDTH = 0.25
+    // Matching tolerance for "does this district edge lie along a River/Cliff terrain
+    // edge" — deliberately generous (matches the THRESHOLD already used for the same
+    // kind of district/terrain proximity test in _cityEdgeIsNearWater above) rather than
+    // requiring near-exact coincidence: fine district polygons and coarse terrain edges
+    // are independently generated, so their shared boundary line isn't bit-for-bit
+    // identical between the two.
+    const MATCH_TOL = 1.0
+    const terrainData = this.gameStateManager.worldTerrainData
+    const terrPtMap = new Map((terrainData?.edgePoints || []).map(p => [p.id, p]))
+    const riverCliffSegs = []
+    for (const te of Object.values(terrainData?.edges || {})) {
+      if (te.assignedType !== 'River' && te.assignedType !== 'Cliff') continue
+      const pts = (te.pointIds || []).map(id => terrPtMap.get(id)).filter(Boolean)
+      for (let i = 0; i < pts.length - 1; i++) riverCliffSegs.push([pts[i], pts[i + 1]])
+    }
+    let matchedEdgeCount = 0, matchedDistrictCount = 0
+
+    for (const d of districts) {
+      if (!d._rawPolygon) d._rawPolygon = d.polygon.map(v => ({ x: v.x, y: v.y }))
+      const poly = d._rawPolygon
+      const n = poly.length
+      if (n < 3 || !riverCliffSegs.length) { d.polygon = poly.map(v => ({ x: v.x, y: v.y })); continue }
+
+      let cx = 0, cy = 0
+      for (const v of poly) { cx += v.x; cy += v.y }
+      cx /= n; cy /= n
+
+      const edgeMatched = new Array(n)
+      let anyMatch = false
+      for (let i = 0; i < n; i++) {
+        const a = poly[i], b = poly[(i + 1) % n]
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
+        edgeMatched[i] = riverCliffSegs.some(([p, q]) => this._segDist(mx, my, p.x, p.y, q.x, q.y) < MATCH_TOL)
+        if (edgeMatched[i]) { anyMatch = true; matchedEdgeCount++ }
+      }
+      if (anyMatch) matchedDistrictCount++
+
+      const pushed = poly.map(v => ({ x: v.x, y: v.y }))
+      for (let i = 0; i < n; i++) {
+        const prevMatched = edgeMatched[(i - 1 + n) % n], nextMatched = edgeMatched[i]
+        if (!prevMatched && !nextMatched) continue
+        let px = 0, py = 0, count = 0
+        if (prevMatched) {
+          const { nx, ny } = this._inwardNormal(poly[(i - 1 + n) % n], poly[i], cx, cy)
+          px += nx; py += ny; count++
+        }
+        if (nextMatched) {
+          const { nx, ny } = this._inwardNormal(poly[i], poly[(i + 1) % n], cx, cy)
+          px += nx; py += ny; count++
+        }
+        pushed[i].x += (px / count) * RIVER_CLIFF_HALF_WIDTH
+        pushed[i].y += (py / count) * RIVER_CLIFF_HALF_WIDTH
+      }
+      d.polygon = pushed
+    }
+    console.log(`[river-cliff-pullback] ${riverCliffSegs.length} river/cliff terrain segments, ${matchedEdgeCount} district edge(s) across ${matchedDistrictCount}/${districts.length} district(s) pulled back`)
+  }
+
+  _inwardNormal(a, b, cx, cy) {
+    const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1
+    let nx = -dy / L, ny = dx / L
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
+    if ((cx - mx) * nx + (cy - my) * ny < 0) { nx = -nx; ny = -ny }
+    return { nx, ny }
+  }
+
   finishTerrain() {
     const regions = this.gameStateManager.worldTerrainData.regions
     for (const region of regions) {
@@ -1093,19 +1173,86 @@ export default class SetupPhase {
     })
   }
 
-  // Reseed a not-yet-locked district's interior streets, then regenerate.
+  // Reseed a not-yet-locked district's interior streets, then regenerate. Always rerolls
+  // the seed once (that's the point of an explicit "Regenerate Streets" click), then hands
+  // off to _retryIfVoid for any further auto-retries.
   regenerateDistrict(districtId) {
     const cityData = this.gameStateManager.cityDistrictData
     const district = cityData?.districts?.find(d => d.id === districtId)
     if (!district) throw new Error(`District ${districtId} not found`)
-    if (district.locked) throw new Error(`District ${districtId} is locked`)
     if (!district.assignedType) throw new Error(`District ${districtId} has no type yet`)
+    if (district.locked) throw new Error(`District ${districtId} is already applied and permanent`)
+
     let s = ((district.streetSeed ?? district.id) * 2654435761) >>> 0
     s ^= s << 13; s ^= s >>> 17; s ^= s << 5
     district.streetSeed = s >>> 0
     this.generateForLocked(districtId)
-    this.log.push(`Regenerated streets for district ${districtId}`)
+    const retries = this._retryIfVoid(districtId)
+
+    this.log.push(`Regenerated streets for district ${districtId}${retries > 0 ? ` (${retries} void-retries)` : ''}`)
     return { ok: true, log: this.log }
+  }
+
+  // Detect + fix a significant void (see _districtHasVoid) by reseeding and regenerating,
+  // up to MAX_VOID_RETRIES times. Called after every district generation point (preview,
+  // apply, manual regenerate) so a bad layout gets caught immediately rather than only
+  // when the player happens to notice and manually re-rolls.
+  _retryIfVoid(districtId) {
+    const cityData = this.gameStateManager.cityDistrictData
+    const district = cityData?.districts?.find(d => d.id === districtId)
+    if (!district) return 0
+    const MAX_VOID_RETRIES = 5
+    let retries = 0
+    while (this._districtHasVoid(districtId) && retries < MAX_VOID_RETRIES) {
+      retries++
+      let s = ((district.streetSeed ?? district.id) * 2654435761) >>> 0
+      s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+      district.streetSeed = s >>> 0
+      console.log(`[void-detect] Void in district ${districtId} — auto-retry ${retries}/${MAX_VOID_RETRIES}`)
+      this.generateForLocked(districtId)
+    }
+    if (retries >= MAX_VOID_RETRIES && this._districtHasVoid(districtId)) console.warn(`[void-detect] District ${districtId} still has void after ${MAX_VOID_RETRIES} retries`)
+    else if (retries > 0) console.log(`[void-detect] District ${districtId} resolved in ${retries} retry(s)`)
+    return retries
+  }
+
+  // Detect whether a district's blocks leave a significant uncovered void.
+  // Uses polygon-clipping to compute (district polygon) − union(district blocks),
+  // returning true if the void is > VOID_AREA_THRESHOLD of the district area.
+  _districtHasVoid(districtId) {
+    try {
+      const cityData = this.gameStateManager.cityDistrictData
+      const district = cityData?.districts?.find(d => d.id === districtId)
+      if (!district?.polygon?.length) return false
+      const districtBlocks = (cityData.blocks || []).filter(b => b.districtId === districtId && b.blockCorners?.length >= 3)
+      if (districtBlocks.length === 0) { console.log(`[void-detect] District ${districtId}: no blocks`); return true }
+
+      // District polygon area (shoelace) — fast pre-check avoids full union if clearly fine.
+      const poly = district.polygon
+      let distArea = 0
+      for (let i = 0; i < poly.length; i++) { const a=poly[i], b=poly[(i+1)%poly.length]; distArea += a.x*b.y - b.x*a.y }
+      distArea = Math.abs(distArea) / 2
+      if (distArea < 0.01) return false
+
+      // Block sum area — if > 60% of district area is blocks, almost certainly no void.
+      const blocksArea = districtBlocks.reduce((s, b) => s + (b.area || 0), 0)
+      if (blocksArea / distArea > 0.60) return false
+
+      // Exact check: district minus union(blocks). Roads account for 20-40% of district
+      // area so a void threshold of 0.12 (12% of district truly uncovered after blocks+roads).
+      const VOID_THRESHOLD = 0.12
+      const dMP = [[poly.map(p => [p.x, p.y])]]
+      const pieces = districtBlocks.map(b => [[b.blockCorners.map(p => [p.x, p.y])]])
+      const coverage = pc.union(...pieces)
+      const voids = pc.difference(dMP, coverage)
+      const voidArea = voids.reduce((sum, pg) => sum + pg.reduce((s,ring,i) => {
+        let a=0; for(let k=0;k<ring.length;k++){const p=ring[k],q=ring[(k+1)%ring.length]; a+=p[0]*q[1]-q[0]*p[1]}
+        return s + Math.abs(a/2) * (i===0?1:-1)
+      }, 0), 0)
+      const ratio = voidArea / distArea
+      if (ratio > VOID_THRESHOLD) { console.log(`[void-detect] District ${districtId}: ${(ratio*100).toFixed(0)}% void`); return true }
+      return false
+    } catch (e) { console.warn('[void-detect] check failed:', e.message); return false }
   }
 
   // Discard a provisional (previewed, not-yet-locked) district — clear its type/seed
@@ -1116,6 +1263,21 @@ export default class SetupPhase {
     const district = cityData?.districts?.find(d => d.id === districtId)
     if (!district) throw new Error(`District ${districtId} not found`)
     if (district.locked) return { ok: true, log: this.log }
+
+    if (district.promotedFromPlotId != null) {
+      // Abandoned City Expansion — undo the promotion entirely rather than leaving a
+      // blank district behind. The source terrain plot becomes eligible again (see
+      // getCityDistrictDataForClient, which re-derives eligiblePromotionPlotIds).
+      cityData.districts = cityData.districts.filter(d => d.id !== districtId)
+      for (const key of Object.keys(cityData.edges || {})) {
+        const edge = cityData.edges[key]
+        if (edge.districtA === districtId || edge.districtB === districtId) delete cityData.edges[key]
+      }
+      this.generateForLocked()
+      this.log.push(`Abandoned promotion of district ${districtId} — plot restored`)
+      return { ok: true, log: this.log }
+    }
+
     district.assignedType = null
     district.residentialClass = null
     district.LeadershipClass = null
@@ -1155,27 +1317,229 @@ export default class SetupPhase {
   // once every type is covered, any further blanks fall back to uniform-random.
   // Resource production/consumption for non-Residential/Leadership auto-assignments use
   // placeholder values for now (real per-type balancing is a separate pass).
-  finishSubdivision() {
+  // Promote an unassigned, Living-Boundary-adjacent terrain PLOT (a fine Voronoi cell,
+  // not its coarse parent Terrain region) into a new city District (City Expansion).
+  // The plot's own polygon becomes the district polygon. After promotion the new
+  // district is ordinary — it can be assigned any type including Leadership. Terrain
+  // elevation is preserved (future Z-height); surface cover will be removed when the
+  // district generates buildings.
+  promoteTerrainPlotToDistrict(plotId) {
+    const wt = this.gameStateManager.worldTerrainData
+    const cityData = this.gameStateManager.cityDistrictData
+
+    // Find the fine terrain plot — NOT the coarse merged Terrain region it belongs to.
+    const plot = wt?.terrainPlots?.find(p => p.id === plotId)
+    if (!plot) throw new Error(`Terrain plot ${plotId} not found`)
+
+    // Only block if this specific plot already has a terrain DISTRICT assignment
+    // (Forestry, Agriculture, etc.), tracked separately in terrainDistrictPlots.
+    if (this.terrainDistrictPlots?.some(p => p.plotId === plotId)) {
+      throw new Error(`Plot ${plotId} already has a terrain district assignment.`)
+    }
+
+    // Water, ice, and mountainous terrain can never become a city District.
+    if (SetupPhase._isIneligibleTerrainPlot(plot, wt)) {
+      throw new Error(`Plot ${plotId} is Lake/Sea/Ice Sheet/Mountains terrain and cannot become a city district.`)
+    }
+
+    // Defensive guard against re-promoting an already-promoted plot (e.g. two seats
+    // racing on the same plot in multiplayer). The normal UI path can't reach this —
+    // getCityDistrictDataForClient() excludes already-promoted plots from
+    // eligiblePromotionPlotIds — but the server must not trust client state alone.
+    const districts = cityData?.districts || []
+    if (districts.some(d => d.promotedFromPlotId === plotId)) {
+      throw new Error(`Plot ${plotId} has already been promoted to a city district.`)
+    }
+
+    // Must be within the Living Boundary — share a full boundary edge with any district.
+    if (!this._isWithinLivingBoundary(plot, districts)) {
+      throw new Error('This terrain plot is not adjacent to the city.')
+    }
+
+    // Build the new district from the terrain plot's own polygon.
+    const newId = Math.max(-1, ...districts.map(d => d.id)) + 1
+    const polygon = (plot.polygon || plot.vertices || []).map(v => ({ x: v.x, y: v.y }))
+    if (polygon.length < 3) throw new Error('Terrain plot has no usable polygon')
+
+    const newDistrict = {
+      id: newId,
+      seedPoint: plot.seedPoint ? { x: plot.seedPoint.x, y: plot.seedPoint.y } : { x: polygon[0].x, y: polygon[0].y },
+      polygon,
+      assignedType: null,
+      description: '',
+      promotedFromPlotId: plotId,  // record the origin for future Z-height
+    }
+    districts.push(newDistrict)
+
+    // Add boundary edges between the new district and its city neighbours.
+    this._addPromotedDistrictEdges(newDistrict, cityData)
+
+    this.log.push(`Promoted terrain plot ${plotId} (region ${plot.parentRegionId}) to city district ${newId}`)
+    return { ok: true, newDistrictId: newId, log: this.log }
+  }
+
+  // Check if a terrain plot shares a full boundary EDGE (two consecutive matching
+  // vertices, not just one coincident corner) with any existing city district — this is
+  // the Living Boundary rule (CONTEXT_WorldTerrain.md: "sharing an edge"). A single
+  // shared vertex (a diagonal/corner touch) does NOT qualify.
+  _isWithinLivingBoundary(plot, districts) {
+    const EPS2 = 0.01 * 0.01
+    const closeEnough = (p, q) => (p.x - q.x) ** 2 + (p.y - q.y) ** 2 < EPS2
+    const poly = plot.polygon || plot.vertices || []
+    if (poly.length < 2) return false
+    for (let i = 0; i < poly.length; i++) {
+      const a1 = poly[i], a2 = poly[(i + 1) % poly.length]
+      for (const d of districts) {
+        const dPoly = d.polygon || []
+        for (let j = 0; j < dPoly.length; j++) {
+          const b1 = dPoly[j], b2 = dPoly[(j + 1) % dPoly.length]
+          const matches = (closeEnough(a1, b1) && closeEnough(a2, b2)) || (closeEnough(a1, b2) && closeEnough(a2, b1))
+          if (matches) return true
+        }
+      }
+    }
+    return false
+  }
+
+  // Recompute which terrain plots currently qualify for City Expansion (unassigned +
+  // within the Living Boundary) and attach the id list to cityDistrictData, then return
+  // it. The server is the single authority for this (ADR-0003) — the client reads the
+  // list rather than re-deriving adjacency itself. Call sites: every response that sends
+  // cityDistrictData to the client.
+  getCityDistrictDataForClient() {
+    const cityData = this.gameStateManager.cityDistrictData
+    if (!cityData) return cityData
+    const wt = this.gameStateManager.worldTerrainData
+    const districts = cityData.districts || []
+    const alreadyPromoted = new Set(districts.filter(d => d.promotedFromPlotId != null).map(d => d.promotedFromPlotId))
+    const alreadyTerrainAssigned = new Set((this.terrainDistrictPlots || []).map(p => p.plotId))
+    cityData.eligiblePromotionPlotIds = (wt?.terrainPlots || [])
+      .filter(p => !alreadyPromoted.has(p.id) && !alreadyTerrainAssigned.has(p.id))
+      .filter(p => !SetupPhase._isIneligibleTerrainPlot(p, wt))
+      .filter(p => this._isWithinLivingBoundary(p, districts))
+      .map(p => p.id)
+    return cityData
+  }
+
+  // Lake, Sea, Ice Sheet, and Mountains terrain can never become a city District — not
+  // buildable land. A plot's own assignedType is only ever set to 'City' at Terrain Setup
+  // (SetupPhase.js:initialize); its actual terrain type lives on its parent Region.
+  static INELIGIBLE_PROMOTION_TERRAIN_TYPES = new Set(['Lake', 'Sea', 'Ice Sheet', 'Mountains'])
+  static _isIneligibleTerrainPlot(plot, wt) {
+    const region = wt?.regions?.find(r => r.id === plot.parentRegionId)
+    return SetupPhase.INELIGIBLE_PROMOTION_TERRAIN_TYPES.has(region?.assignedType)
+  }
+
+  // Add District Edges between the newly promoted district and any existing districts
+  // that share polygon boundary segments with it. Registers the shared vertices into
+  // cityData.edgePoints (reusing existing points within tolerance) and records their ids
+  // in pointIds order — StreetVoronoiGenerator skips any city edge with fewer than 2
+  // resolved pointIds, so a promoted district's boundary must carry real point data,
+  // not just districtA/districtB references.
+  _addPromotedDistrictEdges(newDistrict, cityData) {
+    const edges = cityData.edges || (cityData.edges = {})
+    const edgePoints = cityData.edgePoints || (cityData.edgePoints = [])
+    let edgeIdx = Object.keys(edges).filter(k => k.startsWith('promoted-')).length
+    const EPS2 = 0.01 * 0.01
+    const close = (p, q) => (p.x - q.x) ** 2 + (p.y - q.y) ** 2 < EPS2
+    let nextPointId = 1 + edgePoints.reduce((max, p) => Math.max(max, p.id), -1)
+    const resolvePointId = (pt) => {
+      const existing = edgePoints.find(p => close(p, pt))
+      if (existing) return existing.id
+      const id = nextPointId++
+      edgePoints.push({ id, x: pt.x, y: pt.y })
+      return id
+    }
+
+    // Classify every boundary SEGMENT of the new district (not just individual vertices):
+    // does it coincide with a segment of an existing district (an inner edge), or does it
+    // face open terrain (an outer edge, districtB: null)? Mirrors generateCityDistrictData's
+    // inner/outer segment split so promoted districts get full-perimeter edge coverage —
+    // without it, exterior-facing segments have no edge object at all, so they can never be
+    // walled (_applyAutoWalling only iterates existing edges) and StreetVoronoiGenerator
+    // never generates a boundary street/gutter there.
+    const poly = newDistrict.polygon
+    const n = poly.length
+    const segmentNeighbor = new Array(n).fill(null)
+    for (let i = 0; i < n; i++) {
+      const a1 = poly[i], a2 = poly[(i + 1) % n]
+      for (const d of (cityData.districts || [])) {
+        if (d.id === newDistrict.id) continue
+        const dPoly = d.polygon || []
+        for (let j = 0; j < dPoly.length; j++) {
+          const b1 = dPoly[j], b2 = dPoly[(j + 1) % dPoly.length]
+          if ((close(a1, b1) && close(a2, b2)) || (close(a1, b2) && close(a2, b1))) {
+            segmentNeighbor[i] = d.id
+            break
+          }
+        }
+        if (segmentNeighbor[i] != null) break
+      }
+    }
+
+    // Merge consecutive same-neighbor segments into single polyline edges.
+    let outerIdx = 0
+    let i = 0
+    while (i < n) {
+      const neighbor = segmentNeighbor[i]
+      const start = i
+      while (i < n && segmentNeighbor[i] === neighbor) i++
+      const runPoints = poly.slice(start, i).concat([poly[i % n]])
+      const pointIds = runPoints.map(resolvePointId)
+      if (neighbor != null) {
+        const key = `promoted-${edgeIdx++}`
+        edges[key] = { districtA: newDistrict.id, districtB: neighbor, pointIds, assignedType: null, description: '' }
+      } else {
+        const key = `promoted-outer-${newDistrict.id}-${outerIdx++}`
+        edges[key] = { districtA: newDistrict.id, districtB: null, pointIds, assignedType: null, description: '' }
+      }
+    }
+  }
+
+  // Auto-pick a Leadership district from unapplied city districts and commit it.
+  // Called when the player skips the Leadership prompt at finishSubdivision.
+  autoAssignLeadership() {
+    const cityData = this.gameStateManager.cityDistrictData
+    const districts = cityData?.districts || []
+    const unapplied = districts.filter(d => !d.assignedType)
+    if (!unapplied.length) throw new Error('No unapplied districts available to assign Leadership')
+    // Pick deterministically by lowest id (stable across reloads).
+    const target = unapplied.reduce((a, b) => a.id < b.id ? a : b)
+    const VALID_RULING_BODY_CLASSES = ['Monarchy', 'Republic', 'Tyrant', 'Oligarchy', 'Theocracy', 'Anarchist']
+    let s = (target.id * 2654435761) >>> 0; s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+    const LeadershipClass = VALID_RULING_BODY_CLASSES[(s >>> 0) % VALID_RULING_BODY_CLASSES.length]
+    target.assignedType = 'Leadership'
+    target.LeadershipClass = LeadershipClass
+    target.producedResource = null
+    target.secondProducedResource = null
+    target.consumedResources = []
+    target.description = ''
+    target.name = generateName('Leadership', LeadershipClass)
+    if (target.streetSeed == null) target.streetSeed = target.id
+    this.log.push(`Auto-assigned Leadership (${LeadershipClass}) to district ${target.id}`)
+    return { ok: true, districtId: target.id, LeadershipClass, log: this.log }
+  }
+
+  finishSubdivision({ skipLeadershipCheck = false } = {}) {
     const cityData = this.gameStateManager.cityDistrictData
     const RESIDENTIAL_CLASSES = ['Slums', 'Middle', 'Noble']
     const districts = cityData?.districts || []
+
+    // Require exactly one Leadership district before finishing. If absent, return early
+    // so the client can show the prompt (assign manually, or call autoAssignLeadership).
+    if (!skipLeadershipCheck) {
+      const hasLeadership = districts.some(d => d.assignedType === 'Leadership')
+      if (!hasLeadership) {
+        return { ok: false, needsLeadership: true, log: this.log }
+      }
+    }
 
     const usedTypes = new Set(districts.filter(d => d.assignedType && d.assignedType !== 'Leadership').map(d => d.assignedType))
     const missingTypes = SetupPhase.ALL_DISTRICT_TYPES.filter(t => !usedTypes.has(t))
     const typeQueue = SetupPhase._shuffleSeeded(missingTypes, 1337)
 
     for (const district of districts) {
-      if (!district.assignedType && district.isLeadershipDistrict) {
-        // The Leadership district defaults to a Monarchy if left untyped.
-        district.assignedType = 'Leadership'
-        district.LeadershipClass = 'Monarchy'
-        district.producedResource = null
-        district.secondProducedResource = null
-        district.consumedResources = []
-        district.description = ''
-        district.name = generateName('Leadership', 'Monarchy')
-        this.log.push(`Auto-assigned Leadership (Monarchy) to district ${district.id}`)
-      } else if (!district.assignedType && !district.isLeadershipDistrict) {
+      if (!district.assignedType) {
         // Prefer a still-missing type (heavy coverage bias); once the queue is empty
         // every type is already represented somewhere in the city, so fall back to a
         // uniform-random pick among all of them.
@@ -1218,6 +1582,9 @@ export default class SetupPhase {
     // Generation must succeed before we commit the locked state — if it throws,
     // districts remain unlocked so the player can retry without a broken state.
     this.generateForLocked()
+    // Final safety net before every district locks permanently — catches voids in
+    // freshly auto-assigned districts (and any earlier district that slipped through).
+    for (const district of districts) this._retryIfVoid(district.id)
     this._rebuildFactions()
     for (const district of districts) district.locked = true
     this.currentStep = 'GuildCreation'
@@ -1250,6 +1617,12 @@ export default class SetupPhase {
         if (wp) tradeRoutes.push(wp)
       }
     }
+
+    // Pull each district's polygon back from any River/Cliff terrain edge before street
+    // generation runs — see Edge, CONTEXT_WorldTerrain.md. Recomputed fresh from each
+    // district's pristine polygon every call (not accumulated in place), since this runs
+    // once per district-lock retry/regeneration over the course of District Setup.
+    this._applyRiverCliffPullback(districts)
 
     const MAX_TOPOLOGY_RETRIES = 3
     let streetGraph = null
@@ -1334,29 +1707,23 @@ export default class SetupPhase {
     }
 
     const tPlots = performance.now()
+    // Capture any existing terrain plots BEFORE city plots are regenerated — if terrain
+    // plots are already calculated we reuse them instead of re-running the expensive
+    // polygon-clipping pipeline, and they're excluded from the plot-layer flicker.
+    const existingTerrainPlots = (cityData.plots || []).filter(p => p.type === 'terrain')
+
     const junctions = cityData.streetGraph?.junctions || []
     const { plots } = new PlotVoronoiGenerator().generate(blocks, cityData.districts, junctions, roadEdges, footprints)
     cityData.plots = plots
-    markTownhouseBlocks(blocks, cityData.plots, cityData.districts)
-    const townhouseCount = blocks.filter(b => b.blockType === 'townhouse').length
-    console.log(`[perf]   plots: ${(performance.now()-tPlots).toFixed(1)}ms (${plots.length} plots, ${townhouseCount} townhouse blocks)`)
+    console.log(`[perf]   plots: ${(performance.now()-tPlots).toFixed(1)}ms (${plots.length} plots)`)
 
-    // Convert raw world terrain plots (no polygon clip — clipping now done by
-    // clipTerrainPlotsToGutters after streetEdges are computed).
+    // Terrain plots: reuse existing ones if available (avoids the expensive polygon-clipping
+    // pipeline on every street regeneration — terrain plots only change when world terrain or
+    // trade routes change, not when interior streets are shuffled).
     const tTerrain = performance.now()
-    const wt = this.gameStateManager.worldTerrainData
-    const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
-    const rawTerrainPlots = (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId)
-    const tradeRoadWaypoints = (this.tradingDestinations || [])
-      .map(td => this._tradeRoadWaypoints(td.roadPath || []))
-      .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [])
-    cityData.plots = [...cityData.plots, ...terrainPlots]
-    console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${terrainPlots.length} plots)`)
-
-    // Outer boundary streets (right: null at generation time) now border terrain plots.
-    // Update right to 'terrain' so they are recognised as inter-plot streets, not exterior.
-    if (terrainPlots.length > 0) {
+    if (existingTerrainPlots.length > 0) {
+      cityData.plots = [...cityData.plots, ...existingTerrainPlots]
+      // Outer boundary right-field still needs updating for the new street graph.
       for (const edge of (cityData.streetGraph?.edges || []))
         if (edge.right === null) edge.right = 'terrain'
       for (const junction of (cityData.streetGraph?.junctions || [])) {
@@ -1364,14 +1731,35 @@ export default class SetupPhase {
         for (const conn of (junction.connections || []))
           if (conn.right === null) conn.right = 'terrain'
       }
-      computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
-      clipTerrainPlotsToCityFootprint(terrainPlots, cityData)
+      console.log(`[perf]   terrain plots: reused ${existingTerrainPlots.length} existing (${(performance.now()-tTerrain).toFixed(1)}ms)`)
+    } else {
+      const wt = this.gameStateManager.worldTerrainData
+      const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
+      const rawTerrainPlots = (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId)
+      const tradeRoadWaypoints = (this.tradingDestinations || [])
+        .map(td => this._tradeRoadWaypoints(td.roadPath || []))
+        .filter(Boolean)
+      const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [])
+      cityData.plots = [...cityData.plots, ...terrainPlots]
+      console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${terrainPlots.length} plots)`)
+      if (terrainPlots.length > 0) {
+        for (const edge of (cityData.streetGraph?.edges || []))
+          if (edge.right === null) edge.right = 'terrain'
+        for (const junction of (cityData.streetGraph?.junctions || [])) {
+          if (junction.right === null) junction.right = 'terrain'
+          for (const conn of (junction.connections || []))
+            if (conn.right === null) conn.right = 'terrain'
+        }
+        computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
+        clipTerrainPlotsToCityFootprint(terrainPlots, cityData)
+      }
     }
 
     buildPointRegistry(cityData)   // additive shared-vertex store + seam diagnostic (ADR-0018)
 
     console.log(`[perf]   _generateBuildings total: ${(performance.now()-t0).toFixed(1)}ms`)
-    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares, ${terrainPlots.length} terrain plots`)
+    const terrainPlotCount = cityData.plots.filter(p => p.type === 'terrain').length
+    this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares, ${terrainPlotCount} terrain plots`)
   }
 
   // Re-derive terrain plots from the current world terrain plots — run on save-load so
@@ -1413,7 +1801,6 @@ export default class SetupPhase {
     markSquareBlocks(blocks, districts)
     const { footprints } = new LandmarkPlacer().generate(blocks, districts)
     const { plots } = new PlotVoronoiGenerator().generate(blocks, districts, junctions, roadEdges, footprints)
-    markTownhouseBlocks(blocks, plots, districts)
 
     const wt = this.gameStateManager.worldTerrainData
     const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
@@ -1448,6 +1835,12 @@ export default class SetupPhase {
     if (!region) throw new Error(`Region ${regionId} not found`)
     if (plotId && this.terrainDistrictPlots.find(p => p.plotId === plotId)) {
       throw new Error(`Plot ${plotId} already has a terrain district`)
+    }
+    // Mutual exclusivity with City Expansion (CONTEXT_WorldTerrain.md: a plot promoted
+    // to a city District is no longer "unassigned" and cannot also become Forestry/etc.).
+    const cityDistricts = this.gameStateManager.cityDistrictData?.districts || []
+    if (plotId && cityDistricts.some(d => d.promotedFromPlotId === plotId)) {
+      throw new Error(`Plot ${plotId} has already been promoted to a city district.`)
     }
 
     const VALID = { Forest: 'Forestry', Hills: 'Mining', Plains: 'Agriculture', Lake: 'Fishing', Sea: 'Fishing' }
@@ -1691,6 +2084,9 @@ export default class SetupPhase {
   addGod({ domains, name, description, seatId }) {
     const god = { id: this.gods.length, domains, name, description, seatId }
     this.gods.push(god)
+    // Every god gets an associated Worship Service — any district can consume it, but
+    // only a Religious district (aligned to this god) can produce it (see assignDistrictType).
+    this._registerResource(`Worship of ${name}`)
     return god
   }
 
@@ -1718,16 +2114,21 @@ export default class SetupPhase {
     return { ok: true, threats: this.threats, factions: this.factions, log: this.log }
   }
 
-  addForeignPowerTrade({ fpId, name, description }) {
+  addForeignPowerTrade({ fpId, name, description, buys = [], sells = [], resourceDefs = [] }) {
     const fp = this.foreignPowers.find(f => f.id === fpId)
     if (!fp) throw new Error('Foreign power not found')
     const label = (name || fp.name).trim()
     if (!label) throw new Error('A name is required')
-    const dest = { id: this.tradingDestinations.length, foreignPowerId: fpId, name: label, description: description || '', direction: fp.direction, terrainType: 'foreign-power', buys: [], sells: [] }
+    // Store new resource definitions (name, gpValue, ingredients) in the registry —
+    // same pattern as assignDistrictType/assignTerrainDistrict.
+    for (const def of resourceDefs) {
+      if (def?.name) this._registerResourceDef(def)
+    }
+    const dest = { id: this.tradingDestinations.length, foreignPowerId: fpId, name: label, description: description || '', direction: fp.direction, terrainType: 'foreign-power', buys, sells }
     this.tradingDestinations.push(dest)
     this.factions.push({ id: this.factions.length, health: 100, type: 'trade', typeName: 'Foreign Trade', name: label, subclass: null, foreignPowerId: fpId, standing: {} })
     this.log.push(`Defined trade route with ${fp.name}: "${label}"`)
-    return { ok: true, tradingDestinations: this.tradingDestinations, factions: this.factions, log: this.log }
+    return { ok: true, tradingDestinations: this.tradingDestinations, factions: this.factions, resourceRegistry: this.resourceRegistry, log: this.log }
   }
 
   addForeignPower({ direction, name, colour, description, seatId }) {

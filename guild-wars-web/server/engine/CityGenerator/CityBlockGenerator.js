@@ -1,5 +1,6 @@
 import { distToSegSq, pip, segIntersect } from '../voronoi/VoronoiUtils.js'
 import { STREET_HALF_WIDTH, getDistrictParams, halfWidthForDistrict } from './StreetVoronoiGenerator.js'
+import polygonClipping from 'polygon-clipping'
 
 
 // Street priority for tie-breaking (paved hierarchy: Stone > Brick > Mud).
@@ -263,6 +264,79 @@ export default class CityBlockGenerator {
     return { blocks, roadEdges }
   }
 
+
+  // Fill sparse-interior-street voids. A district whose interior streets are too sparse
+  // leaves large areas covered by neither a block nor a road — the tracer produces nothing
+  // there, so it renders as a void. Compute each district's uncovered region,
+  // districtPolygon − union(blocks ∪ road faces), via robust polygon difference and add each
+  // piece as a block; the normal plot pipeline then subdivides it into building plots. The
+  // pieces are, by construction, disjoint from every existing block, so no overlap is
+  // introduced. Mutates `blocks`. Returns the number of void-fill blocks added.
+  _fillDistrictVoids(blocks, roadFacePolys, districts, roadEdges) {
+    if (!districts?.length || !blocks.length) return 0
+    const MIN_VOID_AREA = 0.05   // ignore thin boundary slivers
+    const MP = (pts) => [[pts.map(p => [p.x, p.y])]]
+    const ringArea = (r) => { let a = 0; for (let k = 0; k < r.length; k++) { const p = r[k], q = r[(k + 1) % r.length]; a += p[0] * q[1] - q[0] * p[1] } return Math.abs(a / 2) }
+
+    const cover = []
+    for (const b of blocks) if (b.blockCorners?.length >= 3) cover.push(MP(b.blockCorners))
+    for (const rf of roadFacePolys) if (rf?.length >= 3) cover.push(MP(rf))
+    if (!cover.length) return 0
+
+    let coverage
+    try { coverage = polygonClipping.union(...cover) } catch (e) { console.warn('  [void-fill] coverage union failed —', e.message); return 0 }
+
+    let nextId = blocks.reduce((m, b) => Math.max(m, b.id), -1) + 1
+    let added = 0, holed = 0
+    for (const d of districts) {
+      if (!d.polygon || d.polygon.length < 3) continue
+      let voids
+      try { voids = polygonClipping.difference(MP(d.polygon), coverage) } catch { continue }
+      for (const poly of voids) {
+        const ext = poly[0]
+        if (ringArea(ext) < MIN_VOID_AREA) continue
+
+        // Annular void (wraps an island block/plaza): stitch the hole(s) into one ring with
+        // zero-width slits and PAVE it as a square, so it fills cleanly without an annular
+        // building. Solid voids become normal blocks and subdivide into plots.
+        let ringPts, blockType
+        if (poly.length > 1) { ringPts = this._stitchHoles(poly); blockType = 'square'; holed++ }
+        else ringPts = poly[0].map(p => [p[0], p[1]])
+
+        const corners = ringPts.map(([x, y]) => ({ x, y }))
+        // polygon-clipping closes rings (last vertex == first) — drop the duplicate.
+        if (corners.length > 1) { const f = corners[0], l = corners[corners.length - 1]; if (Math.abs(f.x - l.x) < 1e-9 && Math.abs(f.y - l.y) < 1e-9) corners.pop() }
+        if (corners.length < 3) continue
+
+        const block = { id: nextId++, districtId: d.id, blockCorners: corners, area: ringArea(ext), streetEdges: findStreetFacingEdges(corners, roadEdges) }
+        if (blockType) block.blockType = blockType
+        blocks.push(block)
+        added++
+      }
+    }
+    if (added) console.log(`  [void-fill] added ${added} block(s) filling sparse-street voids${holed ? ` (${holed} annular → paved squares)` : ''}`)
+    return added
+  }
+
+  // Merge a polygon-with-holes (polygon-clipping ring list [exterior, hole1, …]) into one
+  // simple ring by bridging each hole to the nearest outer vertex with a zero-width slit.
+  _stitchHoles(rings) {
+    const strip = (r) => { const a = r.map(p => [p[0], p[1]]); if (a.length > 1) { const f = a[0], l = a[a.length - 1]; if (Math.abs(f[0] - l[0]) < 1e-9 && Math.abs(f[1] - l[1]) < 1e-9) a.pop() } return a }
+    let outer = strip(rings[0])
+    for (let h = 1; h < rings.length; h++) {
+      const hole = strip(rings[h])
+      if (hole.length < 3) continue
+      let bi = 0, bj = 0, bd = Infinity
+      for (let i = 0; i < outer.length; i++) for (let j = 0; j < hole.length; j++) {
+        const dx = outer[i][0] - hole[j][0], dy = outer[i][1] - hole[j][1], d = dx * dx + dy * dy
+        if (d < bd) { bd = d; bi = i; bj = j }
+      }
+      const hseq = []
+      for (let k = 0; k <= hole.length; k++) hseq.push(hole[(bj + k) % hole.length])
+      outer = [...outer.slice(0, bi + 1), ...hseq, outer[bi], ...outer.slice(bi + 1)]
+    }
+    return outer
+  }
 
   // Returns true if the face is road surface (junction fill or road strip).
   _isRoadFace(vertices, streetNodes, streetEdges) {

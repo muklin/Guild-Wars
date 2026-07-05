@@ -114,6 +114,7 @@ app.get('/api/state', (req, res) => {
   const snap = gameStateManager.getStateSnapshot()
   res.json({
     ...snap,
+    cityDistrictData: setupPhase.getCityDistrictDataForClient(),
     guilds: snap.guilds.map(enrichGuild),
     setupStep: setupPhase.currentStep,
     resourceRegistry: setupPhase.resourceRegistry,
@@ -331,7 +332,7 @@ app.post('/api/setup/terrain/done', requireActiveSeat, async (req, res) => {
     res.json({
       ok: true,
       step: 'CitySubdivision',
-      cityDistrictData: gameStateManager.cityDistrictData,
+      cityDistrictData: setupPhase.getCityDistrictDataForClient(),
       log: result.log
     })
   } catch (error) {
@@ -349,7 +350,7 @@ app.post('/api/setup/terrain/god', async (req, res) => {
     const seat = seatOf(req)
     const god = setupPhase.addGod({ domains: domains || [], name: name.trim(), description: description || '', seatId: seat?.id ?? null })
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'God', entityName: name.trim(), vetoable: true } : null)
-    res.json({ ok: true, god, worldDomains: setupPhase.worldDomains })
+    res.json({ ok: true, god, worldDomains: setupPhase.worldDomains, resourceRegistry: setupPhase.resourceRegistry })
   } catch (error) {
     console.error('Add god error:', error)
     res.status(400).json({ ok: false, error: error.message })
@@ -410,8 +411,8 @@ app.post('/api/setup/fp-threat', async (req, res) => {
 // POST /api/setup/fp-trade - Define a trade route with a Foreign Power
 app.post('/api/setup/fp-trade', async (req, res) => {
   try {
-    const { fpId, name, description } = req.body
-    const result = setupPhase.addForeignPowerTrade({ fpId, name, description })
+    const { fpId, name, description, buys, sells, resourceDefs } = req.body
+    const result = setupPhase.addForeignPowerTrade({ fpId, name, description, buys, sells, resourceDefs: resourceDefs || [] })
     await autoSave()
     res.json(result)
   } catch (error) {
@@ -437,8 +438,8 @@ app.post('/api/setup/threat', requireActiveSeat, async (req, res) => {
 // POST /api/setup/trade - Add a trading destination at an edge region
 app.post('/api/setup/trade', requireActiveSeat, async (req, res) => {
   try {
-    const { regionId, description, name, buys, sells } = req.body
-    const result = setupPhase.addTradingDestination(regionId, description, name, buys, sells)
+    const { regionId, description, name, buys, sells, resourceDefs } = req.body
+    const result = setupPhase.addTradingDestination(regionId, description, name, buys, sells, resourceDefs || [])
     const seat = seatOf(req)
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Trading Destination', entityName: name || 'Trade Route', vetoable: true } : null)
     res.json({ ok: true, tradingDestinations: result.tradingDestinations, trade: result.trade, factions: result.factions, resourceRegistry: result.resourceRegistry, log: result.log })
@@ -454,7 +455,7 @@ app.post('/api/setup/city/preview', requireActiveSeat, async (req, res) => {
     const { districtId, districtType, residentialClass, LeadershipClass } = req.body
     const result = setupPhase.previewDistrictType(districtId, districtType, residentialClass, LeadershipClass)
     await autoSave()
-    res.json({ ok: result.ok, cityDistrictData: gameStateManager.cityDistrictData, log: result.log })
+    res.json({ ok: result.ok, cityDistrictData: setupPhase.getCityDistrictDataForClient(), log: result.log })
   } catch (error) {
     console.error('District preview error:', error)
     res.status(400).json({ ok: false, error: error.message })
@@ -469,22 +470,60 @@ app.post('/api/setup/city/assign', requireActiveSeat, async (req, res) => {
     const seat = seatOf(req)
     const entityName = name?.trim() || residentialClass || LeadershipClass || districtType
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'District', entityName, vetoable: true } : null)
-    res.json({ ok: result.ok, resourceRegistry: result.resourceRegistry, factions: result.factions, cityDistrictData: gameStateManager.cityDistrictData, log: result.log })
+    res.json({ ok: result.ok, resourceRegistry: result.resourceRegistry, factions: result.factions, cityDistrictData: setupPhase.getCityDistrictDataForClient(), log: result.log })
   } catch (error) {
     console.error('District assign error:', error)
     res.status(400).json({ ok: false, error: error.message })
   }
 })
 
-// POST /api/setup/city/regenerate - Reseed a not-yet-locked district's streets
+// POST /api/setup/city/regenerate - Reseed a not-yet-locked district's streets.
+// Optionally accepts configOverrides to apply per-district generation tweaks before
+// regenerating; the overrides are stored on the district object and persisted in autosave.
 app.post('/api/setup/city/regenerate', requireActiveSeat, async (req, res) => {
   try {
-    const { districtId } = req.body
+    const { districtId, configOverrides } = req.body
+    // Store overrides on the district object before regenerating so getDistrictConfig()
+    // merges them in during street/block/plot generation.
+    if (configOverrides !== undefined) {
+      const district = gameStateManager.cityDistrictData?.districts?.find(d => d.id === districtId)
+      if (district) district.configOverrides = configOverrides || {}
+    }
     const result = setupPhase.regenerateDistrict(districtId)
     await autoSave()
-    res.json({ ok: result.ok, factions: setupPhase.factions, cityDistrictData: gameStateManager.cityDistrictData, log: result.log })
+    res.json({ ok: result.ok, factions: setupPhase.factions, cityDistrictData: setupPhase.getCityDistrictDataForClient(), log: result.log })
   } catch (error) {
     console.error('District regenerate error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/city/promote-terrain-plot - Promote an unassigned terrain plot that
+// is within the Living Boundary into a new city District (City Expansion).
+app.post('/api/setup/city/promote-terrain-plot', requireActiveSeat, async (req, res) => {
+  try {
+    const { plotId } = req.body
+    const result = setupPhase.promoteTerrainPlotToDistrict(plotId)
+    await autoSave()
+    res.json({ ...result, cityDistrictData: setupPhase.getCityDistrictDataForClient() })
+  } catch (error) {
+    console.error('Promote terrain plot error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/city/district-overrides - Save per-district config overrides without
+// regenerating (autosaved so other players receive the overrides on next sync).
+app.post('/api/setup/city/district-overrides', requireActiveSeat, async (req, res) => {
+  try {
+    const { districtId, configOverrides } = req.body
+    const district = gameStateManager.cityDistrictData?.districts?.find(d => d.id === districtId)
+    if (!district) return res.status(400).json({ ok: false, error: `District ${districtId} not found` })
+    district.configOverrides = configOverrides || {}
+    await autoSave()
+    res.json({ ok: true })
+  } catch (error) {
+    console.error('District overrides error:', error)
     res.status(400).json({ ok: false, error: error.message })
   }
 })
@@ -495,7 +534,7 @@ app.post('/api/setup/city/revert', requireActiveSeat, async (req, res) => {
     const { districtId } = req.body
     const result = setupPhase.revertDistrict(districtId)
     await autoSave()
-    res.json({ ok: result.ok, cityDistrictData: gameStateManager.cityDistrictData, log: result.log })
+    res.json({ ok: result.ok, cityDistrictData: setupPhase.getCityDistrictDataForClient(), log: result.log })
   } catch (error) {
     console.error('District revert error:', error)
     res.status(400).json({ ok: false, error: error.message })
@@ -509,7 +548,7 @@ app.post('/api/setup/city/edge', requireActiveSeat, async (req, res) => {
     const result = setupPhase.assignCityEdgeType(edgeId, edgeType, description, name)
     const seat = seatOf(req)
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'City Edge', entityName: name?.trim() || edgeType, vetoable: true } : null)
-    res.json({ ok: result.ok, cityDistrictData: gameStateManager.cityDistrictData, log: result.log })
+    res.json({ ok: result.ok, cityDistrictData: setupPhase.getCityDistrictDataForClient(), log: result.log })
   } catch (error) {
     console.error('City edge assign error:', error)
     res.status(400).json({ ok: false, error: error.message })
@@ -550,12 +589,33 @@ app.post('/api/setup/terrain-district', requireActiveSeat, async (req, res) => {
   }
 })
 
+// POST /api/setup/city/auto-assign-leadership - Auto-pick a Leadership district from
+// unapplied city districts (called when the player skips the Leadership prompt).
+app.post('/api/setup/city/auto-assign-leadership', requireActiveSeat, async (req, res) => {
+  try {
+    const result = setupPhase.autoAssignLeadership()
+    await autoSave()
+    res.json({ ...result, cityDistrictData: setupPhase.getCityDistrictDataForClient() })
+  } catch (error) {
+    console.error('Auto-assign leadership error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
 // POST /api/setup/subdivision/done - Finish city subdivision → auto-create one guild per seat
 app.post('/api/setup/subdivision/done', requireActiveSeat, async (req, res) => {
   try {
     const t0 = performance.now()
-    const result = setupPhase.finishSubdivision()
+    const { skipLeadershipCheck } = req.body ?? {}
+    const result = setupPhase.finishSubdivision({ skipLeadershipCheck: !!skipLeadershipCheck })
     console.log(`[perf] finishSubdivision (all districts): ${(performance.now()-t0).toFixed(1)}ms`)
+
+    // Leadership prompt: if no Leadership district was assigned, return early so the
+    // client can show the prompt (player assigns manually or triggers auto-assign).
+    if (!result.ok && result.needsLeadership) {
+      return res.json({ ok: false, needsLeadership: true, log: result.log })
+    }
+
     mp.onStepChanged()
 
     // Auto-create one guild per seat.
@@ -574,7 +634,7 @@ app.post('/api/setup/subdivision/done', requireActiveSeat, async (req, res) => {
       step: 'Complete',
       log: result.log,
       factions: setupPhase.factions,
-      cityDistrictData: gameStateManager.cityDistrictData,
+      cityDistrictData: setupPhase.getCityDistrictDataForClient(),
       guilds: Array.from(gameStateManager.guilds.values()),
     })
   } catch (error) {

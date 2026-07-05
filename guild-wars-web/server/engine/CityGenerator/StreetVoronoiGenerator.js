@@ -12,6 +12,9 @@ function posHash(x, y) {
 const SNAP_THRESHOLD = 0.25   // world units — near-duplicate node merge
 const BOUNDARY_INTERVAL = 1.0 // segment length along city boundary edges
 export const STREET_HALF_WIDTH = 0.04375  // half road width — must match WorldRenderer thickness / 2
+// Wall, Canal, and MainRoad boundaries are wider than interior streets — they demarcate major
+// city features and need enough gutter clearance for the wall/canal mesh on each side.
+export const MAIN_BOUNDARY_HALF_WIDTH = STREET_HALF_WIDTH * 2.5
 const MIN_STUB_ANGLE_DEG = 30  // dead-end stubs at <this angle to a neighbor are pruned
 const MIN_COMPONENT_NODES = 3  // disconnected components below this many nodes are deleted
 const COLLINEAR_NODE_MARGIN = 0.4  // a node within this perpendicular distance of an edge interior is absorbed onto that edge
@@ -25,6 +28,35 @@ function streetTypeForDistrict(district) {
 
 function betterStreetType(a, b) {
   return (STREET_PRIORITY[a] ?? 0) >= (STREET_PRIORITY[b] ?? 0) ? a : b
+}
+
+// Where two roads run parallel and adjacent — typically two neighbouring districts each
+// laying a street along their shared boundary — they render as a split "50/50" road of two
+// different surfaces. Unify each such pair to the higher-priority surface (Stone > Brick >
+// Mud) so a shared boundary reads as one street. Type-only: no geometry or connectivity
+// change, so it cannot affect blocks/plots/voids. Only reconciles the three road surfaces
+// (never Wall/Canal/MainRoad). O(n²) over the edge list — fine at city scale.
+function reconcileParallelStreetTypes(nodes, edges) {
+  const ROADS = new Set(['Stone', 'Brick', 'Mud'])
+  const nodeById = new Map(nodes.map(n => [n.id, n]))
+  const THRESH2 = 0.10 * 0.10   // centreline separation below which adjacent parallels merge
+  const ANGLE = 0.20            // radians — near-parallel
+  const seg = edges.map(e => { const a = nodeById.get(e.nodeA), b = nodeById.get(e.nodeB); return (a && b) ? { mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, dir: Math.atan2(b.y - a.y, b.x - a.x) } : null })
+  let changed = 0
+  for (let i = 0; i < edges.length; i++) {
+    if (!seg[i] || !ROADS.has(edges[i].type)) continue
+    for (let j = i + 1; j < edges.length; j++) {
+      if (!seg[j] || !ROADS.has(edges[j].type) || edges[i].type === edges[j].type) continue
+      if ((seg[i].mx - seg[j].mx) ** 2 + (seg[i].my - seg[j].my) ** 2 > THRESH2) continue
+      let dd = Math.abs(seg[i].dir - seg[j].dir) % Math.PI
+      if (dd > Math.PI / 2) dd = Math.PI - dd
+      if (dd > ANGLE) continue
+      const win = betterStreetType(edges[i].type, edges[j].type)
+      if (edges[i].type !== win) { edges[i].type = win; changed++ }
+      if (edges[j].type !== win) { edges[j].type = win; changed++ }
+    }
+  }
+  if (changed) console.log(`reconcileParallelStreetTypes: unified ${changed} parallel boundary street(s) to the higher-priority surface`)
 }
 
 // Per-district street/block/plot generation tuning now lives in
@@ -740,9 +772,16 @@ export default class StreetVoronoiGenerator {
       // would add unintended junctions on the boundary chain.
       const fixedBoundarySegments = []
       for (const cityEdge of Object.values(cityEdges || {})) {
-        const isTypedBoundary = cityEdge.assignedType === 'Wall' || cityEdge.assignedType === 'Canal' || cityEdge.assignedType === 'MainRoad'
-        if (!isTypedBoundary) continue
-        if (cityEdge.districtA !== district.id && cityEdge.districtB !== district.id) continue
+        // Suppress perimeter seeds on ALL shared district boundaries (not just Wall/Canal/
+        // MainRoad). Any district-to-district edge already gets a street-boundary-* edge;
+        // if both adjacent districts also place their own perimeter street there, the result
+        // is two parallel streets of different types — a visible 50/50 split on the boundary.
+        const touchesThisDistrict = cityEdge.districtA === district.id || cityEdge.districtB === district.id
+        if (!touchesThisDistrict) continue
+        // Only suppress where a shared boundary exists (both districts defined). Outer
+        // city-edge segments (districtB null) are the map perimeter — perimeter seeds
+        // there are still needed to generate the outermost block rows.
+        if (cityEdge.districtB == null) continue
         const pts = (cityEdge.pointIds || []).map(id => edgePointById.get(id)).filter(Boolean)
         for (let i = 0; i < pts.length - 1; i++) {
           fixedBoundarySegments.push([pts[i], pts[i + 1]])
@@ -939,18 +978,34 @@ export default class StreetVoronoiGenerator {
         boundaryType = cityEdge.assignedType
       }
 
-      // Wall/Canal/MainRoad boundaries carry left/right district ids and edgeKind
+      // Wall/Canal/Docks/MainRoad boundaries carry left/right district ids and edgeKind
       // so the renderer and pathfinder can identify them without cityDistrictData.edges.
-      const edgeKind = (cityEdge.assignedType === 'Wall' || cityEdge.assignedType === 'Canal' || cityEdge.assignedType === 'MainRoad')
+      const edgeKind = (cityEdge.assignedType === 'Wall' || cityEdge.assignedType === 'Canal' || cityEdge.assignedType === 'Docks' || cityEdge.assignedType === 'MainRoad')
         ? cityEdge.assignedType : undefined
 
-      // Boundary streets sit between two districts (or one district and the city
-      // edge, when districtB is unset) — average each side's street_width so a
-      // wide-streets district and a narrow-streets district meet at a sensible
-      // shared gutter width instead of jumping at the boundary.
+      // Boundary half-width rules:
+      // 1. Wall, Canal, Docks, or MainRoad → MAIN_BOUNDARY_HALF_WIDTH (wide enough for the mesh).
+      // 2. Plain road boundary (Mud/Brick/Stone) → halfWidth of the WINNING district (the one
+      //    whose street type matches the computed boundaryType), so the wider/better street
+      //    sets the gutter, not an average that would be narrower than either side's intent.
+      // 3. Both districts have the same street type → max(left, right) since neither is the
+      //    "loser" and we still want the wider of the two to determine the shared gutter.
       const leftHalfWidth = halfWidthForDistrict(districtById.get(cityEdge.districtA))
       const rightHalfWidth = cityEdge.districtB != null ? halfWidthForDistrict(districtById.get(cityEdge.districtB)) : leftHalfWidth
-      const boundaryHalfWidth = (leftHalfWidth + rightHalfWidth) / 2
+      let boundaryHalfWidth
+      if (edgeKind === 'Wall' || edgeKind === 'Canal' || edgeKind === 'Docks' || cityEdge.assignedType === 'MainRoad') {
+        boundaryHalfWidth = MAIN_BOUNDARY_HALF_WIDTH   // rule 1
+      } else {
+        const typeA = streetTypeForDistrict(districtById.get(cityEdge.districtA))
+        const typeB = streetTypeForDistrict(districtById.get(cityEdge.districtB))
+        if (typeA === typeB) {
+          boundaryHalfWidth = Math.max(leftHalfWidth, rightHalfWidth)   // rule 3
+        } else {
+          // rule 2: use the halfWidth of whichever district's type wins
+          const winnerHalfWidth = betterStreetType(typeA, typeB) === typeA ? leftHalfWidth : rightHalfWidth
+          boundaryHalfWidth = winnerHalfWidth
+        }
+      }
 
       for (let i = 0; i < ordered.length - 1; i++) {
         const edge = {
@@ -964,6 +1019,7 @@ export default class StreetVoronoiGenerator {
         }
         if (edgeKind !== undefined) edge.edgeKind = edgeKind
         boundaryEdges.push(edge)
+
       }
 
       boundaryNodesByEdge.set(edgeId, ordered)
@@ -1098,6 +1154,10 @@ export default class StreetVoronoiGenerator {
     // Trade roads are appended after cleanup so the long external run isn't pruned
     // as a stub/orphan; they link into the finished graph at the nearest junction.
     addTradeRoads(finalNodes, finalEdges, tradeRoutes, districts)
+
+    // Unify parallel boundary streets to the higher-priority surface (before buildJunctions
+    // so junction types stay consistent) — fixes shared boundaries rendering 50/50.
+    reconcileParallelStreetTypes(finalNodes, finalEdges)
 
     const junctions = buildJunctions(finalNodes, finalEdges)
 

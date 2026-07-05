@@ -47,6 +47,7 @@ export const MODELS = {
   ],
   special: [
     { name: 'alchemists', glbPath: '/resources/Models/alchemists.glb', width: 2.325, depth: 1.358, height: 3.156 },
+    { name: 'castle',     glbPath: '/resources/Models/castle.glb',     width: 10.0,  depth: 10.0,  height: 12.0  }, // TODO: measure actual GLB dimensions
     { name: 'church',     glbPath: '/resources/Models/church.glb',     width: 5.627, depth: 4.958, height: 7.190 },
     { name: 'forge',      glbPath: '/resources/Models/forge.glb',      width: 2.382, depth: 2.515, height: 2.106 },
     { name: 'hall',       glbPath: '/resources/Models/hall.glb',       width: 6.517, depth: 2.272, height: 3.873 },
@@ -77,7 +78,7 @@ export const MODEL_OFFSET = {
   m1: { x: -0.034, z: -0.684 }, m2: { x: 0.409, z: -1.259 },
   t1: { x: 0.014, z: -0.713 }, t2: { x: -0.036, z: -0.697 }, t3: { x: -0.013, z: -1.580 },
   t4: { x: -0.028, z: -0.926 }, t5: { x: 0.483, z: -0.319 },
-  alchemists: { x: 0.534, z: -0.596 }, church: { x: 1.779, z: -1.707 },
+  alchemists: { x: 0.534, z: -0.596 }, castle: { x: 0.0, z: -5.0 }, church: { x: 1.779, z: -1.707 },
   forge: { x: -0.150, z: -0.988 }, hall: { x: 0.221, z: -1.065 },
   watchmaker: { x: -0.085, z: -0.485 }, waterwheel: { x: -0.416, z: -1.106 },
   colliseum: { x: -0.270, z: -6.648 },

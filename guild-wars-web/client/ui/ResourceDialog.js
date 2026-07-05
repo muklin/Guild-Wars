@@ -8,7 +8,11 @@ export default class ResourceDialog {
     this._usedProduced = usedProduced
     this._alreadySelected = alreadySelected.map(s => s.toLowerCase())
     this._isMarket = isMarket
-    this._showSpec = showSpec   // false = skip GP value and ingredients (trade routes)
+    // Every player-defined new resource must always get an initial GP value — that part
+    // is unconditional below regardless of showSpec. showSpec now only gates the
+    // (produced-only) ingredients section, which trade routes ('consumed' mode) never
+    // show anyway since that's also gated on _mode === 'produced'.
+    this._showSpec = showSpec
     this._titleOverride = titleOverride
     this._consumedResources = consumedResources  // names available as ingredient candidates
     this._onAdd = onAdd
@@ -103,24 +107,23 @@ export default class ResourceDialog {
     nameInp.style.cssText = 'width:100%;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box;margin-bottom:6px'
     wrap.appendChild(nameInp)
 
-    let gpInp = null
-    if (this._showSpec) {
-      const gpRow = document.createElement('div')
-      gpRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px'
-      const gpLabel = document.createElement('span')
-      gpLabel.textContent = 'Initial value:'
-      gpLabel.style.cssText = 'font-size:11px;color:#aaa;white-space:nowrap'
-      gpInp = document.createElement('input')
-      gpInp.type = 'number'
-      gpInp.min = '1'
-      gpInp.placeholder = ''
-      gpInp.style.cssText = 'flex:1;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box'
-      const gpSuffix = document.createElement('span')
-      gpSuffix.textContent = 'Gp'
-      gpSuffix.style.cssText = 'font-size:11px;color:#aaa'
-      gpRow.appendChild(gpLabel); gpRow.appendChild(gpInp); gpRow.appendChild(gpSuffix)
-      wrap.appendChild(gpRow)
-    }
+    // Initial value is mandatory for every player-defined resource, regardless of
+    // context (trade routes included) — not gated by showSpec.
+    const gpRow = document.createElement('div')
+    gpRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px'
+    const gpLabel = document.createElement('span')
+    gpLabel.textContent = 'Initial value:'
+    gpLabel.style.cssText = 'font-size:11px;color:#aaa;white-space:nowrap'
+    const gpInp = document.createElement('input')
+    gpInp.type = 'number'
+    gpInp.min = '1'
+    gpInp.placeholder = ''
+    gpInp.style.cssText = 'flex:1;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;padding:4px 6px;font-size:11px;box-sizing:border-box'
+    const gpSuffix = document.createElement('span')
+    gpSuffix.textContent = 'Gp'
+    gpSuffix.style.cssText = 'font-size:11px;color:#aaa'
+    gpRow.appendChild(gpLabel); gpRow.appendChild(gpInp); gpRow.appendChild(gpSuffix)
+    wrap.appendChild(gpRow)
 
     const selectedIngredients = new Set()
     if (this._showSpec && this._mode === 'produced') {
@@ -167,19 +170,16 @@ export default class ResourceDialog {
     addBtn.addEventListener('click', () => {
       const name = nameInp.value.trim()
       if (!name) { err.textContent = 'Enter a resource name.'; err.style.display = 'block'; return }
-      const result = { name, isNew: true }
-      if (this._showSpec) {
-        const gpValue = parseFloat(gpInp.value)
-        if (!(gpValue > 0)) { err.textContent = 'Enter a GP value greater than 0.'; err.style.display = 'block'; return }
-        result.gpValue = gpValue
-        if (this._mode === 'produced') {
-          if (this._consumedResources.length > 0 && selectedIngredients.size === 0) {
-            err.textContent = 'Select at least 1 ingredient.'
-            err.style.display = 'block'
-            return
-          }
-          result.ingredients = [...selectedIngredients]
+      const gpValue = parseFloat(gpInp.value)
+      if (!(gpValue > 0)) { err.textContent = 'Enter a GP value greater than 0.'; err.style.display = 'block'; return }
+      const result = { name, isNew: true, gpValue }
+      if (this._showSpec && this._mode === 'produced') {
+        if (this._consumedResources.length > 0 && selectedIngredients.size === 0) {
+          err.textContent = 'Select at least 1 ingredient.'
+          err.style.display = 'block'
+          return
         }
+        result.ingredients = [...selectedIngredients]
       }
       this._onAdd(result)
       this.close()

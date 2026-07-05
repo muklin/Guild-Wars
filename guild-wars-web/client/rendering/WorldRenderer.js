@@ -320,7 +320,20 @@ export default class WorldRenderer {
   // ── Terrain delegation ──────────────────────────────────────────────────────
 
   setTerrainData(regions, edges, terrainPlots, edgePoints) {
+    this.districtRenderer.setTerrainWaterData(regions, edges, edgePoints)
     return this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints)
+  }
+
+  // Hide/show terrain plot meshes and exclude/include them from hit-testing based on
+  // which plots are currently the source of a promoted (City Expansion) city district.
+  // Reversible — a plot dropped from cityData (promotion abandoned/reverted) is un-suppressed.
+  syncPromotedPlots(cityData) {
+    const promotedPlotIds = new Set(
+      (cityData?.districts || [])
+        .filter(d => d.promotedFromPlotId != null)
+        .map(d => d.promotedFromPlotId)
+    )
+    return this.terrainRenderer.setPromotedPlotIds(promotedPlotIds)
   }
 
   renderTerrain(regions, terrainPlots) {
@@ -657,14 +670,15 @@ export default class WorldRenderer {
     return this.groundRenderer.clearBlockHover()
   }
 
-  renderPlots(plots, districtData) {
+  renderPlots(plots, districtData, opts) {
     if (!RENDER_PLOTS) return
     // Terrain plots are now part of the unified plots array. When present, retire the
     // coarse TerrainRenderer fills so fine city-boundary plots take over without double-render.
-    if ((plots || []).some(p => p.type === 'terrain')) {
+    // Skip this when preserving terrain plots (they're already showing correctly).
+    if (!opts?.preserveTerrainPlots && (plots || []).some(p => p.type === 'terrain')) {
       this.terrainRenderer.deleteNonCityTerrainPlots()
     }
-    return this.groundRenderer.renderPlots(plots, districtData)
+    return this.groundRenderer.renderPlots(plots, districtData, opts)
   }
 
   clearPlotLayer() {
@@ -784,10 +798,6 @@ export default class WorldRenderer {
 
   getTerrainPlotAtWorldPos(worldX, worldY) {
     return this.groundRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
-  }
-
-  getTerrainPlotBySourceId(rawPlotId) {
-    return this.groundRenderer._terrainPlots.find(p => p.terrainPlotId === rawPlotId) ?? null
   }
 
   // Switch plot bases to/from the finished grassy-brown ground (leaving District Setup).

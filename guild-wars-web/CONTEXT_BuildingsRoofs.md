@@ -10,17 +10,29 @@ Terminology for dynamically generated buildings and their roofs. Buildings are a
 A structure generated within a plot. A plot can contain one or more building footprints.
 _Avoid_: structure, object
 
-**Townhouse block**:
-A block classified (probabilistically per district type) to produce buildings with shared party walls and continuous street facades. Within a townhouse block, ~5% of plots are freestanding slots instead. The block carries a `blockType: 'townhouse'` flag set at generation time.
-_Avoid_: row block, terrace block
+**Building Type**:
+A per-building gameplay classification (game-mechanical intent, not primarily a geometry driver, though it may later influence footprint/decoration) — one of Residential (people live there), Industrial (people make something), Commercial (people sell something), Public (open-access, services or governing bodies), Military (private, specialized training), extensible. A Building carries up to two Types, drawn via a per-district weighted roll (`buildingTypeWeights`) at creation, independent of the district's own type (a Residential district is mostly Residential-typed buildings but isn't exclusively so). Deliberately generative: types are assigned first, with what a given combination actually *does* in-game left as future work rather than a fixed per-model lookup.
+_Avoid_: building category, use type
 
-**Freestanding slot**:
-A plot inside a Townhouse block that receives a GLB model building rather than a continuous party-wall facade. Rare (~5%). Adjacent townhouse plots must detect the gap and expose (not suppress) their shared boundary wall.
-_Avoid_: singleton plot, instanced plot
+**Building Subtype**:
+A finer classification within one Building Type (e.g. Residential: Slum/MiddleClass/Noble; Commercial: trader/bank/moneylender; Industrial: forge/smelter/blacksmith; Public: tavern/inn/temple) — examples only, not an exhaustive list. Field reserved on the Building Spec now; not yet rolled or assigned — deferred until Building Type itself is validated in practice.
+_Avoid_: sub-category, subclass
 
-**Townhouse footprint**:
-The building polygon for a plot in a Townhouse block. Computed by: (1) keeping every street-facing edge as a front wall; (2) for each street-facing edge, insetting it inward (perpendicular) by a wing depth chosen from four district-defined bay-depth options; (3) clipping the inset segment to the plot polygon; (4) closing the perimeter with side walls along boundary edges and back walls parallel to their respective frontage. A plot with N street-facing edges produces N wings, each potentially at a different depth.
-_Avoid_: plot footprint, building outline
+**Attached**:
+A Parametric Building whose Wing-list footprint sits flush (zero setback) against every street edge of its plot, eligible to have faces Suppressed wherever it meets an equally-tall neighbour doing the same. Chosen per-building (not per-block) via that district's `freestandingChance` roll — the complement of Freestanding — client-side and seeded from the plot.
+_Avoid_: townhouse, townhouse block, row house, terrace house
+
+**Freestanding**:
+A Parametric Building set back from every edge of its plot by a seeded-random gap (from `style.frontSetback` up to 15% of that edge's frontage length), never Suppressing a face against a neighbour. Chosen per-building via the same district `freestandingChance` roll as Attached; independent of the Custom Model roll below.
+_Avoid_: freestanding slot (renamed to Custom Model), detached
+
+**Custom Model**:
+A plot that receives a fixed GLB model building instead of a Parametric Building. Chosen per-building via a district's `customModelChance` roll, client-side and seeded; independent of the Attached/Freestanding roll. Formerly called "Freestanding slot" — renamed because "freestanding" now names the unattached Parametric Building case above, which this is not.
+_Avoid_: freestanding slot, GLB slot
+
+**Wing-list footprint**:
+The building polygon for any Parametric Building, Attached or Freestanding. Computed by: (1) splitting each street-facing edge into one or more Wings (see Wing); (2) for each resulting wing, insetting it inward (perpendicular) by a depth chosen from four district-defined bay-depth options — plus, for a Freestanding building, an outward setback on every side; (3) clipping to the plot polygon; (4) closing the perimeter with side/back walls and resolving overlaps across all wings from all edges together. A plot with N street-facing edges, each split into wings up to `maxWingWidth` bays wide, produces N or more wings total.
+_Avoid_: townhouse footprint, plot footprint, building outline
 
 **Landmark**:
 A district-specific feature building (per `DISTRICT_MODEL_SQUARE`) placed on a district's Square clusters before plots are generated; plot ground under a Landmark footprint is dropped. Distinct from an ordinary plot Building.
@@ -55,7 +67,9 @@ The compact deterministic descriptor (seed, footprint, roof, suppressedFaces) a 
 _Avoid_: blueprint, recipe
 
 **Wing**:
-One rectangular or polygonal volume within a building's footprint. Each wing has an independent Floor entry list — its own floor count, per-floor heights, and ground-floor Foundation, drawn independently per district style; sibling wings of one building are never forced to align. Adjacent wings at different heights produce a lean-to roof on the shorter wing. The roof ridge follows the footprint spine and hips around corners; gable ends appear only on free-standing ends (those exposed to open space or a taller-neighbour step).
+One rectangular or polygonal volume within a building's footprint. Each wing has an independent Floor entry list — its own floor count, per-floor heights, and ground-floor Foundation, drawn independently per district style; sibling wings of one building are never forced to align. Adjacent wings at different heights produce a lean-to roof on the shorter wing. The roof ridge follows the footprint spine and hips around corners; gable ends appear only on open ends (those exposed to open space or a taller-neighbour step, as opposed to a Suppressed face).
+
+A street-facing edge longer than the district's `maxWingWidth` (bays) is split into multiple side-by-side Wings before depth is computed, each a seeded-random width no smaller than the engine-wide `MIN_WING_WIDTH` (currently 3 bays) — a remainder too small to stand alone is folded back into the last two wings and re-split within bounds, rather than left as a sliver. When a split has an odd wing count, its centre wing has a small seeded chance to sit one bay back from the street, with a return wall closing the resulting side notch.
 _Avoid_: section, module, arm
 
 **Floor entry**:
@@ -75,11 +89,19 @@ A small stepped stair from true ground (`y=0`) up to a door's threshold, added w
 _Avoid_: stoop, porch steps
 
 **Lean-to roof**:
-A single-pitch roof on a wing that is shorter than an adjacent wing. Slopes from the outer eave upward to its abutment against the taller adjacent wing's wall. Used on secondary wings in a Townhouse building.
+A single-pitch roof on a wing that is shorter than an adjacent wing. Slopes from the outer eave upward to its abutment against the taller adjacent wing's wall. Used on secondary wings in an Attached building.
 _Avoid_: shed roof, mono-pitch, pent roof
 
+**Archway**:
+A ground-floor passage tunnelling the full depth of an eligible Wing through to the Courtyard behind the building. Eligible wings are Attached (never Freestanding), ≤4 bays deep, with ≥1.5 floor-heights of clearance below floor 2 (i.e. a Foundation under a normal ground floor, or a ground floor itself rolled 1.5 tall). 1–3 bays wide, always 1.5 floor-heights tall; simple internal walls face inward, with no ceiling finish yet (wood ceiling and knee braces are future work). Chosen once per building via a per-district `archChance` roll (default 15% everywhere; never more than one per building), and can sit centred in its wing or pushed to one edge if that edge has a neighbouring wing (same building, from a frontage split, or an adjacent building) to back onto — the archway never crosses into that neighbour's own footprint.
+_Avoid_: gatehouse, tunnel, carriageway
+
+**Courtyard**:
+The open plot area behind a building's rearmost wing(s) — today only used for back-yard tree scattering. An Archway's purpose is connecting the street to this space through the building.
+_Avoid_: backyard, back lot, rear yard
+
 **Suppressed face**:
-A building face where wall panels, interior posts, and roof trim are omitted because the face abuts a neighbour building of equal or greater height. Corner posts shared with perpendicular faces are retained. Encoded in the Building Spec as `suppressedFaces`, pre-computed by the server.
+A building face where wall panels, interior posts, and roof trim are omitted because the face abuts an Attached neighbour building of equal or greater height. Corner posts shared with perpendicular faces are retained. Computed client-side (`_suppressPartyWalls`, `BuildingRenderer.js`) from each same-block neighbour's wing geometry, not pre-computed by the server (ADR-0008 describes an earlier, since-superseded server-side design).
 _Avoid_: hidden face, invisible wall, party wall
 
 ### Roofs

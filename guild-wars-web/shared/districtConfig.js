@@ -39,11 +39,12 @@
 //                  of being subdivided into plots.
 //   plotSpacing        Spacing (world units) of plot seeds along a block perimeter.
 //   minPlotSize        Minimum plot area.
-//   townhouseProb  Probability (0..1) a non-square block becomes a townhouse block.
 //   landmarks      { modelName: count } — special models placed on this district's
 //                  Square clusters before plots (was DISTRICT_MODEL_SQUARE).
 //   buildingStyle  Parametric building probability distributions + GLB model weights
-//                  for freestanding/custom slots (was DISTRICT_BUILDING_STYLES):
+//                  for Custom Model buildings (was DISTRICT_BUILDING_STYLES). Every
+//                  roll below is per-building, client-side, seeded from the plot
+//                  (see ADR-0019) — there is no more block-level 'townhouse' flag:
 //     floors            Weighted floor-count options.
 //     woodChance        Probability a nonstone wall material is wood (vs plaster).
 //     stoneChance       Probability the ground floor uses stone (upper floors always
@@ -53,22 +54,34 @@
 //                  granite.
 //     roof          Relative roof-material weights; order is the tiebreak.
 //     overhangMin/Max   World-unit eave overhang range.
-//     wingDepths        Bay-count options for townhouse wing depth (repeat = weight).
-//     modelWeights      GLB models eligible for this district's freestanding/custom
-//                  slots, and their relative weight (absent/0 = never).
+//     wingDepths        Bay-count options for a wing's depth (repeat = weight).
+//     maxWingWidth      Max width (bays) of one wing before a street frontage is
+//                  split into multiple side-by-side wings. Hidden from the UI.
+//     customModelChance Chance a building is a Custom Model (GLB) instead of a
+//                  Parametric Building. Hidden from the UI.
+//     freestandingChance  Chance a Parametric Building is Freestanding (set back on
+//                  every side) rather than Attached (flush, party-wall eligible).
+//                  Hidden from the UI.
+//     archChance        Chance a building has an Archway (max one). Hidden from the UI.
+//     buildingTypeWeights  Weighted Building Type mix (Residential/Industrial/
+//                  Commercial/Public/Military) for this district's buildings.
+//                  Hidden from the UI.
+//     modelWeights      GLB models eligible for this district's Custom Model
+//                  buildings, and their relative weight (absent/0 = never).
 export const DISTRICTS = {
   "Residential-Slums": {
     color: 0xa08860,
     streetType: "Mud",
     street_width: 0.8,
-    street_spacing: 0.5,
-    block_density: 3.0,
-    xyRatio: 2.0,
-    street_alignment: "manhattan",
+    street_spacing: 0.6,
+    block_density: 4.0,
+    xyRatio: 5.0,
+    street_alignment: "chebyshev",
     square_threshhold: 0.05,
     plotSpacing: 0.10,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { well1: 6 },
     buildingStyle: {
       floors: { 1: 1.0 },
@@ -79,7 +92,12 @@ export const DISTRICTS = {
       roof: { thatch: 0.7, reed: 0.25, slate: 0.05 },
       overhangMin: 0.06,
       overhangMax: 0.2,
-      wingDepths: [2, 2, 2, 3],
+      wingDepths: [2, 2, 4, 4],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.05,
+      buildingTypeWeights: { Residential: 8, Commercial: 1, Public: 1 },
       modelWeights: {
         h10: 2,
         h11: 2,
@@ -95,18 +113,20 @@ export const DISTRICTS = {
   "Residential-Middle": {
     color: 0xfff385,
     streetType: "Brick",
-    street_width: 1.2,
-    street_spacing: 1.0,
+    street_width: 1.4,
+    street_spacing: 0.6,
     block_density: 2.0,
-    xyRatio: 6.0,
-    street_alignment: "manhattan",
+    xyRatio: 1.2,
+    street_alignment: "chebyshev",
     square_threshhold: 0.1,
     plotSpacing: 0.2,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { well1: 4 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -115,6 +135,11 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [2, 4, 4, 5],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.3,
+      buildingTypeWeights: { Residential: 6, Commercial: 2, Public: 1 },
       modelWeights: {
         h8: 3,
         h9: 3,
@@ -140,7 +165,8 @@ export const DISTRICTS = {
     square_threshhold: 0.3,
     plotSpacing: 0.5,
     minPlotSize: 0.07,
-    townhouseProb: 1.0,
+    walledChance: 0.5,
+    externalWalledChance: 1.0,
     landmarks: { t2: 2 },
     buildingStyle: {
       floors: { 2: 0.65, 3: 0.35 },
@@ -152,6 +178,11 @@ export const DISTRICTS = {
       overhangMin: 0.22,
       overhangMax: 0.48,
       wingDepths: [3, 6, 6, 8],
+      maxWingWidth: 6,
+      archChance: 0.80,
+      customModelChance: 0.05,
+      freestandingChance: 1.0,
+      buildingTypeWeights: { Residential: 6, Public: 2, Commercial: 1 },
       modelWeights: {
         h8: 1,
         h9: 1,
@@ -171,7 +202,7 @@ export const DISTRICTS = {
   "Leadership-Monarchy": {
     color: 0xdaa520,
     streetType: "Stone",
-    street_width: 1.2,
+    street_width: 1.4,
     street_spacing: 1.0,
     block_density: 2.0,
     xyRatio: 1.0,
@@ -179,10 +210,12 @@ export const DISTRICTS = {
     square_threshhold: 0.3,
     plotSpacing: 0.2,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
-    landmarks: { hall: 1 },
+    walledChance: 1.0,
+    externalWalledChance: 1.0,
+    landmarks: { castle: 1, hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -190,7 +223,12 @@ export const DISTRICTS = {
       roof: { thatch: 0.45, slate: 0.35, reed: 0.2 },
       overhangMin: 0.12,
       overhangMax: 0.42,
-      wingDepths: [2, 3, 3, 5],
+      wingDepths: [3, 5, 7],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 1.0,
+      buildingTypeWeights: { Public: 6, Residential: 2, Military: 1 },
       modelWeights: {
         m2: 3,
         h8: 1,
@@ -218,10 +256,12 @@ export const DISTRICTS = {
     square_threshhold: 0.3,
     plotSpacing: 0.2,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -230,6 +270,11 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [2, 3, 3, 5],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 1.0,
+      buildingTypeWeights: { Public: 6, Residential: 2, Commercial: 1 },
       modelWeights: {
         m2: 3,
         h8: 1,
@@ -257,10 +302,12 @@ export const DISTRICTS = {
     square_threshhold: 0.4,
     plotSpacing: 0.3,
     minPlotSize: 0.04,
-    townhouseProb: 1.0,
-    landmarks: { hall: 1 },
+    walledChance: 1.0,
+    externalWalledChance: 1.0,
+    landmarks: { castle: 1, hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -269,6 +316,11 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [2, 3, 3, 5],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 1.0,
+      buildingTypeWeights: { Public: 5, Military: 3, Residential: 1 },
       modelWeights: {
         m2: 3,
         h8: 1,
@@ -296,10 +348,12 @@ export const DISTRICTS = {
     square_threshhold: 0.3,
     plotSpacing: 0.2,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -308,6 +362,11 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [2, 3, 3, 5],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.3,
+      buildingTypeWeights: { Public: 5, Commercial: 3, Residential: 1 },
       modelWeights: {
         m2: 3,
         h8: 1,
@@ -327,7 +386,7 @@ export const DISTRICTS = {
   "Leadership-Theocracy": {
     color: 0xd4c17f,
     streetType: "Brick",
-    street_width: 1.2,
+    street_width: 1.4,
     street_spacing: 0.5,
     block_density: 1.5,
     xyRatio: 8.0,
@@ -335,10 +394,12 @@ export const DISTRICTS = {
     square_threshhold: 0.5,
     plotSpacing: 0.2,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -347,6 +408,11 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [2, 3, 3, 5],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.3,
+      buildingTypeWeights: { Public: 6, Residential: 2 },
       modelWeights: {
         m2: 3,
         h8: 1,
@@ -374,10 +440,12 @@ export const DISTRICTS = {
     square_threshhold: 0.05,
     plotSpacing: 0.15,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -386,6 +454,11 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [2, 3, 3, 5],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.05,
+      buildingTypeWeights: { Public: 3, Residential: 3, Commercial: 2, Industrial: 1 },
       modelWeights: {
         m2: 3,
         h8: 1,
@@ -405,15 +478,16 @@ export const DISTRICTS = {
   Market: {
     color: 0xffd700,
     streetType: "Brick",
-    street_width: 1.0,
+    street_width: 1.2,
     street_spacing: 1.0,
-    block_density: 2.0,
+    block_density: 6.0,
     xyRatio: 8.0,
     street_alignment: "manhattan",
     square_threshhold: 0.3,
     plotSpacing: 0.2,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 1.0,
     landmarks: { m1: 2, t4: 2, hall: 1 },
     buildingStyle: {
       floors: { 1: 0.5, 2: 0.4, 3: 0.1 },
@@ -425,6 +499,11 @@ export const DISTRICTS = {
       overhangMin: 0.06,
       overhangMax: 0.2,
       wingDepths: [2, 2, 2, 3],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.3,
+      buildingTypeWeights: { Commercial: 7, Public: 2, Residential: 1 },
       modelWeights: {
         m1: 3,
         m2: 1,
@@ -448,18 +527,20 @@ export const DISTRICTS = {
   Religious: {
     color: 0xffff00,
     streetType: "Stone",
-    street_width: 1.2,
+    street_width: 1.5,
     street_spacing: 0.5,
-    block_density: 1.5,
+    block_density: 2.5,
     xyRatio: 1.5,
     street_alignment: "manhattan",
     square_threshhold: 0.5,
     plotSpacing: 0.2,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.1,
+    externalWalledChance: 0.8,
     landmarks: { church: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -468,6 +549,11 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [3, 3, 4, 5],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 1.0,
+      buildingTypeWeights: { Public: 8, Residential: 1 },
       modelWeights: {
         m1: 3,
         m2: 1,
@@ -490,15 +576,16 @@ export const DISTRICTS = {
   Magical: {
     color: 0xc39bef,
     streetType: "Brick",
-    street_width: 1.0,
+    street_width: 1.2,
     street_spacing: 0.6,
-    block_density: 2.0,
+    block_density: 4.0,
     xyRatio: 1.2,
     street_alignment: "chebyshev",
     square_threshhold: 0.25,
     plotSpacing: 0.15,
     minPlotSize: 0.025,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { t2: 2, hall: 1 },
     buildingStyle: {
       floors: { 1: 1.0 },
@@ -510,6 +597,11 @@ export const DISTRICTS = {
       overhangMin: 0.06,
       overhangMax: 0.2,
       wingDepths: [2, 2, 2, 3],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.3,
+      buildingTypeWeights: { Industrial: 5, Residential: 4, Commercial: 1 },
       modelWeights: {
         h16: 3,
         h18: 3,
@@ -525,13 +617,14 @@ export const DISTRICTS = {
     streetType: "Stone",
     street_width: 2.0,
     street_spacing: 0.5,
-    block_density: 1.0,
+    block_density: 2.0,
     xyRatio: 5.0,
     street_alignment: "chebyshev",
     square_threshhold: 0.4,
     plotSpacing: 0.3,
     minPlotSize: 0.04,
-    townhouseProb: 1.0,
+    walledChance: 0.5,
+    externalWalledChance: 1.0,
     landmarks: { t3: 2 },
     buildingStyle: {
       floors: { 2: 0.65, 3: 0.35 },
@@ -543,24 +636,31 @@ export const DISTRICTS = {
       overhangMin: 0.22,
       overhangMax: 0.48,
       wingDepths: [3, 4, 5],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 1.0,
+      buildingTypeWeights: { Military: 7, Residential: 2, Industrial: 1 },
       modelWeights: { h11: 2, h13: 2, h6: 2, forge: 2, alchemists: 1 },
     },
   },
   Industry: {
     color: 0xbdb76b,
     streetType: "Mud",
-    street_width: 1.2,
+    street_width: 1.4,
     street_spacing: 1.2,
-    block_density: 1.0,
+    block_density: 4.0,
     xyRatio: 3.0,
     street_alignment: "manhattan",
     square_threshhold: 0.05,
     plotSpacing: 0.3,
     minPlotSize: 0.04,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { t5: 1, hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -569,24 +669,31 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [3],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.05,
+      buildingTypeWeights: { Industrial: 7, Commercial: 2, Residential: 1 },
       modelWeights: { t5: 3, h10: 2, h11: 2, alchemists: 3, forge: 3 },
     },
   },
   Entertainment: {
     color: 0xff69b4,
     streetType: "Mud",
-    street_width: 1.2,
+    street_width: 1.4,
     street_spacing: 0.5,
-    block_density: 2.0,
+    block_density: 4.0,
     xyRatio: 1.0,
     street_alignment: "centroid",
     square_threshhold: 0.5,
     plotSpacing: 0.15,
     minPlotSize: 0.04,
-    townhouseProb: 1.0,
+    walledChance: 0.0,
+    externalWalledChance: 0.0,
     landmarks: { colliseum: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
+      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -595,6 +702,11 @@ export const DISTRICTS = {
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [2, 3, 3, 8],
+      maxWingWidth: 6,
+      archChance: 0.15,
+      customModelChance: 0.05,
+      freestandingChance: 0.05,
+      buildingTypeWeights: { Public: 5, Commercial: 4, Residential: 1 },
       modelWeights: { h8: 2, h9: 2, t5: 2, h15: 1 },
     },
   },
@@ -612,7 +724,6 @@ export const DEFAULTS = {
   street_alignment: "manhattan",
   square_threshhold: 0.1,
   plotSpacing: 0.2,
-  townhouseProb: 1.0,
   landmarks: {},
   buildingStyle: {
     floors: { 1: 0.5, 2: 0.5 },
@@ -624,6 +735,11 @@ export const DEFAULTS = {
     overhangMin: 0.14,
     overhangMax: 0.48,
     wingDepths: [2, 3, 4, 5],
+    maxWingWidth: 6,
+    archChance: 0.15,
+    customModelChance: 0.05,
+    freestandingChance: 0.05,
+    buildingTypeWeights: { Residential: 5, Commercial: 2, Industrial: 1, Public: 1, Military: 1 },
     modelWeights: {}, // empty -> every model eligible
   },
 };
@@ -643,8 +759,18 @@ export function districtConfigKey(district) {
 }
 
 // Look up a district's full config, falling back to DEFAULTS for anything unassigned
-// or not in the table.
+// or not in the table. Merges district.configOverrides (set via the cog/settings UI)
+// so per-district tweaks apply without touching the shared DISTRICTS table.
+// buildingStyle is deep-merged so sub-fields (floors, roof, wingDepths, …) can be
+// overridden individually without replacing the whole buildingStyle object.
 export function getDistrictConfig(district) {
   const key = districtConfigKey(district);
-  return (key && DISTRICTS[key]) || DEFAULTS;
+  const base = (key && DISTRICTS[key]) || DEFAULTS;
+  const overrides = district?.configOverrides;
+  if (!overrides || Object.keys(overrides).length === 0) return base;
+  const result = { ...base, ...overrides };
+  if (overrides.buildingStyle && base.buildingStyle) {
+    result.buildingStyle = { ...base.buildingStyle, ...overrides.buildingStyle };
+  }
+  return result;
 }

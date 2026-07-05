@@ -13,6 +13,7 @@ import ForeignPowerDialog from './ui/ForeignPowerDialog.js'
 import GodDialog from './ui/GodDialog.js'
 import MagicSystemDialog from './ui/MagicSystemDialog.js'
 import NameDialog from './ui/NameDialog.js'
+import ResourceDialog from './ui/ResourceDialog.js'
 export default class App {
   constructor() {
     this.renderer = null
@@ -88,6 +89,7 @@ export default class App {
 
     // --- Terrain phase ---
     this.eventBus.on('REGION_CLICKED',  (regionId) => this._handleRegionClick(regionId))
+    this.eventBus.on('PROMOTE_TERRAIN_TO_DISTRICT', ({ plotId, pendingType }) => this._handlePromoteWithType(plotId, pendingType))
     this.eventBus.on('EDGE_CLICKED',    (edge)     => this._handleEdgeClick(edge))
 
     this.eventBus.on('TERRAIN_TYPE_PREVIEW', (t)    => this._handleTerrainPreview(t))
@@ -123,19 +125,15 @@ export default class App {
     })
     this.eventBus.on('DISTRICT_APPLY',              (data) => this._handleDistrictApply(data))
     this.eventBus.on('DISTRICT_REGENERATE',         ()     => this._handleDistrictRegenerate())
+    this.eventBus.on('DISTRICT_SETTINGS_SAVE',      ({ configOverrides }) => this._handleDistrictSettingsSave(configOverrides))
+    this.eventBus.on('DISTRICT_SETTINGS_REGENERATE',({ configOverrides }) => this._handleDistrictSettingsRegenerate(configOverrides))
     this.eventBus.on('CITY_EDGE_TYPE_PREVIEW',(t)    => this._handleCityEdgePreview(t))
     this.eventBus.on('CITY_EDGE_APPLY',       (data) => this._handleCityEdgeApply(data))
 
     this.eventBus.on('TERRAIN_ACTION_SELECT', ({ action }) => {
       if (action === 'Threat') {
-        const dialog = new NameDialog({
-          entityKind: 'threat', entityLabel: 'Threat', subType: 'Threat',
-          onApply: (name, description) => {
-            this.eventBus.emit('TERRAIN_THREAT_APPLY', { name, description })
-          },
-          onCancel: () => {}
-        })
-        dialog.open()
+        // Apply immediately — Threats on terrain plots don't need a separate naming step.
+        this.eventBus.emit('TERRAIN_THREAT_APPLY', { name: '', description: '' })
         return
       }
       this.pendingTerrainAction = action
@@ -147,11 +145,11 @@ export default class App {
       this._refreshDistrictPanel()
     })
 
-    this.eventBus.on('TERRAIN_TRADE_APPLY', async ({ name, description, buys, sells }) => {
+    this.eventBus.on('TERRAIN_TRADE_APPLY', async ({ name, description, buys, sells, resourceDefs }) => {
       const regionId = this.selectedTerrainRegionId
       if (!regionId) return
       try {
-        const response = await GameAPI.addTrade(regionId, description, name, buys, sells)
+        const response = await GameAPI.addTrade(regionId, description, name, buys, sells, resourceDefs)
         if (response.ok) {
           this.tradingDestinations = response.tradingDestinations
           if (response.resourceRegistry) { this.resourceRegistry = response.resourceRegistry; this.uiManager.updateResources(this.resourceRegistry) }
@@ -196,9 +194,15 @@ export default class App {
         const canThreatTrade = !!parent.isEdge
         if (!canDistrict && !canThreatTrade) return
 
-        // Resolve the rendered terrain plot for this raw plot
-        const terrainPlot = this.renderer.getTerrainPlotBySourceId(rawPlot.id)
-        const plotId = terrainPlot?.id ?? null
+        // rawPlot.id IS the world-scale worldTerrainData.terrainPlots id (already resolved
+        // correctly by TerrainRenderer.getTerrainPlotAtWorldPos) — this is what the server's
+        // promotion/eligibility/terrain-district endpoints all key on. Previously this went
+        // through getTerrainPlotBySourceId(), which looks up a DIFFERENT id space (the
+        // city-scale ground-rendered plot, only populated for plots already converted into
+        // the Groundplane near the city) and returned null for any plot outside that set —
+        // silently breaking both City Expansion promotion and terrain-district assignment
+        // for most external plots.
+        const plotId = rawPlot.id ?? null
         const plotHasDistrict = plotId && (this.factions || []).some(f => f.type === 'terrain' && f.plotId === plotId)
 
         // Toggle deselect if clicking the same plot that's already selected
@@ -349,7 +353,14 @@ export default class App {
         onApply: async ({ domains, name, description, worldDomains }) => {
           try {
             const res = await GameAPI.createGod({ domains, name, description, worldDomains })
-            if (!res.ok) this.uiManager.showError(res.error || 'Failed to add God')
+            if (res.ok) {
+              // Registers "Worship of <name>" as a Service — update the resource bar
+              // immediately rather than waiting for the next live-sync refresh.
+              if (res.resourceRegistry) {
+                this.resourceRegistry = res.resourceRegistry
+                this.uiManager.updateResources(this.resourceRegistry)
+              }
+            } else this.uiManager.showError(res.error || 'Failed to add God')
           } catch (e) { this.uiManager.showError(e.message) }
         },
         onCancel: () => {}
@@ -406,13 +417,14 @@ export default class App {
   // Render the city's streets, gutters, blocks, plots, and buildings from a
   // cityDistrictData payload. Used after every per-district assign/regenerate/lock.
   // Landmarks and plots arrive ready from the server (ADR-0005) — just render.
-  _renderCityGeometry(cityData) {
+  _renderCityGeometry(cityData, { preserveTerrainPlots = false } = {}) {
     if (!cityData) return
+    this.renderer.syncPromotedPlots(cityData)
     this.renderer.setCityDistrictData(cityData)
     this.renderer.renderStreetGraph(cityData.streetGraph)
     this.renderer.renderGutters(cityData.streetGraph)
     this.renderer.renderBlocks(cityData.blocks)
-    this.renderer.renderPlots(cityData.plots, cityData)
+    this.renderer.renderPlots(cityData.plots, cityData, { preserveTerrainPlots })
     this.renderer.drawBlockCenters(cityData.blocks)
     this.renderer.drawPlotCenters(cityData.plots || [])
     this.renderer.drawStreetSeeds(cityData.streetGraph)
@@ -425,12 +437,12 @@ export default class App {
     if (!region) return
 
     if (this.currentPhase === 'CitySubdivision') {
+      // Fallback path for clicks that miss every plot mesh (TERRAIN_PLOT_CLICKED handles
+      // the normal case, including City Expansion promotion via the district panel).
       const DISTRICT_FOR = { Forest: 'Forestry', Hills: 'Mining', Plains: 'Agriculture', Lake: 'Fishing', Sea: 'Fishing' }
       const canDistrict = !!DISTRICT_FOR[region.assignedType]
       const canThreatTrade = !!region.isEdge
-      if (canDistrict || canThreatTrade) {
-        this._handleTerrainRegionClick(regionId)
-      }
+      if (canDistrict || canThreatTrade) this._handleTerrainRegionClick(regionId)
       return
     }
 
@@ -451,6 +463,43 @@ export default class App {
     this.pendingTerrainType = null
     this.renderer.selectRegion(regionId)
     this._refreshTerrainPanel()
+  }
+
+  // Promote a terrain plot to a city district with a pre-selected type.
+  // No geometry is drawn — just update the district list so the panel can work.
+  // Streets/buildings only appear when the user clicks Regenerate Streets or Apply.
+  async _handlePromoteWithType(plotId, pendingType) {
+    console.log('[App] _handlePromoteWithType', plotId, pendingType)
+    try {
+      const response = await GameAPI.promoteTerrainPlot(plotId)
+      console.log('[App] promoteTerrainPlot response', response)
+      if (response.ok) {
+        // Update district data silently — only the data reference, no geometry draw.
+        // districtRenderer.cityDistrictData lets _refreshDistrictPanel find the polygon
+        // for anchor points without triggering any mesh re-renders.
+        if (this.renderer.districtRenderer) {
+          this.renderer.districtRenderer.cityDistrictData = response.cityDistrictData
+        }
+        // Hide/un-hover/un-hit-test the source terrain plot immediately — it's now
+        // part of a city district, even before the district itself renders.
+        this.renderer.syncPromotedPlots(response.cityDistrictData)
+        const newId = response.newDistrictId
+        if (newId !== undefined) {
+          // Clear terrain selection so _refreshDistrictPanel shows the district panel
+          this.renderer.clearTerrainPlotSelected?.()
+          if (this.selectedTerrainRegionId !== null) this.renderer.deselectRegion(this.selectedTerrainRegionId)
+          this.selectedTerrainRegionId = null
+          this.selectedTerrainPlotId = null
+          this.pendingTerrainAction = null
+          this.selectedDistrictId = newId
+          this.pendingDistrictType = pendingType
+          this.pendingResidentialClass = null
+          this.pendingLeadershipClass = 'Monarchy'
+          this.renderer.selectDistrict(newId)
+          this._refreshDistrictPanel()
+        }
+      } else this.uiManager.showError(response.error)
+    } catch (e) { this.uiManager.showError(e.message) }
   }
 
   _handleTerrainPreview(terrainType) {
@@ -533,9 +582,29 @@ export default class App {
     } catch (error) { this.uiManager.showError(error.message) }
   }
 
-  async _doFinishSubdivision() {
+  async _doFinishSubdivision({ skipLeadershipCheck = false } = {}) {
     try {
-      const response = await GameAPI.finishSubdivision()
+      const response = await GameAPI.finishSubdivision({ skipLeadershipCheck })
+
+      // No Leadership District assigned — prompt the player.
+      // OK = let the game choose; Cancel = dismiss so player can assign manually.
+      if (!response.ok && response.needsLeadership) {
+        this.uiManager.showConfirm(
+          'No Leadership District was defined.\n\nCancel to assign one manually, or click below to let the game choose.',
+          'Let the game choose',
+          async () => {
+            try {
+              const r = await GameAPI.autoAssignLeadership()
+              if (r.ok) {
+                this._renderCityGeometry(r.cityDistrictData, { preserveTerrainPlots: true })
+                await this._doFinishSubdivision({ skipLeadershipCheck: true })
+              } else this.uiManager.showError(r.error)
+            } catch (e) { this.uiManager.showError(e.message) }
+          }
+        )
+        return
+      }
+
       if (response.ok) {
         this.gameState = response
         this.currentPhase = 'GuildCreation'
@@ -791,6 +860,7 @@ export default class App {
   // ── City district ───────────────────────────────────────────────────────────
 
   _handleDistrictClick(districtId) {
+    if (this.currentPhase !== 'CitySubdivision') return
     const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === districtId)
     if (!district) return
 
@@ -820,18 +890,19 @@ export default class App {
       this.selectedTerrainPlotId = null
     }
 
-    if (district.locked) { this._refreshDistrictPanel(); return }   // locked districts are final
+    // Locked districts are final — permanent, no type/resource/regeneration changes —
+    // so clicking one shows no dialogue at all. Any previous selection was already
+    // cleared above; there's nothing further to select or open here.
+    if (district.locked) return
 
     this._clearCityEdgeSelection()
     this.selectedDistrictId = districtId
-    this.pendingDistrictType = district.isLeadershipDistrict ? 'Leadership' : null
+    this.pendingDistrictType = null
     this.pendingResidentialClass = null
     this.pendingLeadershipClass = 'Monarchy'
     this.renderer.selectDistrict(districtId)
     this._refreshDistrictPanel()
-    // The Leadership district has its type fixed on selection — generate its preview
-    // streets immediately (defaults to a Monarchy until a ruling body is chosen).
-    if (this.pendingDistrictType) this._previewDistrictStreets()
+    // No auto-preview — user clicks Regenerate Streets to see geometry
   }
 
   // Discard the selected district if it was previewed but never applied, returning it
@@ -839,10 +910,16 @@ export default class App {
   _revertProvisionalDistrict(id = this.selectedDistrictId) {
     if (id === null || id === undefined) return
     const d = this.renderer.cityDistrictData?.districts?.find(x => x.id === id)
-    if (!d || !d.assignedType || d.locked) return
-    d.assignedType = null; d.residentialClass = null; d.LeadershipClass = null
-    d.producedResource = null; d.consumedResources = []; d.streetSeed = null; d.description = ''
-    this.renderer.updateDistrictColor(id, null)
+    if (!d || d.locked) return
+    // A promoted-but-unapplied district is abandoned entirely (not just blanked) —
+    // it didn't exist before the promotion click, so walking away undoes it fully.
+    const isAbandonedPromotion = d.promotedFromPlotId != null
+    if (!d.assignedType && !isAbandonedPromotion) return
+    if (!isAbandonedPromotion) {
+      d.assignedType = null; d.residentialClass = null; d.LeadershipClass = null
+      d.producedResource = null; d.consumedResources = []; d.streetSeed = null; d.description = ''
+      this.renderer.updateDistrictColor(id, null)
+    }
     GameAPI.revertDistrict(id).then(r => { if (r?.ok) this._renderCityGeometry(r.cityDistrictData) }).catch(() => {})
   }
 
@@ -903,6 +980,8 @@ export default class App {
     this.pendingLeadershipClass = 'Monarchy'
     this.renderer.previewDistrictType(this.selectedDistrictId, districtType)
     this._refreshDistrictPanel()
+    // Residential needs a class first (_previewDistrictStreets no-ops until one is picked);
+    // every other type can preview immediately.
     this._previewDistrictStreets()
   }
 
@@ -972,8 +1051,32 @@ export default class App {
     if (districtId === null) return
     try {
       const response = await GameAPI.regenerateDistrict(districtId)
-      if (response.ok) this._renderCityGeometry(response.cityDistrictData)
+      if (response.ok) this._renderCityGeometry(response.cityDistrictData, { preserveTerrainPlots: true })
       else this.uiManager.showError(response.error)
+    } catch (error) { this.uiManager.showError(error.message) }
+  }
+
+  // Save district config overrides (from the cog/settings dialog) without regenerating.
+  async _handleDistrictSettingsSave(configOverrides) {
+    const districtId = this.selectedDistrictId
+    if (districtId === null) return
+    try {
+      const response = await GameAPI.saveDistrictOverrides(districtId, configOverrides)
+      if (response.ok) this._refreshDistrictPanel()
+      else this.uiManager.showError(response.error)
+    } catch (error) { this.uiManager.showError(error.message) }
+  }
+
+  // Save overrides AND regenerate streets in one round-trip.
+  async _handleDistrictSettingsRegenerate(configOverrides) {
+    const districtId = this.selectedDistrictId
+    if (districtId === null) return
+    try {
+      const response = await GameAPI.regenerateDistrict(districtId, configOverrides)
+      if (response.ok) {
+        this._renderCityGeometry(response.cityDistrictData, { preserveTerrainPlots: true })
+        this._refreshDistrictPanel()
+      } else this.uiManager.showError(response.error)
     } catch (error) { this.uiManager.showError(error.message) }
   }
 
@@ -1143,12 +1246,24 @@ export default class App {
       threats: this.threats,
       tradingDestinations: this.tradingDestinations
     }
+    // Exactly one Leadership district is allowed — once any OTHER district already has
+    // it, stop offering it in every district-type picker (City Expansion promotion and
+    // the district panel alike). Excludes the currently-selected district itself so its
+    // own existing Leadership assignment stays visible/editable.
+    const allDistricts = this.renderer.cityDistrictData?.districts || []
+    const leadershipTaken = (excludeId = null) =>
+      allDistricts.some(d => d.assignedType === 'Leadership' && d.id !== excludeId)
     if (this.selectedTerrainRegionId !== null) {
       const region = this.renderer.terrainData?.regions?.find(r => r.id === this.selectedTerrainRegionId)
       if (region?.vertices?.length) panel.setAnchorPoints(region.vertices)
       else if (region?.seedPoint) panel.setAnchorPoints([{ x: region.seedPoint.x, y: region.seedPoint.y }])
       const plotId = this.selectedTerrainPlotId ?? null
       const hasDistrict = plotId ? (this.factions || []).some(f => f.type === 'terrain' && f.plotId === plotId) : false
+      // Server-authoritative (ADR-0003) — the eligible-plot-id list is computed and
+      // pushed by the server on every district-changing response; the client never
+      // re-derives Living Boundary adjacency itself.
+      const eligiblePlotIds = this.renderer.cityDistrictData?.eligiblePromotionPlotIds
+      const isAdjacentToCity = plotId !== null && !!eligiblePlotIds?.includes(plotId)
       panel.showContext('terrainRegion', {
         regionType: region?.assignedType,
         isEdge: region?.isEdge ?? false,
@@ -1158,6 +1273,8 @@ export default class App {
         plotId,
         resourceRegistry: this.resourceRegistry,
         usedProducedResources: this._getUsedProducedResources(),
+        isAdjacentToCity,
+        leadershipTaken: leadershipTaken(),
         ...shared
       })
       return
@@ -1173,6 +1290,9 @@ export default class App {
         LeadershipClass: this.pendingLeadershipClass,
         resourceRegistry: this.resourceRegistry,
         usedProducedResources: this._getUsedProducedResources(),
+        leadershipTaken: leadershipTaken(this.selectedDistrictId),
+        configOverrides: district?.configOverrides || {},
+        locked: !!district?.locked,
         ...shared
       })
     } else if (this.selectedCityEdgeIds.size > 0) {
@@ -1383,96 +1503,169 @@ export default class App {
   }
 
   _openFPStancePopup(fp, anchorEl) {
-    document.querySelector('.fp-stance-popup')?.remove()
+    document.querySelector('.fp-stance-dialog')?.remove()
 
-    const popup = document.createElement('div')
-    popup.className = 'fp-stance-popup'
-    popup.style.cssText = [
-      'position:fixed', 'z-index:300', 'background:#1a1a1a',
-      'border:1px solid #555', 'border-radius:8px', 'padding:14px 18px',
-      'font-family:Arial', 'color:#fff', 'width:220px',
-      'box-shadow:0 6px 24px rgba(0,0,0,0.8)',
-    ].join(';')
-    popup.addEventListener('mousedown', e => e.stopPropagation())
-    popup.addEventListener('click', e => e.stopPropagation())
+    const overlay = document.createElement('div')
+    overlay.className = 'fp-stance-dialog'
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:300;display:flex;align-items:center;justify-content:center;pointer-events:auto'
+    overlay.addEventListener('click', e => e.stopPropagation())
+    overlay.addEventListener('mousedown', e => e.stopPropagation())
 
+    const box = document.createElement('div')
+    box.style.cssText = 'background:#1a1a1a;border:1px solid #555;border-radius:8px;padding:20px 24px;width:380px;font-family:Arial;color:#fff;box-shadow:0 8px 32px rgba(0,0,0,0.8);max-height:90vh;overflow-y:auto;box-sizing:border-box'
+
+    // Title row
+    const titleRow = document.createElement('div')
+    titleRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px'
     const title = document.createElement('div')
-    title.style.cssText = `font-size:13px;font-weight:bold;color:${fp.colour || '#fff'};margin-bottom:4px`
+    title.style.cssText = `font-size:14px;font-weight:bold;color:${fp.colour || '#ddd'}`
     title.textContent = fp.name
-    popup.appendChild(title)
+    const closeBtn = document.createElement('button')
+    closeBtn.textContent = '✕'
+    closeBtn.style.cssText = 'background:none;border:none;color:#888;font-size:16px;cursor:pointer;padding:0;line-height:1'
+    closeBtn.addEventListener('click', () => overlay.remove())
+    titleRow.appendChild(title); titleRow.appendChild(closeBtn)
+    box.appendChild(titleRow)
 
-    const sub = document.createElement('div')
-    sub.style.cssText = 'font-size:11px;color:#888;margin-bottom:12px'
-    sub.textContent = 'Foreign Power'
-    popup.appendChild(sub)
-
-    const mkBtn = (label, handler, disabled = false) => {
-      const b = document.createElement('button')
-      b.textContent = label
-      b.style.cssText = [
-        'display:block;width:100%;text-align:left;padding:7px 10px',
-        'margin-bottom:6px;border-radius:5px;font-size:12px;font-family:Arial',
-        disabled ? 'background:#222;border:1px solid #333;color:#555;cursor:not-allowed'
-                 : 'background:#2a2a2a;border:1px solid #555;color:#ccc;cursor:pointer',
-      ].join(';')
-      if (!disabled) b.addEventListener('click', handler)
-      return b
+    const sectionLabel = (txt) => {
+      const d = document.createElement('div')
+      d.textContent = txt
+      d.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:5px'
+      return d
     }
 
-    popup.appendChild(mkBtn('Declare as Threat', () => {
-      popup.remove()
-      const dialog = new NameDialog({
-        entityKind: 'threat', entityLabel: fp.name, subType: 'Threat',
-        onApply: async (name, description) => {
-          try {
-            const res = await GameAPI.addForeignPowerThreat({ fpId: fp.id, name, description })
-            if (res.ok) {
-              if (res.threats) this.threats = res.threats
-              if (res.factions) { this.factions = res.factions; this.uiManager.updateFactions(this.factions) }
-            } else { this.uiManager.showError(res.error) }
-          } catch (e) { this.uiManager.showError(e.message) }
-        },
-        onCancel: () => {}
+    // Name (pre-populated, editable)
+    box.appendChild(sectionLabel('Name'))
+    const nameInput = document.createElement('input')
+    nameInput.type = 'text'; nameInput.value = fp.name
+    nameInput.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;background:#111;border:1px solid #555;border-radius:4px;color:#fff;font-size:13px;font-family:Arial;margin-bottom:12px;outline:none'
+    nameInput.addEventListener('click', e => e.stopPropagation()); nameInput.addEventListener('mousedown', e => e.stopPropagation())
+    box.appendChild(nameInput)
+
+    // Description (pre-populated, editable)
+    box.appendChild(sectionLabel('Description (optional)'))
+    const descInput = document.createElement('textarea')
+    descInput.value = fp.description || ''; descInput.rows = 2
+    descInput.placeholder = 'Describe this foreign power…'
+    descInput.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;background:#111;border:1px solid #555;border-radius:4px;color:#ccc;font-size:12px;font-family:Arial;resize:vertical;margin-bottom:14px;outline:none'
+    descInput.addEventListener('click', e => e.stopPropagation()); descInput.addEventListener('mousedown', e => e.stopPropagation())
+    box.appendChild(descInput)
+
+    // Mode toggle: Threat vs Trade Route
+    box.appendChild(sectionLabel('Relationship'))
+    const modeRow = document.createElement('div'); modeRow.style.cssText = 'display:flex;gap:6px;margin-bottom:14px'
+    let mode = null
+    const tradeSection = document.createElement('div')
+    const applyBtn = document.createElement('button')
+    applyBtn.disabled = true; applyBtn.style.cssText = 'width:100%;padding:9px;background:#2471a3;border:1px solid #4a9bdc;border-radius:6px;color:#fff;font-size:13px;font-weight:bold;cursor:pointer;opacity:0.4'
+    applyBtn.textContent = 'Apply'
+
+    const mkModeBtn = (label, m, color, border) => {
+      const b = document.createElement('button')
+      b.textContent = label
+      b.style.cssText = `flex:1;padding:8px 4px;background:#2a2a2a;border:2px solid #444;color:#aaa;cursor:pointer;border-radius:5px;font-size:12px;font-family:Arial`
+      b.addEventListener('click', () => {
+        modeRow.querySelectorAll('button').forEach(bb => { bb.style.borderColor = '#444'; bb.style.background = '#2a2a2a'; bb.style.color = '#aaa' })
+        b.style.borderColor = border; b.style.background = color; b.style.color = '#fff'
+        mode = m
+        tradeSection.style.display = m === 'trade' ? 'block' : 'none'
+        applyBtn.disabled = false; applyBtn.style.opacity = '1'
       })
-      dialog.open()
-    }))
+      return b
+    }
+    modeRow.appendChild(mkModeBtn('☠ Threat', 'threat', '#3a1010', '#994444'))
+    modeRow.appendChild(mkModeBtn('↗ Trade Route', 'trade', '#1a3010', '#449944'))
+    box.appendChild(modeRow)
 
-    popup.appendChild(mkBtn('Define Trade Route ↗', () => {
-      popup.remove()
-      const dialog = new NameDialog({
-        entityKind: 'trade', entityLabel: fp.name, subType: 'Trade',
-        onApply: async (name, description) => {
-          try {
-            const res = await GameAPI.addForeignPowerTrade({ fpId: fp.id, name, description })
-            if (res.ok) {
-              if (res.tradingDestinations) { this.tradingDestinations = res.tradingDestinations; this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData) }
-              if (res.factions) { this.factions = res.factions; this.uiManager.updateFactions(this.factions) }
-            } else { this.uiManager.showError(res.error) }
-          } catch (e) { this.uiManager.showError(e.message) }
-        },
-        onCancel: () => {}
+    // Trade Route resource pickers
+    tradeSection.style.display = 'none'
+    let buys = [], sells = []
+    const extendedRegistry = () => {
+      const localNew = [...buys, ...sells].filter(r => r.isNew).map(r => r.name)
+      return [...(this.resourceRegistry || []), ...localNew.filter(n => !(this.resourceRegistry||[]).some(r => r.toLowerCase() === n.toLowerCase()))]
+    }
+
+    const makeGroup = (label, getItems, setItems, otherItems) => {
+      const sec = document.createElement('div'); sec.style.marginBottom = '10px'
+      const lbl = document.createElement('div'); lbl.textContent = label; lbl.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:5px'; sec.appendChild(lbl)
+      const pills = document.createElement('div'); pills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'; sec.appendChild(pills)
+
+      const addBtn = document.createElement('button')
+      addBtn.style.cssText = 'padding:5px 10px;background:#1a2a1a;border:1px solid #3a7a3a;border-radius:3px;color:#8c8;font-size:11px;cursor:pointer'
+
+      const refresh = () => {
+        pills.innerHTML = ''
+        getItems().forEach(item => {
+          const pill = document.createElement('span')
+          pill.style.cssText = 'background:#2a3a2a;border:1px solid #4a7a4a;border-radius:12px;padding:2px 8px;font-size:11px;color:#8c8;cursor:pointer'
+          pill.textContent = `${item.name} ✕`
+          pill.addEventListener('click', () => { setItems(getItems().filter(r => r !== item)); refresh(); renderTradeSection() })
+          pills.appendChild(pill)
+        })
+        addBtn.textContent = `+ Add ${label}`
+        addBtn.style.display = getItems().length < 3 ? 'inline-block' : 'none'
+      }
+
+      const renderTradeSection = () => {
+        const warn = tradeSection.querySelector('.trade-warn')
+        if (warn) warn.textContent = ''
+      }
+
+      addBtn.addEventListener('click', () => {
+        new ResourceDialog({
+          mode: 'consumed', showSpec: false, titleOverride: label,
+          resourceRegistry: extendedRegistry(),
+          usedProduced: [],
+          alreadySelected: [...getItems(), ...otherItems()].map(r => r.name),
+          onAdd: item => { setItems([...getItems(), item]); refresh() }
+        }).open()
       })
-      dialog.open()
-    }))
+      sec.appendChild(addBtn)
+      refresh()
+      return sec
+    }
 
-    const closeBtn = document.createElement('button')
-    closeBtn.textContent = 'Cancel'
-    closeBtn.style.cssText = 'background:none;border:none;color:#666;font-size:11px;cursor:pointer;padding:0;font-family:Arial'
-    closeBtn.addEventListener('click', () => popup.remove())
-    popup.appendChild(closeBtn)
+    const buysSection = makeGroup('Buys', () => buys, v => { buys = v }, () => sells)
+    const sellsSection = makeGroup('Sells', () => sells, v => { sells = v }, () => buys)
+    tradeSection.appendChild(buysSection); tradeSection.appendChild(sellsSection)
 
-    // Position near the anchor label
-    document.body.appendChild(popup)
-    const rect = anchorEl.getBoundingClientRect()
-    const ph = popup.offsetHeight || 140, pw = popup.offsetWidth || 220
-    const left = Math.min(rect.right + 8, window.innerWidth - pw - 8)
-    const top  = Math.max(8, Math.min(rect.top, window.innerHeight - ph - 8))
-    popup.style.left = left + 'px'
-    popup.style.top  = top  + 'px'
+    const tradeWarn = document.createElement('div')
+    tradeWarn.className = 'trade-warn'
+    tradeWarn.style.cssText = 'color:#f66;font-size:11px;margin-bottom:6px;min-height:14px'
+    tradeSection.appendChild(tradeWarn)
+    box.appendChild(tradeSection)
 
-    document.addEventListener('click', function dismiss(e) {
-      if (!popup.contains(e.target) && e.target !== anchorEl) { popup.remove(); document.removeEventListener('click', dismiss) }
-    }, { capture: true, once: false })
+    // Apply
+    applyBtn.addEventListener('click', async () => {
+      if (!mode) return
+      const name = nameInput.value.trim()
+      if (!name || name.length < 2) { this.uiManager.showError('Please enter a name (at least 2 characters).'); return }
+      const description = descInput.value.trim()
+      try {
+        if (mode === 'threat') {
+          const res = await GameAPI.addForeignPowerThreat({ fpId: fp.id, name, description })
+          if (res.ok) {
+            if (res.threats) this.threats = res.threats
+            if (res.factions) { this.factions = res.factions; this.uiManager.updateFactions(this.factions) }
+            overlay.remove()
+          } else this.uiManager.showError(res.error)
+        } else {
+          if (buys.length < 1 || sells.length < 1) { tradeWarn.textContent = 'Select at least one resource to buy and one to sell.'; return }
+          const resourceDefs = [...buys, ...sells].filter(r => r.isNew)
+          const res = await GameAPI.addForeignPowerTrade({ fpId: fp.id, name, description, buys: buys.map(r => r.name), sells: sells.map(r => r.name), resourceDefs })
+          if (res.ok) {
+            if (res.tradingDestinations) { this.tradingDestinations = res.tradingDestinations; this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData) }
+            if (res.factions) { this.factions = res.factions; this.uiManager.updateFactions(this.factions) }
+            if (res.resourceRegistry) this.resourceRegistry = res.resourceRegistry
+            overlay.remove()
+          } else this.uiManager.showError(res.error)
+        }
+      } catch (e) { this.uiManager.showError(e.message) }
+    })
+    box.appendChild(applyBtn)
+
+    overlay.appendChild(box)
+    document.body.appendChild(overlay)
   }
 
   _finalizeTerrainDisplay() {

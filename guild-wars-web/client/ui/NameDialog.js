@@ -125,19 +125,21 @@ export default class NameDialog {
   static closeAll() {
     document.querySelectorAll('.name-dialog-overlay').forEach(el => el.remove())
   }
-  constructor({ entityKind, entityLabel, subType, producedResource, onApply, onCancel }) {
-    this.entityKind     = entityKind
-    this.entityLabel    = entityLabel || subType || 'Entity'
-    this.subType        = subType
+  constructor({ entityKind, entityLabel, subType, producedResource, onApply, onCancel, prefillName, hideSuggestions }) {
+    this.entityKind       = entityKind
+    this.entityLabel      = entityLabel || subType || 'Entity'
+    this.subType          = subType
     this.producedResource = producedResource
-    this.onApply        = onApply
-    this.onCancel       = onCancel
-    this._el            = null
+    this.onApply          = onApply
+    this.onCancel         = onCancel
+    this.prefillName      = prefillName || null
+    this.hideSuggestions  = !!hideSuggestions
+    this._el              = null
   }
 
   open() {
     if (this._el) return
-    const names = generateNames(this.entityKind, this.subType, this.producedResource)
+    const names = this.hideSuggestions ? [] : generateNames(this.entityKind, this.subType, this.producedResource)
     this._render(names)
   }
 
@@ -177,32 +179,34 @@ export default class NameDialog {
     titleRow.appendChild(closeBtn)
     box.appendChild(titleRow)
 
-    // Suggestion chips
-    const chipsLabel = document.createElement('div')
-    chipsLabel.textContent = 'Suggestions'
-    chipsLabel.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px'
-    box.appendChild(chipsLabel)
-
-    const chipsRow = document.createElement('div')
-    chipsRow.style.cssText = 'display:flex;flex-direction:column;gap:5px;margin-bottom:14px'
-
     const nameInput = document.createElement('input')
 
-    suggestions.forEach(s => {
-      const chip = document.createElement('button')
-      chip.textContent = s
-      chip.style.cssText = [
-        'text-align:left', 'padding:6px 10px', 'background:#2a2a2a',
-        'border:1px solid #444', 'border-radius:4px', 'color:#ccc',
-        'font-size:12px', 'cursor:pointer', 'font-family:Arial',
-        'transition:background 0.1s,border-color 0.1s',
-      ].join(';')
-      chip.addEventListener('mouseenter', () => { chip.style.background = '#333'; chip.style.borderColor = '#666' })
-      chip.addEventListener('mouseleave', () => { chip.style.background = '#2a2a2a'; chip.style.borderColor = '#444' })
-      chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
-      chipsRow.appendChild(chip)
-    })
-    box.appendChild(chipsRow)
+    // Suggestion chips — omitted when hideSuggestions is set (e.g. FP Threat/Trade flow
+    // where the entity is already named and we just want the player to confirm/edit).
+    if (!this.hideSuggestions && suggestions.length > 0) {
+      const chipsLabel = document.createElement('div')
+      chipsLabel.textContent = 'Suggestions'
+      chipsLabel.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px'
+      box.appendChild(chipsLabel)
+
+      const chipsRow = document.createElement('div')
+      chipsRow.style.cssText = 'display:flex;flex-direction:column;gap:5px;margin-bottom:14px'
+      suggestions.forEach(s => {
+        const chip = document.createElement('button')
+        chip.textContent = s
+        chip.style.cssText = [
+          'text-align:left', 'padding:6px 10px', 'background:#2a2a2a',
+          'border:1px solid #444', 'border-radius:4px', 'color:#ccc',
+          'font-size:12px', 'cursor:pointer', 'font-family:Arial',
+          'transition:background 0.1s,border-color 0.1s',
+        ].join(';')
+        chip.addEventListener('mouseenter', () => { chip.style.background = '#333'; chip.style.borderColor = '#666' })
+        chip.addEventListener('mouseleave', () => { chip.style.background = '#2a2a2a'; chip.style.borderColor = '#444' })
+        chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
+        chipsRow.appendChild(chip)
+      })
+      box.appendChild(chipsRow)
+    }
 
     // Name input
     const nameLabel = document.createElement('div')
@@ -211,6 +215,7 @@ export default class NameDialog {
     box.appendChild(nameLabel)
 
     nameInput.type = 'text'
+    if (this.prefillName) nameInput.value = this.prefillName
     nameInput.placeholder = 'Enter a name…'
     nameInput.style.cssText = [
       'width:100%', 'box-sizing:border-box', 'padding:7px 10px',

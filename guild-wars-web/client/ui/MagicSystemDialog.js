@@ -50,8 +50,8 @@ export default class MagicSystemDialog {
     const box = document.createElement('div')
     box.style.cssText = [
       'background:#1a1a1a', 'border:1px solid #555', 'border-radius:8px',
-      'padding:20px 24px', 'width:400px', 'font-family:Arial', 'color:#fff',
-      'box-shadow:0 8px 32px rgba(0,0,0,0.8)', 'max-height:80vh', 'overflow-y:auto',
+      'padding:20px 24px', 'width:640px', 'font-family:Arial', 'color:#fff',
+      'box-shadow:0 8px 32px rgba(0,0,0,0.8)', 'max-height:85vh', 'overflow-y:auto',
     ].join(';')
     return box
   }
@@ -83,10 +83,14 @@ export default class MagicSystemDialog {
     let selectedCard = null
     const cards = []
 
+    const grid = document.createElement('div')
+    grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px'
+    box.appendChild(grid)
+
     MAGIC_CONCEPTS.forEach(concept => {
       const card = document.createElement('button')
       card.style.cssText = [
-        'display:block', 'width:100%', 'padding:10px 12px', 'margin-bottom:6px',
+        'display:block', 'width:100%', 'padding:10px 12px',
         'background:#2a2a2a', 'border:2px solid #444', 'border-radius:6px',
         'color:#ddd', 'text-align:left', 'cursor:pointer', 'font-family:Arial',
       ].join(';')
@@ -100,7 +104,7 @@ export default class MagicSystemDialog {
       })
       card._concept = concept
       cards.push(card)
-      box.appendChild(card)
+      grid.appendChild(card)
     })
 
     const nextBtn = document.createElement('button')

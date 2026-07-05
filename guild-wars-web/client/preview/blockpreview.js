@@ -13,29 +13,6 @@ const { districts, streetGraph } = data.cityDistrictData
 let { blocks, plots, landmarkBuildings } = data.cityDistrictData
 const exportMeta = data._exportMeta ?? null
 
-// Mark preview blocks as townhouse so they route through the Phase 6 path
-// (_spawnTownhouse + party-wall suppression). The server's markTownhouseBlocks() does
-// this during full city generation; a real exported save subset already carries the
-// correct blockType, so this only kicks in for the legacy hand-built stub (no block in
-// the loaded data is already a townhouse). Blocks 10 & 13 become townhouse terraces;
-// each plot independently rolls a 5% chance of being freestanding (a GLB model whose
-// townhouse neighbours then expose their side walls). 14 stays square.
-const TOWNHOUSE_BLOCKS = new Set([10, 13])
-const FREESTANDING_PROB = 0.05
-function markTownhouses(seed) {
-  if (blocks.some(b => b.blockType === 'townhouse')) return   // real exported data already set this
-  for (const block of blocks) {
-    if (!TOWNHOUSE_BLOCKS.has(block.id)) continue
-    block.blockType = 'townhouse'
-    for (const p of plots) {
-      if (p.blockId !== block.id || p.blockType === 'square') continue
-      p.blockType = 'townhouse'
-      // Re-rolled each regenerate via the seed, so the freestanding slot moves around.
-      p.freestanding = buildingRenderer._rand(p.id * 13337 + 99 + seed) < FREESTANDING_PROB
-    }
-  }
-}
-
 // Focus point — centroid of every plot corner (falls back to junctions, then origin) —
 // so the camera centers on whatever was actually loaded, whether that's the fixed stub
 // or an arbitrary plot/block/junction exported from a real save.
@@ -292,7 +269,7 @@ function drawDebugWings() {
 }
 
 // Per-pass wing debug ("?debugPlot=581" or default 581) — visualizes
-// BuildingRenderer._spawnTownhouse's pass output for one plot directly, world-space:
+// BuildingRenderer._spawnWingBuilding's pass output for one plot directly, world-space:
 //   white = pass 1's full (setback+depthBays) quad
 //   grey  = that edge's own setback-only strip (a REFERENCE shape — the "pushback
 //           region" itself, not a wing snapshot)
@@ -374,7 +351,8 @@ function polyAreaXYDebug(poly) {
 
 function renderBuildings() {
   buildingRenderer.randomizeSeed()
-  markTownhouses(buildingRenderer._seedOffset)
+  // Attached/Freestanding/Custom Model are now rolled per-plot inside BuildingRenderer
+  // itself (ADR-0019), seeded from plot geometry — no pre-stamping needed here anymore.
   // renderPlots() rebuilds ground/block fills, buildings (via groundRenderer.buildingRenderer),
   // AND fences together — same call the main game makes (GroundRenderer.renderPlots).
   groundRenderer.renderPlots(plots, { districts, landmarkBuildings })

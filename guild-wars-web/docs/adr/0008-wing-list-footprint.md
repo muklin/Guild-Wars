@@ -14,3 +14,9 @@ The `rect` and `L` convenience types are kept for the gallery preview. All plot-
 buildings use `type:'wings'`. Each wing currently must be an axis-aligned rectangle;
 non-axis-aligned and non-rectangular wings (wedges, octagons) are accommodated by the schema
 but not yet implemented.
+
+**Amendment:** the "server decomposes" description above no longer matches reality. Wing
+decomposition (and, per ADR-0019, the Attached/Freestanding/Custom Model rolls that gate it)
+now happens client-side in `BuildingRenderer.js`, seeded from plot geometry — there is no
+server-side geometry reasoning for buildings. See ADR-0019 and `CONTEXT_BuildingsRoofs.md`'s
+Building Spec / Suppressed face entries.

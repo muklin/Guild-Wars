@@ -1,7 +1,26 @@
 # Bugs:
 
-- Map movement at full zoom out is brdoken.  The map goes to the top of the screen and can't move the map down.  zoom in fixes it, but we want to be able to zoom out to the point that the whole map is visible and we can still pan around.  
-- Fix rooves. Make sure they Gable correctly on the ends of wings.  
+- Map movement at full zoom out is broken.  The map goes to the top of the screen and can't move the map down.  zoom in fixes it, but we want to be able to zoom out to the point that the whole map is visible and we can still pan around.  
+- Terrain plots still showing after Conversion to district. 
+- terrains / districts not pulling back from Rivers and Cliffs still
+- No Docks visible. 
+- No Building type.  
+
+- Add Concept of City Gate.
+- Trade routes should establish a road in the direction of the Foreign Power, back to the nearest city gate.  
+- Forestry, mines, etc, regional improvements should add a small number of roads and buildings, AND a road back to the nearest city gate. 
+- FPs going around corners produces artifacts.  I still don't like the FP indication.  FP names are often not rendered.
+
+- Add a "regenerate names" option.  
+- Triple the number of random Names in all district, etc, naming categories.  (not character names)
+
+- Hovering ie Mines, Fishing Factions, doesn't highlight their position onthe map.  it should. 
+- Hovering Foreign Powers (Trade routes or Threats) doesn't highlight their position onthe map.  it should. 
+- Mines, Forestry, when defined, seem to apply to their whole terrain, not just the terrain plot
+- For Factions producing resources, the ingredients should still be specified, on existing resources.  
+
+- Only Gold is showing across the top in the resources section, in Guild setup.  
+
 
 # Baby Features:
 ## Names 
@@ -9,9 +28,9 @@
 - Don't name Walls, Canals, Main Roads.
 
 
+
 # Features:
 ## Districts
-- Don't auto identify a Leadership district at start of District Setup.  
 - Ensure exactly one Leadership District is selected by the end of District Setup.  
   - If one isn't, randomly select one unapplied city plot, OR terrain plot adjacent to the existing city to become a random LEadership district.
 - Add Tutorial text around Leadership districts. 
@@ -33,18 +52,17 @@ The chance, when the right district is null, is very low, maybe 1%
 The chance, when districts are the same type, is high, 80%
 The chance, when districts are a different type, is lower, 30%. 
 
+
+I am considering how best to create models that fit in well with the game look and feel.  But I do plan to explore adding a "customize building" toolset in the future, so that may be what we use to add castles too.  
+
+
 ### Walls as buildings. 
 change wall generation to use building generation, to allow for turrets, gates, walls to have internal rooms.  Need to add some standard capabilities: wall pieces.  Crenelations, etc.  
 
-### Add arches under buildings
-Archways, Portals or passages that pass under a building to the Courtyard beyond.  
-- only on ground floor. 
-- one or two bays wide. 
-- only up to 3 bays deep.
-- These are simple, internal walls facing inward to the archway 
-- Just leave the ceiling open at the moment.  We will add wood ceiling and knees later.
+- Fix rooves. Make sure they Gable correctly on the ends of wings.  
 
-### Generate Docks 
+
+
 
 ### LandMark buildings
 - Add the Castle, and allow it to spawn in Noble Districts, Note this will be some work as the castle needs to consume a large "block" area and be walled and grassed and etc.
@@ -54,19 +72,6 @@ Archways, Portals or passages that pass under a building to the Courtyard beyond
 - Better Industrial buildings 
 - Warehouses.
  
-### Building Type 
-- buildings (including all Landmark buildings) have a Type. 
-- Type can be Residental, Industial, Commercial, Military, Public
-- All Types also have Subtypes:  Residential: [Slum, MiddleClass, Noble], Commercial:[ <resource>trader, (incl food and Labour), Banks, MoneyLenders, etc.], Industial:[forge, smelter,blacksmith, bowyer-fletcher, etc. ], Public: [tavern, inn, whorehouse, buskers alley, etc.], etc.  
-- Type and subtype influence the Buildings initial geometry. 
-
-
-### District and Building Customization.
-- When players select a district, they will see a list of the building types, and subtypes available, based on the district type settings, and also sliders, set at the intial defaults, for the amount of those buildings in a district.   These sliders sum to 100% and increasing one slider reduces the others, proportinal to how much weight they all have.  (reducing one slider slowly to 100% would reduce all sliders to 0% at the same time) 
-When the player changes the slider, buildings are generated, (on stop sliding.)
-
-
-
 ## Groundplane Z-height implementation.  HUGE
 - the ground plane is currently a single plane at z=0.
 
@@ -98,3 +103,29 @@ When the player changes the slider, buildings are generated, (on stop sliding.)
 
 - Need to disambiguate between D&D rounds, (6s) and what I have been also calling rounds (game rounds: ~1 month) Need a new term for that. 
 - Derive a list of per turn Character Actions from the list of Upgrades, Traits, combat, resource and Service systems. 
+
+
+
+
+# DONE
+### Building wings
+ - Buildings should have a max wing size of 6.  If a street frontage is 12, split it into 2 wings of six wide.  If 15, then 3 wings of maybe 5,5,5 or maybe 4,7,4.  If 7 then maybe 4,3.  
+ - Centre wings could be set back from the street.
+
+
+### Add arches under buildings
+Archways, Portals or passages that pass under a building to the Courtyard beyond.  
+- only on ground floor. 
+- one or two bays wide. 
+- only up to 3 bays deep.
+- These are simple, internal walls facing inward to the archway 
+- Just leave the ceiling open at the moment.  We will add wood ceiling and knees later.
+
+### Generate Docks 
+
+### Building Type 
+- buildings (including all Landmark buildings) have a Type. 
+- Type can be Residental, Industial, Commercial, Military, Public
+- All Types also have Subtypes:  Residential: [Slum, MiddleClass, Noble], Commercial:[ <resource>trader, (incl food and Labour), Banks, MoneyLenders, etc.], Industial:[forge, smelter,blacksmith, bowyer-fletcher, etc. ], Public: [tavern, inn, whorehouse, buskers alley, etc.], etc.  
+- Type and subtype influence the Buildings initial geometry. 
+

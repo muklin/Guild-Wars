@@ -37,7 +37,7 @@ const FENCE_BASE_Y   = 0
 // NOTE: the post/panel/rail fence rework (_buildFences, routeFenceAroundBuildings) that
 // uses these is currently DISABLED — reverted back to the old flat tan strip below after
 // it turned out to be drawing real, but badly corrupted, building-wing geometry (pass 4
-// is disabled — see _spawnTownhouse — and was producing self-intersecting wings). Kept
+// is disabled — see _spawnWingBuilding — and was producing self-intersecting wings). Kept
 // in place, unused, to pick back up once pass 4 is properly fixed rather than disabled.
 const FENCE_HEAD_HEIGHT_FRAC  = 0.82
 const FENCE_WAIST_HEIGHT_FRAC = 0.6
@@ -366,13 +366,15 @@ export default class GroundRenderer {
     for (const j of junctions) {
       for (const conn of j.connections) {
         if (conn.toId <= j.id) continue
-        if (conn.type === 'Wall' || conn.type === 'Canal' || conn.type === 'Docks') continue
+        if (conn.type === 'Canal' || conn.type === 'Docks') continue
         const j2 = junctionById.get(conn.toId)
         if (!j2) continue
         const conn2 = j2.connections.find(c => c.toId === j.id)
         if (!conn2) continue
 
-        const type = conn.type
+        // Wall boundaries render as Mud surface so the ground is covered beneath the
+        // wall mesh that DistrictRenderer places on top. All other types use their own type.
+        const type = conn.type === 'Wall' ? 'Mud' : conn.type
         const { gutterLeft: aL, gutterRight: aR } = conn
         const { gutterLeft: bL, gutterRight: bR } = conn2
         const verts = new Float32Array([
@@ -400,11 +402,11 @@ export default class GroundRenderer {
 
     for (const j of junctions) {
       if (j.connections.length < 2) continue
-      if (j.type === 'Wall' || j.type === 'Canal' || j.type === 'Docks') continue
+      if (j.type === 'Canal' || j.type === 'Docks') continue
 
       const pts = []
       for (const conn of j.connections) {
-        if (conn.type === 'Wall' || conn.type === 'Canal' || conn.type === 'Docks') continue
+        if (conn.type === 'Canal' || conn.type === 'Docks') continue
         pts.push(conn.gutterLeft, conn.gutterRight)
       }
       pts.sort((a, b) => Math.atan2(a.y - j.y, a.x - j.x) - Math.atan2(b.y - j.y, b.x - j.x))
@@ -440,7 +442,8 @@ export default class GroundRenderer {
         const a = this._squareClusterRoadAngle?.get(conn.roadId)
         if (a !== undefined) { fanAngle = a; break }
       }
-      const mat = makeStreetMaterial(j.type, this._atlas, STREET_COLORS.get(j.type) || fallback, undefined, fanAngle)
+      const fanType = j.type === 'Wall' ? 'Mud' : j.type
+      const mat = makeStreetMaterial(fanType, this._atlas, STREET_COLORS.get(fanType) || fallback, undefined, fanAngle)
       const mesh = new THREE.Mesh(geom, mat)
       mesh.userData = { districtId: j.districtId }
       this.scene.add(mesh)
@@ -820,8 +823,8 @@ export default class GroundRenderer {
 
   // ── Plots + Squares + Fences ──────────────────────────────────────────────────
 
-  renderPlots(plots, districtData) {
-    this.clearPlotLayer()
+  renderPlots(plots, districtData, { preserveTerrainPlots = false } = {}) {
+    this.clearPlotLayer({ preserveTerrainPlots })
     this._lastRenderedPlots            = plots
     this._lastRenderedPlotDistrictData = districtData
     if (!plots?.length) return
@@ -858,6 +861,8 @@ export default class GroundRenderer {
     for (const plot of plots) {
       // ── Terrain plots: simple fill, no fences or buildings ──────────────────
       if (plot.type === 'terrain') {
+        // If we preserved existing terrain meshes, skip re-creating them.
+        if (preserveTerrainPlots) continue
         const baseColor = TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
         const seed = this._polySeed(plot.blockCorners)
         const color = this._jitterColor(baseColor, seed)
@@ -1223,9 +1228,13 @@ export default class GroundRenderer {
     addMerged(brickPanelGeoms, brickPanelMat)
   }
 
-  clearPlotLayer() {
-    for (const m of this.plotMeshes) this.scene.remove(m)
-    this.plotMeshes    = []
+  clearPlotLayer({ preserveTerrainPlots = false } = {}) {
+    for (const m of this.plotMeshes) {
+      // When preserving terrain plots, skip removing their meshes from the scene.
+      if (preserveTerrainPlots && this._terrainPlots.some(p => this._terrainPlotMeshMap.get(p.id) === m)) continue
+      this.scene.remove(m)
+    }
+    this.plotMeshes    = preserveTerrainPlots ? [...this.plotMeshes.filter(m => this._terrainPlots.some(p => this._terrainPlotMeshMap.get(p.id) === m))] : []
     this._plotFills    = []
     this._squareFills  = []
     this._fenceSegments = []
@@ -1233,10 +1242,11 @@ export default class GroundRenderer {
     this._fenceMeshes = []
     this._districtHighlight = []
     this.buildingRenderer.clear(this.scene)
-    // Terrain plots are now part of the unified plots array — clear their state here too
-    this.clearTerrainPlotHighlight()
-    this._terrainPlotMeshMap.clear()
-    this._terrainPlots = []
+    if (!preserveTerrainPlots) {
+      this.clearTerrainPlotHighlight()
+      this._terrainPlotMeshMap.clear()
+      this._terrainPlots = []
+    }
   }
 
   highlightTerrainPlot(plotId) {

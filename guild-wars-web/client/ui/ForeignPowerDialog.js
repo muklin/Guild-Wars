@@ -266,15 +266,18 @@ export default class ForeignPowerDialog {
     })
     box.appendChild(swatchRow)
 
-    // ── Name suggestions ──────────────────────────────────────────────────────
+    // ── Name suggestions + editable input ────────────────────────────────────
     box.appendChild(this._sectionLabel('Suggestions'))
     const nameInput = document.createElement('input')
+    const suggestions = generateForeignPowerNames()
     const chipsRow = document.createElement('div')
     chipsRow.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin-bottom:10px'
-    generateForeignPowerNames().forEach(s => {
+    suggestions.forEach(s => {
       const chip = document.createElement('button')
       chip.textContent = s
       chip.style.cssText = 'text-align:left;padding:5px 10px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#ccc;font-size:12px;cursor:pointer;font-family:Arial'
+      chip.addEventListener('mouseenter', () => { chip.style.background = '#333'; chip.style.borderColor = '#666' })
+      chip.addEventListener('mouseleave', () => { chip.style.background = '#2a2a2a'; chip.style.borderColor = '#444' })
       chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
       chipsRow.appendChild(chip)
     })
@@ -282,7 +285,7 @@ export default class ForeignPowerDialog {
 
     box.appendChild(this._sectionLabel('Name'))
     nameInput.type = 'text'
-    nameInput.placeholder = 'Enter a name…'
+    nameInput.placeholder = 'Choose a suggestion or type your own…'
     nameInput.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;background:#111;border:1px solid #555;border-radius:4px;color:#fff;font-size:13px;font-family:Arial;margin-bottom:8px;outline:none'
     nameInput.addEventListener('click',     e => e.stopPropagation())
     nameInput.addEventListener('mousedown', e => e.stopPropagation())

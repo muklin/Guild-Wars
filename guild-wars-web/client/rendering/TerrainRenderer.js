@@ -58,6 +58,29 @@ export default class TerrainRenderer {
     this.selectedRegionId = null
     this.selectedTerrainPlotId = null
     this._debugPreHoverColors = new Map()
+
+    // Plots currently the source of a promoted (City Expansion) city district — hidden
+    // and excluded from hit-testing while promoted; reversible if the promotion is undone.
+    this.promotedPlotIds = new Set()
+  }
+
+  // Hide/show terrain plot meshes and keep them out of getTerrainPlotAtWorldPos hit-testing
+  // while they're the source of a promoted city district. Reversible: ids removed from the
+  // set (promotion abandoned/reverted) become visible and clickable again.
+  setPromotedPlotIds(ids) {
+    for (const id of this.promotedPlotIds) {
+      if (!ids.has(id)) {
+        const mesh = this.terrainPlotMeshes.get(id)
+        if (mesh) mesh.visible = true
+      }
+    }
+    for (const id of ids) {
+      if (!this.promotedPlotIds.has(id)) {
+        const mesh = this.terrainPlotMeshes.get(id)
+        if (mesh) mesh.visible = false
+      }
+    }
+    this.promotedPlotIds = ids
   }
 
   setDebugVisible(show) {
@@ -207,6 +230,11 @@ export default class TerrainRenderer {
         }
       }
       console.log(`Rendered ${count}/${terrainPlots.length} terrain plots across ${this.regionTerrainPlots.size} merged regions`)
+      // Re-apply promoted-plot suppression to the freshly rebuilt meshes.
+      for (const id of this.promotedPlotIds) {
+        const mesh = this.terrainPlotMeshes.get(id)
+        if (mesh) mesh.visible = false
+      }
       for (const region of regions) {
         if (region.assignedType === 'Forest')    this._spawnFeatureForRegion('forest', region.id)
         if (region.assignedType === 'Mountains') this._spawnFeatureForRegion('mountains', region.id)
@@ -414,6 +442,7 @@ export default class TerrainRenderer {
   getTerrainPlotAtWorldPos(worldX, worldY) {
     if (!this.terrainData?.terrainPlots?.length) return null
     for (const cell of this.terrainData.terrainPlots) {
+      if (this.promotedPlotIds.has(cell.id)) continue
       if (cell.polygon && pointInPolygon(worldX, worldY, cell.polygon)) return cell
     }
     return null

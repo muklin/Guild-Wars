@@ -314,11 +314,20 @@ export function assemble(spec, lib) {
       const wingFloorCount = wingFloorList.length
       const wingPoly = wing.vertices.map(([x, z]) => ({ x, y: z }))
       const frontEdge = frontEdgeIndex(wingPoly, wing.front)
+      // Archway (see Archway, CONTEXT_BuildingsRoofs.md): every wing BuildingRenderer
+      // gives an archway is a plain 4-vertex rectangle [front, front+1, back, back+1],
+      // so the opposite (back) edge is always 2 steps around. `startT/endT` are
+      // fractions along `wing.front` (frontEdge's own A→B direction); the back edge
+      // runs the opposite winding direction, so the same span there is [1-endT,1-startT].
+      const archEdges = (wing.archway && wingPoly.length === 4)
+        ? { [frontEdge]: [wing.archway.startT, wing.archway.endT], [(frontEdge + 2) % 4]: [1 - wing.archway.endT, 1 - wing.archway.startT] }
+        : null
       const matTop = wingFloorList[wingFloorCount - 1].material
       const suppRoof = new Set(specSF.filter(sf => sf.wingIndex === wi && sf.upToFloor >= wingFloorCount - 1).map(sf => sf.edgeIndex))
 
       // Jetty: floors at/above `fromFloor` use a wider polygon, its front wall pushed
-      // toward the street by `amount` (capped server-side at the wing's own setback).
+      // FORWARD into the street by `amount` (the wing's front sits on the street edge — no
+      // setback — so this overhangs past it; `amount` is capped server-side at jettyProjection).
       const jettyPoly = wing.jetty ? pushFrontEdge(wingPoly, frontEdge, wing.jettyDir ?? [0, 0], wing.jetty.amount) : null
       const polyAt = (f) => (jettyPoly && f >= wing.jetty.fromFloor) ? jettyPoly : wingPoly
 
@@ -375,7 +384,7 @@ export function assemble(spec, lib) {
       // zHeight. Always the ground floor's own (stone/granite/brick) material, and
       // always uses the wing's base (non-jettied) polygon.
       const groundGap = wingFloorList[0].zHeight * H
-      if (groundGap > 1e-4) addFoundationForWing(wallsGroup, lib, wingPoly, drawIntervals, groundGap, wingFloorList[0].material, B)
+      if (groundGap > 1e-4) addFoundationForWing(wallsGroup, lib, wingPoly, drawIntervals, groundGap, wingFloorList[0].material, B, archEdges)
 
       // Window presence per (edge, bay) — decided once (whichever floor reaches that bay
       // first) and reused on every other floor, so windows stack directly above/below each
@@ -419,6 +428,16 @@ export function assemble(spec, lib) {
             }
             const s0x = a.x + ux * L * t0 + pox, s0y = a.y + uy * L * t0 + poz
             const nBays = Math.max(1, Math.round(segL / B)), pitch = segL / nBays
+            // Archway (Archway, CONTEXT_BuildingsRoofs.md): if this interval overlaps the
+            // ground-floor front/back span BuildingRenderer picked for this wing's
+            // archway, clip that span to THIS interval's own [t0,t1] sub-range and convert
+            // to bay-index units — bays whose centre falls inside get no wall panel below.
+            let archBayRange = null
+            if (f === 0 && archEdges?.[i]) {
+              const [aStart, aEnd] = archEdges[i]
+              const clipStart = Math.max(aStart, t0), clipEnd = Math.min(aEnd, t1)
+              if (clipEnd > clipStart) archBayRange = [((clipStart - t0) / (t1 - t0)) * nBays, ((clipEnd - t0) / (t1 - t0)) * nBays]
+            }
             // Uprights snapped to bay boundaries (both ends + up to 4 interior, ≤6 total),
             // so windows/doors at bay CENTRES always sit between uprights, never on one.
             const postKs = new Set([0, nBays])
@@ -437,11 +456,22 @@ export function assemble(spec, lib) {
             }
             // A door is forced on the ground floor of the frontage edge (first visible
             // segment), centred in its middle bay — guaranteeing one front door per building.
-            const doorBay = (f === 0 && i === frontEdge && !doorPlaced && !isPartyWall) ? Math.floor(nBays / 2) : -1
+            let doorBay = (f === 0 && i === frontEdge && !doorPlaced && !isPartyWall) ? Math.floor(nBays / 2) : -1
+            // An Archway spanning the building's centre (the common case) would otherwise
+            // steal the forced door's own bay — shift it just outside the archway instead
+            // of losing the building's only guaranteed frontage door.
+            if (doorBay >= 0 && archBayRange && doorBay + 0.5 >= archBayRange[0] && doorBay + 0.5 <= archBayRange[1]) {
+              const leftBay = Math.floor(archBayRange[0]) - 1
+              const rightBay = Math.ceil(archBayRange[1])
+              doorBay = leftBay >= 0 ? leftBay : (rightBay < nBays ? rightBay : -1)
+            }
             const hasBraceA = braceA && t0 === 0, hasBraceB = braceB && t1 === 1
             const shortWall = nBays < 2   // too narrow a run to read as a "wall" — never window it
             for (let k = 0; k < nBays; k++) {
               const t = (k + 0.5) * pitch, px = s0x + ux * t, pz = s0y + uy * t
+              // Archway opening — no wall panel, no door/window, but the posts framing it
+              // (placed above, at bay boundaries) stay exactly as they would either side.
+              if (archBayRange && k + 0.5 >= archBayRange[0] && k + 0.5 <= archBayRange[1]) continue
               place(makeFlatPanel(pitch, floorH, lib.regions[mat] ?? lib.regions.plaster, lib.materialFor(mat)), px, pz, yBase, rotY)
               const bracedHere = (hasBraceA && k === 0) || (hasBraceB && k === nBays - 1)   // no window where a knee is
               let slot = null
@@ -508,6 +538,31 @@ export function assemble(spec, lib) {
         }
       }
       currentWallGroup = wallsGroup   // defensive reset — nothing below should land in interbuildingGroup
+      // Archway tunnel side walls (Archway, CONTEXT_BuildingsRoofs.md): two interior
+      // walls closing the passage's sides, from the front edge's archway boundary to
+      // the corresponding point on the back edge, 0 to 1.5 floor-heights tall. The
+      // ceiling above (floor 1's slab, already drawn by the loop above) stays
+      // undressed for now — wood ceiling + knee braces are explicit future work.
+      if (wing.archway && wingPoly.length === 4) {
+        const { startT, endT } = wing.archway
+        const backEdge = (frontEdge + 2) % 4
+        const fA = wingPoly[frontEdge], fB = wingPoly[(frontEdge + 1) % 4]
+        const bA = wingPoly[backEdge], bB = wingPoly[(backEdge + 1) % 4]
+        const lerp = (p, q, t) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t })
+        // Back edge runs the opposite winding direction from front, so front's t pairs
+        // with back's (1-t) — see the archEdges comment above.
+        const pairs = [
+          [lerp(fA, fB, startT), lerp(bA, bB, 1 - startT)],
+          [lerp(fA, fB, endT), lerp(bA, bB, 1 - endT)],
+        ]
+        const archH = 1.5 * H
+        const region = lib.regions.plaster ?? lib.regions.wood
+        for (const [p, q] of pairs) {
+          wallsGroup.add(trisMesh(quadTris(
+            [p.x, 0, p.y], [q.x, 0, q.y], [q.x, archH, q.y], [p.x, archH, p.y],
+          ), region, lib.material, true))
+        }
+      }
       // Jetty support poles: one at each of the jettied front corners, true ground (y=0)
       // to the underside of the jettied floor. Always wood — historically a jetty's
       // overhang is carried on timber posts even when the ground floor below is stone/
@@ -799,8 +854,13 @@ export function computeWingRoofFrame(fwings, buildingFloors, roofSpec, floorHeig
   const halfSpan = (ridgeAlongU ? depth : frontageW) / 2
   const htRaw = DEBUG_UNIFORM_RIDGE ? DEBUG_RIDGE_HEIGHT : halfSpan * pitch
   // Quantize the roof rise to half-floor-height units so the roof can sit in the same
-  // per-wing floor list as the walls (decision #7).
-  const riseHalfUnits = Math.max(0, Math.min(ROOF_RISE_MAX_HALF_UNITS, Math.round(htRaw / (floorHeight * 0.5))))
+  // per-wing floor list as the walls (decision #7). A Building Spec with an explicit
+  // riseHalfUnits (district-configurable roof ridge height — districtConfig.js
+  // buildingStyle.roofRidgeHeight) uses that directly instead of deriving rise from
+  // footprint span; it's a district-level creative choice, not a structural constraint.
+  const riseHalfUnits = roofSpec.riseHalfUnits != null
+    ? Math.max(0, Math.min(ROOF_RISE_MAX_HALF_UNITS, roofSpec.riseHalfUnits))
+    : Math.max(0, Math.min(ROOF_RISE_MAX_HALF_UNITS, Math.round(htRaw / (floorHeight * 0.5))))
   const ht = riseHalfUnits * 0.5 * floorHeight
   const apexY = topY + ht
 
@@ -1147,9 +1207,13 @@ const FOUNDATION_BATTER = 0.06
 // Piers (addBatteredPier) instead start at the TRUE wall-line corner and taper at 2x
 // this angle, so they read as more substantial than the thinner wall base between them.
 function addBatteredPanel(group, p0, p1, topH, nx, ny, postW, region, material) {
+  // Offset the panel's outer face by half the post width so it's flush with the pier
+  // outer faces (which are centred on the wall line with hw = postW/2). Before this
+  // fix the panel pushed out a full postW, sticking past the posts.
+  const halfW = postW / 2
   const w0 = [p0.x, topH, p0.y], w1 = [p1.x, topH, p1.y]
-  const s0x = p0.x + nx * postW, s0y = p0.y + ny * postW
-  const s1x = p1.x + nx * postW, s1y = p1.y + ny * postW
+  const s0x = p0.x + nx * halfW, s0y = p0.y + ny * halfW
+  const s1x = p1.x + nx * halfW, s1y = p1.y + ny * halfW
   group.add(trisMesh(quadTris(w0, w1, [s1x, topH, s1y], [s0x, topH, s0y]), region, material, true))
   const b0 = [s0x + nx * FOUNDATION_BATTER, 0, s0y + ny * FOUNDATION_BATTER]
   const b1 = [s1x + nx * FOUNDATION_BATTER, 0, s1y + ny * FOUNDATION_BATTER]
@@ -1182,7 +1246,7 @@ function addBatteredPier(group, lib, mat, px, pz, h, rotY) {
 // exterior/interior wall determination (`drawIntervals` at floor 0) as the ground floor
 // itself, but unconditionally stone: battered panels (no windows/doors/braces) plus a
 // battered pier at every bay boundary. Always uses the wing's base (non-jettied) polygon.
-function addFoundationForWing(group, lib, wingPoly, drawIntervals, foundationH, foundationMat, B) {
+function addFoundationForWing(group, lib, wingPoly, drawIntervals, foundationH, foundationMat, B, archEdges) {
   for (let i = 0; i < wingPoly.length; i++) {
     const a = wingPoly[i], b = wingPoly[(i + 1) % wingPoly.length]
     const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy)
@@ -1195,6 +1259,16 @@ function addFoundationForWing(group, lib, wingPoly, drawIntervals, foundationH, 
       if (segL < 1e-4) continue
       const s0x = a.x + ux * L * t0, s0y = a.y + uy * L * t0
       const nBays = Math.max(1, Math.round(segL / B)), pitch = segL / nBays
+      // Archway (Archway, CONTEXT_BuildingsRoofs.md): the ground floor's own wall panel
+      // already skips this span (see the main wall loop) — the Foundation footing below
+      // it must skip the same bays, or a raised-ground-floor building would still have a
+      // solid stone footing blocking its passage at true-ground level.
+      let archBayRange = null
+      if (archEdges?.[i]) {
+        const [aStart, aEnd] = archEdges[i]
+        const clipStart = Math.max(aStart, t0), clipEnd = Math.min(aEnd, t1)
+        if (clipEnd > clipStart) archBayRange = [((clipStart - t0) / (t1 - t0)) * nBays, ((clipEnd - t0) / (t1 - t0)) * nBays]
+      }
       const postKs = new Set([0, nBays])
       const interior = Math.min(nBays - 1, 4)
       for (let p = 1; p <= interior; p++) postKs.add(Math.round(p * nBays / (interior + 1)))
@@ -1204,6 +1278,7 @@ function addFoundationForWing(group, lib, wingPoly, drawIntervals, foundationH, 
       const region = lib.regions[foundationMat] ?? lib.regions.granite
       const material = lib.materialFor(foundationMat)
       for (let k = 0; k < nBays; k++) {
+        if (archBayRange && k + 0.5 >= archBayRange[0] && k + 0.5 <= archBayRange[1]) continue
         const p0 = { x: s0x + ux * k * pitch, y: s0y + uy * k * pitch }
         const p1 = { x: s0x + ux * (k + 1) * pitch, y: s0y + uy * (k + 1) * pitch }
         addBatteredPanel(group, p0, p1, foundationH, nx, ny, postW, region, material)
