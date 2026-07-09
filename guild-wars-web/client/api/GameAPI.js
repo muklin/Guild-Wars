@@ -63,12 +63,20 @@ export default class GameAPI {
     return this.request('/setup/trade', 'POST', { regionId, description, name, buys, sells, resourceDefs })
   }
 
-  static async assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '', resourceDefs = []) {
-    return this.request('/setup/city/assign', 'POST', { districtId, districtType, description, name, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass, resourceDefs })
+  static async assignDistrictType(districtId, districtType, description = '', producedResource = '', residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '', resourceDefs = []) {
+    return this.request('/setup/city/assign', 'POST', { districtId, districtType, description, name, producedResource, secondProducedResource, residentialClass, LeadershipClass, resourceDefs })
   }
 
-  static async assignTerrainDistrict(regionId, plotId, districtType, description = '', producedResource = '', consumedResources = [], name = '', resourceDefs = []) {
-    return this.request('/setup/terrain-district', 'POST', { regionId, plotId, districtType, description, name, producedResource, consumedResources, resourceDefs })
+  static async assignTerrainDistrict(regionId, plotId, districtType, description = '', producedResource = '', name = '', resourceDefs = []) {
+    return this.request('/setup/terrain-district', 'POST', { regionId, plotId, districtType, description, name, producedResource, resourceDefs })
+  }
+
+  static async getWiringCandidates(resourceName) {
+    return this.request(`/setup/resource/${encodeURIComponent(resourceName)}/wiring-candidates`, 'GET')
+  }
+
+  static async attachIngredientToResource(resourceName, targetName) {
+    return this.request('/setup/resource/attach-ingredient', 'POST', { resourceName, targetName })
   }
 
   static async assignCityEdge(edgeId, edgeType, description = '', name = '') {

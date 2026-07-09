@@ -15,12 +15,12 @@ export default {
 
   // Terrain edge types
   Cliff: 0xaaaaaa,
-  River: 0x4488ff,
+  River: 0x1a5abf,   // same as Lake — a river is the same water, just flowing
 
   // City edge types
   Wall:     0x555555,
   MainRoad: 0x70717C,
-  Canal:    0x3399cc,
+  Canal:    0x1a5abf,   // same as Lake/River — canals carry the same water
   Docks:    0x2a7a9e,
 
   // Street surface types (micro-Voronoi layer)

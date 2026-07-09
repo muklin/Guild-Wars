@@ -856,6 +856,11 @@ export default class GroundRenderer {
       Plains: 0xb2de69, Desert: 0xedca72, Mountains: 0x8d8d8d,
       Forest: 0x218c21, Lake:   0x1a5abf, Sea:       0x0e6e6c,
       Hills:  0x699B4F, Swamp:  0x4a6b4a, 'Ice Sheet': 0xf4f8ff, unassigned: 0xb8a680,
+      // River/Cliff DCEL faces (see TerrainPlotConverter's riverCliffFaces param, plan
+      // "typed-giggling-giraffe" addendum) — same hex values as TerrainRenderer's
+      // TERRAIN_COLORS, so the fill doesn't change color across the Terrain Setup ->
+      // live gameplay rendering handoff.
+      River: 0x1a5abf, Cliff: 0xaaaaaa,
     }
 
     for (const plot of plots) {

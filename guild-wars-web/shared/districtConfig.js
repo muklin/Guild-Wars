@@ -117,7 +117,7 @@ export const DISTRICTS = {
     street_spacing: 0.6,
     block_density: 2.0,
     xyRatio: 1.2,
-    street_alignment: "chebyshev",
+    street_alignment: "manhatten",
     square_threshhold: 0.1,
     plotSpacing: 0.2,
     minPlotSize: 0.025,

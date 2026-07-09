@@ -94,8 +94,12 @@ export default class TerrainVoronoiGenerator {
     return { worldSize, regions, edges: {} }
   }
 
-  generate(regionCount = 15, worldSize = 50, mergeDistance = 0, manhattan = 0) {
-    
+  // `registry` is the game's GroundPointRegistry (server/engine/CityGenerator/
+  // GroundPointRegistry.js) — every terrain-plot vertex gets minted into it directly
+  // (kind:'terrain'), so districts created later from these plots can reuse the exact
+  // same ids by construction instead of re-deriving their own via coordinate matching.
+  generate(regionCount = 15, worldSize = 50, mergeDistance = 0, manhattan = 0, registry) {
+
     const plotCount = Math.max(regionCount * 10, 150)
     console.log(`Generating: ${plotCount} terrain plots → ${regionCount} merged regions`)
 
@@ -134,14 +138,16 @@ export default class TerrainVoronoiGenerator {
     const exclavesFixed = this.resolveExclaves(validTerrainPlots)
     if (exclavesFixed > 0) console.log(`Resolved ${exclavesFixed} exclave terrain plots`)
 
-    // Step 4: Assign global vertex IDs. Must happen before any clipping —
-    // clipping creates new vertex objects, breaking the shared circumcenter
-    // references that findSharedEdge relies on.
-    let nextVertexId = 0
+    // Step 4: Mint every still-shared circumcenter object into the GLOBAL point
+    // registry (kind:'terrain') — one registry point per physically-shared corner,
+    // exactly matching the reference-equality adjacency the rest of this pipeline
+    // already relies on. `v.id` continues to double as the local "seen" marker.
+    // Must happen before any clipping — clipping creates new vertex objects, breaking
+    // the shared circumcenter references that findSharedEdge relies on.
     const seenVertices = new Set()
     for (const plot of validTerrainPlots) {
       for (const v of plot.polygon) {
-        if (!seenVertices.has(v)) { seenVertices.add(v); v.id = nextVertexId++ }
+        if (!seenVertices.has(v)) { seenVertices.add(v); v.id = registry.create(v.x, v.y, 0, 'terrain').id }
       }
     }
 
@@ -153,11 +159,20 @@ export default class TerrainVoronoiGenerator {
     // Must happen AFTER edge detection — clipping creates new vertex objects that
     // break the reference equality used by findSharedEdge. Clipped polygons improve
     // click-detection accuracy and eliminate huge sentinel-extended polys from the renderer.
+    // clipToPolygon (VoronoiUtils.js) pushes the SAME object reference for any vertex
+    // that survives clipping unchanged (so `.id` is preserved for free); only genuinely
+    // NEW boundary-intersection vertices come back with no `.id`, needing a fresh
+    // registry point. plot.pointIds is the authoritative Surface reference from here on;
+    // plot.polygon is kept as a resolved convenience copy during this transitional stage
+    // (later pipeline stages, and all current renderer/consumer code, still read it) —
+    // see plan Stage 7 for its eventual removal once every consumer reads pointIds.
     const W = worldSize
     const worldRect = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: W }, { x: 0, y: W }]
     for (const plot of validTerrainPlots) {
       const clipped = clipToPolygon(plot.polygon, worldRect)
-      if (clipped) plot.polygon = clipped
+      if (!clipped) continue
+      plot.polygon = clipped
+      plot.pointIds = clipped.map(v => v.id !== undefined ? v.id : registry.create(v.x, v.y, 0, 'terrain').id)
     }
 
     // Step 6: Build merged region convex hulls (used for click hit-testing fallback)

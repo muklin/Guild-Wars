@@ -574,8 +574,4 @@ export default class UIManager {
     this.factionsPanel.update(factions)
     if (!factions.length) this.factionsPanel.setGuild(null)
   }
-
-  updateThreats(threats) {
-    this.factionsPanel.updateThreats(threats)
-  }
 }

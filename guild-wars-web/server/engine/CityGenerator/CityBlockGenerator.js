@@ -1,6 +1,8 @@
 import { distToSegSq, pip, segIntersect } from '../voronoi/VoronoiUtils.js'
 import { STREET_HALF_WIDTH, getDistrictParams, halfWidthForDistrict } from './StreetVoronoiGenerator.js'
 import polygonClipping from 'polygon-clipping'
+import GroundPointRegistry from './GroundPointRegistry.js'
+import DCEL, { dedupeConsecutiveIds } from './DCEL.js'
 
 
 // Street priority for tie-breaking (paved hierarchy: Stone > Brick > Mud).
@@ -728,14 +730,18 @@ export default class CityBlockGenerator {
   // filling the combined area with a single "square" polygon.
   //
   // Algorithm:
-  //   1. Build a directed half-edge → blockId map from every block's boundary.
-  //   2. For each road-surface face, look up the two blocks adjacent to it (via
-  //      the reverse of each of its directed half-edges). If both are squares,
-  //      the road face is a "square–square street" to be absorbed.
+  //   1. Build a throwaway DCEL (see DCEL.js) scoped to just this merge pass: every
+  //      block and road face becomes a real Face, over a coordinate-proximity-deduped
+  //      local vertex registry, so shared corners land on the same id and adjacency is
+  //      a real half-edge twin lookup (he.twin.face) — not a coordinate-string map.
+  //   2. For each road-surface face, its adjacent blocks are whichever real Faces sit
+  //      across its boundary half-edges. If exactly two distinct square blocks adjoin
+  //      it, it's a "square–square street" to be absorbed.
   //   3. BFS over the square–square adjacency graph to find connected clusters.
-  //   4. Union every cluster's block polygons + connecting road-face polygons
-  //      via directed-edge cancellation (shared interior edges cancel; the
-  //      remaining outer edges form the merged boundary).
+  //   4. Merge every cluster's block Faces + connecting road Faces via repeated
+  //      dcel.mergeFaces calls (real half-edge splice, replacing the old independent
+  //      directed-edge-cancellation _unionPolygons implementation — the same operation
+  //      PlotVoronoiGenerator._mergeSmallPlots needed and now shares via DCEL.mergeFaces).
   //   5. Replace original cluster blocks with the merged square; drop clusters
   //      whose merged boundary has no street-facing edge (rule 2: no street access).
   //
@@ -746,29 +752,36 @@ export default class CityBlockGenerator {
 
     const blockById = new Map(blocks.map(b => [b.id, b]))
 
-    // Directed half-edge key: "x1,y1_x2,y2" using 6dp to match gutter-node positions.
-    const pk  = (p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
-    const hek = (a, b) => `${pk(a)}_${pk(b)}`
-
-    // Map every directed block-boundary edge to the block that owns it.
-    const halfEdgeToBlock = new Map()
+    const registry = new GroundPointRegistry()
+    const dcel = new DCEL(registry)
+    const blockFaceId = new Map()   // blockId -> dcel face id
     for (const block of blocks) {
-      const c = block.blockCorners, n = c.length
-      for (let i = 0; i < n; i++)
-        halfEdgeToBlock.set(hek(c[i], c[(i + 1) % n]), block.id)
+      const ids = dedupeConsecutiveIds(registry.mintDeduped(block.blockCorners, 'block', 1e-4, { reuseExisting: true }))
+      if (ids.length < 3) continue   // degenerate corners collapsed under tolerance — excluded from merging, not crashed
+      try {
+        const face = dcel.insertFace(ids, 'block', { blockId: block.id })
+        blockFaceId.set(block.id, face.id)
+      } catch { /* malformed/duplicate-winding block — skip, don't abort the whole pass */ }
+    }
+    const roadFaceIds = []
+    for (const rfPoly of roadFacePolys) {
+      const ids = dedupeConsecutiveIds(registry.mintDeduped(rfPoly, 'block', 1e-4, { reuseExisting: true }))
+      if (ids.length < 3) continue
+      try { roadFaceIds.push(dcel.insertFace(ids, 'road', {}).id) }
+      catch { /* malformed/duplicate-winding road face — skip, don't abort the whole pass */ }
     }
 
-    // For each road face, find adjacent blocks via the reverse of its directed edges.
-    // Only proceed when exactly two distinct square blocks adjoin the face.
+    // For each road face, find adjacent blocks via real twin lookups. Only proceed
+    // when exactly two distinct square blocks adjoin the face.
     const squareAdj    = new Map()  // blockId → Set<blockId>
-    const streetByPair = new Map()  // "minId_maxId" → [roadFacePoly, ...]
+    const streetByPair = new Map()  // "minId_maxId" → [dcel road faceId, ...]
 
-    for (const rfPoly of roadFacePolys) {
-      const n = rfPoly.length
+    for (const rfId of roadFaceIds) {
       const adjIds = new Set()
-      for (let i = 0; i < n; i++) {
-        const bid = halfEdgeToBlock.get(hek(rfPoly[(i + 1) % n], rfPoly[i]))
-        if (bid != null) adjIds.add(bid)
+      for (const he of dcel._faceHalfEdges(rfId)) {
+        const twin = dcel.getHalfEdge(he.twin)
+        const face = twin?.face != null ? dcel.getFace(twin.face) : null
+        if (face?.kind === 'block') adjIds.add(face.blockId)
       }
       if (adjIds.size !== 2) continue
       const [idA, idB] = [...adjIds]
@@ -781,7 +794,7 @@ export default class CityBlockGenerator {
 
       const pairKey = idA < idB ? `${idA}_${idB}` : `${idB}_${idA}`
       if (!streetByPair.has(pairKey)) streetByPair.set(pairKey, [])
-      streetByPair.get(pairKey).push(rfPoly)
+      streetByPair.get(pairKey).push(rfId)
     }
 
     if (!squareAdj.size) return
@@ -803,23 +816,40 @@ export default class CityBlockGenerator {
     }
     if (!clusters.length) return
 
-    // Union polygons and replace original blocks.
     let nextId  = blocks.reduce((m, b) => Math.max(m, b.id), -1) + 1
     const toRemove = new Set()
     const toAdd    = []
 
     for (const cluster of clusters) {
-      const polys = cluster.map(id => blockById.get(id).blockCorners)
+      // Merge every block Face + every connecting road Face in this cluster into one,
+      // by repeatedly scanning the current survivor's boundary for any still-unmerged
+      // member and splicing it in — robust to merge order, since each mergeFaces call
+      // reassigns the consumed face's whole boundary to the survivor, so a later scan
+      // naturally sees newly-exposed neighbours through the growing merged boundary.
+      const toMerge = new Set(cluster.map(id => blockFaceId.get(id)))
       for (let i = 0; i < cluster.length; i++) {
         for (let j = i + 1; j < cluster.length; j++) {
-          const pk2 = cluster[i] < cluster[j]
-            ? `${cluster[i]}_${cluster[j]}` : `${cluster[j]}_${cluster[i]}`
-          polys.push(...(streetByPair.get(pk2) || []))
+          const pairKey = cluster[i] < cluster[j] ? `${cluster[i]}_${cluster[j]}` : `${cluster[j]}_${cluster[i]}`
+          for (const rfId of (streetByPair.get(pairKey) || [])) toMerge.add(rfId)
         }
       }
+      let survivor = blockFaceId.get(cluster[0])
+      toMerge.delete(survivor)
+      let progress = true
+      while (toMerge.size && progress) {
+        progress = false
+        for (const he of dcel._faceHalfEdges(survivor)) {
+          const neighborFaceId = dcel.getHalfEdge(he.twin)?.face
+          if (neighborFaceId != null && toMerge.has(neighborFaceId)) {
+            const r = dcel.mergeFaces(survivor, neighborFaceId)
+            if (r) { survivor = r.id; toMerge.delete(neighborFaceId); progress = true; break }
+          }
+        }
+      }
+      if (toMerge.size) { console.warn(`  [blocks] mergeSquareClusters: cluster [${cluster.join(',')}] left ${toMerge.size} unmerged piece(s) — skipped`); continue }
 
-      const merged = this._unionPolygons(polys)
-      if (!merged) continue
+      const merged = dcel.resolveFacePolygon(survivor)
+      if (!merged?.length) continue
 
       cluster.forEach(id => toRemove.add(id))
 
@@ -845,89 +875,6 @@ export default class CityBlockGenerator {
       `mergeSquareClusters: ${toAdd.length} merged squares from ${clusters.length} clusters` +
       ` (${toRemove.size} originals absorbed${skipped ? `, ${skipped} dropped — no street access` : ''})`
     )
-  }
-
-  // Union an array of polygons using directed-edge cancellation.
-  // All inputs are normalised to CCW before processing.
-  // Returns the largest closed boundary polygon, or null on failure.
-  _unionPolygons(polys) {
-    if (!polys?.length) return null
-    const EPS2 = 1e-8
-
-    const canon = []
-    const keyOf = (p) => {
-      for (let i = 0; i < canon.length; i++) {
-        const dx = canon[i].x - p.x, dy = canon[i].y - p.y
-        if (dx * dx + dy * dy < EPS2) return i
-      }
-      canon.push({ x: p.x, y: p.y })
-      return canon.length - 1
-    }
-
-    const sa = (poly) => {
-      let a = 0
-      for (let i = 0; i < poly.length; i++) {
-        const p = poly[i], q = poly[(i + 1) % poly.length]
-        a += p.x * q.y - q.x * p.y
-      }
-      return a / 2
-    }
-
-    // Normalise each polygon to CCW (positive area) then cancel shared reverse edges.
-    const counts = new Map()
-    for (const poly of polys) {
-      if (!poly?.length) continue
-      let pts = [...poly]
-      if (sa(pts) < 0) pts.reverse()
-      const idx = pts.map(keyOf)
-      for (let i = 0; i < idx.length; i++) {
-        const a = idx[i], b = idx[(i + 1) % idx.length]
-        if (a === b) continue
-        const fwd = `${a}_${b}`, rev = `${b}_${a}`
-        if (counts.has(rev)) {
-          const n = counts.get(rev) - 1
-          if (n <= 0) counts.delete(rev); else counts.set(rev, n)
-        } else {
-          counts.set(fwd, (counts.get(fwd) || 0) + 1)
-        }
-      }
-    }
-    if (!counts.size) return null
-
-    // Build outgoing edge table then chain into the largest closed loop.
-    const out = new Map()
-    for (const e of counts.keys()) {
-      const u = e.indexOf('_'), i = +e.slice(0, u), j = +e.slice(u + 1)
-      if (!out.has(i)) out.set(i, [])
-      out.get(i).push(j)
-    }
-
-    const used = new Set()
-    let best = null
-    for (const startEdge of counts.keys()) {
-      if (used.has(startEdge)) continue
-      const s0 = +startEdge.slice(0, startEdge.indexOf('_'))
-      const loop = []; let cur = s0, guard = 0, closed = false
-      while (guard++ <= counts.size + 1) {
-        loop.push(cur)
-        const nbrs = out.get(cur)
-        if (!nbrs?.length) break
-        let nxt = null
-        for (const c of nbrs) {
-          const k = `${cur}_${c}`
-          if (!used.has(k)) { nxt = c; used.add(k); break }
-        }
-        if (nxt == null) break
-        if (nxt === s0) { closed = true; break }
-        cur = nxt
-      }
-      if (closed && loop.length >= 3) {
-        const poly = loop.map(i => ({ x: canon[i].x, y: canon[i].y }))
-        const a = Math.abs(sa(poly))
-        if (!best || a > best.a) best = { poly, a }
-      }
-    }
-    return best?.poly ?? null
   }
 
   _signedArea(poly) {

@@ -3,6 +3,8 @@ import { STREET_HALF_WIDTH } from './StreetVoronoiGenerator.js'
 import { findStreetFacingEdges } from './CityBlockGenerator.js'
 import { getDistrictParams } from './StreetVoronoiGenerator.js'
 import { polysOverlap } from './buildings/LandmarkPlacer.js'
+import GroundPointRegistry from './GroundPointRegistry.js'
+import DCEL, { dedupeConsecutiveIds } from './DCEL.js'
 
 // Mark every block below its district's square_threshhold as a City square. Run as a
 // pre-pass (before Landmark placement) so squares are known when Landmarks are placed
@@ -49,6 +51,23 @@ export default class PlotVoronoiGenerator {
       if (block.blockType === 'square') {
         block.seeds = []
         plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, blockType: 'square', type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
+        continue
+      }
+
+      // CityBlockGenerator's B3 quarantine already marked this block 'single' because
+      // it's self-intersecting (see its own comment: "so the plotter never subdivides
+      // garbage geometry") — but nothing here actually checked for that flag, so a
+      // self-intersecting block's bad blockCorners fell straight into Voronoi
+      // subdivision anyway, producing a self-intersecting PLOT with no guard at all
+      // (confirmed live: an extra black sliver appearing specifically during District
+      // conversion, on top of whatever the block's own boundary already showed in
+      // Terrain mode — a sharp reflex notch from a Cliff's pullback survives the
+      // block-level check but corrupts the finer plot-level subdivision inside it).
+      // Respect the upstream verdict here, same whole-block-plot fallback as every
+      // other "can't subdivide safely" case below.
+      if (block.blockType === 'single') {
+        block.seeds = []
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
         continue
       }
 
@@ -259,52 +278,45 @@ export default class PlotVoronoiGenerator {
   // Merge plot cells smaller than minPlotSize. The smallest undersized cell
   // absorbs its smallest neighbour repeatedly until it meets the minimum (or has
   // no neighbour left), then the next smallest undersized cell does the same.
-  // Geometry is unioned robustly: vertices are snapped to a shared registry so
-  // adjacent cells share exact edges, then shared (reversed) boundary edges
-  // cancel and the remaining edges are chained back into a polygon.
+  // Geometry is unioned via a throwaway DCEL (see DCEL.js) scoped to just this merge
+  // pass: every cell becomes a Face over a coordinate-proximity-deduped local vertex
+  // registry, so adjacent cells' shared edges twin by real half-edge reference — not
+  // by re-canceling directed edge strings — and dcel.mergeFaces does the actual splice.
+  // This is the same operation CityBlockGenerator._mergeSquareClusters needs and used to
+  // reimplement independently as _unionPolygons; both now go through DCEL.mergeFaces.
   _mergeSmallPlots(cells, minPlotSize) {
     if (!minPlotSize || minPlotSize <= 0 || cells.length <= 1) return cells
-    const EPS2 = 1e-4 * 1e-4
 
-    const canon = []
-    const keyOf = (p) => {
-      for (let i = 0; i < canon.length; i++) {
-        const dx = canon[i].x - p.x, dy = canon[i].y - p.y
-        if (dx * dx + dy * dy < EPS2) return i
-      }
-      canon.push({ x: p.x, y: p.y })
-      return canon.length - 1
-    }
     const signedArea = (poly) => {
       let a = 0
       for (let i = 0; i < poly.length; i++) { const p = poly[i], q = poly[(i + 1) % poly.length]; a += p.x * q.y - q.x * p.y }
       return a / 2
     }
-    const ek = (i, j) => i + '_' + j
-    const rev = (e) => { const u = e.indexOf('_'); return e.slice(u + 1) + '_' + e.slice(0, u) }
 
-    // One group per cell: CCW boundary as a set of directed edges.
+    const registry = new GroundPointRegistry()
+    const dcel = new DCEL(registry)
     const groups = cells.map((c) => {
       let poly = c.polygon
       if (signedArea(poly) < 0) poly = [...poly].reverse()
-      const idx = poly.map(keyOf)
-      const edges = new Set()
-      for (let i = 0; i < idx.length; i++) {
-        const a = idx[i], b = idx[(i + 1) % idx.length]
-        if (a !== b) edges.add(ek(a, b))
-      }
-      return { edges, area: Math.abs(signedArea(poly)), alive: true }
+      const ids = dedupeConsecutiveIds(registry.mintDeduped(poly, 'plot', 1e-4, { reuseExisting: true }))
+      if (ids.length < 3) return { faceId: null, area: Math.abs(signedArea(poly)), alive: false }
+      const face = dcel.insertFace(ids, 'plot', {})
+      return { faceId: face.id, area: Math.abs(signedArea(poly)), alive: true }
     })
 
-    const sharesEdge = (G, H) => { for (const e of G.edges) if (H.edges.has(rev(e))) return true; return false }
-    const absorb = (G, N) => {
-      for (const e of N.edges) {
-        const r = rev(e)
-        if (G.edges.has(r)) G.edges.delete(r) // shared interior edge cancels
-        else G.edges.add(e)
+    const sharesEdge = (G, H) => {
+      for (const he of dcel._faceHalfEdges(G.faceId)) {
+        if (dcel.getHalfEdge(he.twin)?.face === H.faceId) return true
       }
+      return false
+    }
+    const absorb = (G, N) => {
+      const merged = dcel.mergeFaces(G.faceId, N.faceId)
+      if (!merged) return false
+      G.faceId = merged.id
       G.area += N.area
       N.alive = false
+      return true
     }
 
     while (true) {
@@ -319,53 +331,17 @@ export default class PlotVoronoiGenerator {
       while (G.area < minPlotSize) {
         const nbrs = groups.filter(H => H.alive && H !== G && sharesEdge(G, H)).sort((a, b) => a.area - b.area)
         if (nbrs.length === 0) break
-        absorb(G, nbrs[0])
+        if (!absorb(G, nbrs[0])) break
       }
     }
 
     const out = []
     for (const g of groups) {
       if (!g.alive) continue
-      const poly = this._chainEdges(g.edges, canon)
+      const poly = dcel.resolveFacePolygon(g.faceId)
       if (poly && poly.length >= 3) out.push({ polygon: poly })
     }
     return out.length ? out : cells
-  }
-
-  // Chain a set of directed boundary edges ("i_j") into the largest closed loop,
-  // returned as polygon points via the canonical vertex registry.
-  _chainEdges(edgeSet, canon) {
-    const outgoing = new Map()
-    for (const e of edgeSet) {
-      const u = e.indexOf('_'); const i = +e.slice(0, u), j = +e.slice(u + 1)
-      if (!outgoing.has(i)) outgoing.set(i, [])
-      outgoing.get(i).push(j)
-    }
-    const used = new Set()
-    let best = null
-    for (const start of edgeSet) {
-      if (used.has(start)) continue
-      const s0 = +start.slice(0, start.indexOf('_'))
-      const loop = []
-      let cur = s0, guard = 0, closed = false
-      while (guard++ <= edgeSet.size + 1) {
-        loop.push(cur)
-        const outs = outgoing.get(cur)
-        if (!outs) break
-        let nxt = null
-        for (const cand of outs) { const k = cur + '_' + cand; if (!used.has(k)) { nxt = cand; used.add(k); break } }
-        if (nxt === null) break
-        if (nxt === s0) { closed = true; break }
-        cur = nxt
-      }
-      if (closed && loop.length >= 3) {
-        const poly = loop.map(i => ({ x: canon[i].x, y: canon[i].y }))
-        let a = 0
-        for (let i = 0; i < poly.length; i++) { const p = poly[i], q = poly[(i + 1) % poly.length]; a += p.x * q.y - q.x * p.y }
-        if (!best || Math.abs(a) > best.a) best = { poly, a: Math.abs(a) }
-      }
-    }
-    return best ? best.poly : null
   }
 
 }

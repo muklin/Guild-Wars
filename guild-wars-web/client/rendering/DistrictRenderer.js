@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import PolylineRenderer from './utils/PolylineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
-import { pointInPolygon, distanceToLineSegment, centroid } from './utils/renderUtils.js'
+import { pointInPolygon, distanceToLineSegment, centroid, triangulatePolygon, resolvePolygon } from './utils/renderUtils.js'
 import { DISTRICTS, DEFAULTS } from '../../shared/districtConfig.js'
 
 // Sub-class colours ('Noble', 'Monarchy', etc., as looked up via DISTRICT_COLORS.get())
@@ -34,7 +34,7 @@ export const DISTRICT_COLORS = {
   Anarchist:     DISTRICTS['Leadership-Anarchist'].color,
   Wall:          0x555555,
   MainRoad:      0x70717C,
-  Canal:         0x3399cc,
+  Canal:         0x1a5abf,   // same as Lake/River — canals carry the same water
   Docks:         0x2a7a9e,
   unassigned:    0xb8a680,
   get(type) {
@@ -129,13 +129,22 @@ export default class DistrictRenderer {
   // FAR side of this specific bit of the boundary actually touch Sea/Lake/River, as
   // opposed to `_cityEdgeIsNearWater`'s coarse whole-edge gate used at assignment
   // time server-side) — see Docks, CONTEXT_WorldTerrain.md.
-  setTerrainWaterData(regions, edges, edgePoints) {
+  setTerrainWaterData(regions, edges, edgePoints, terrainPlots, pointsById) {
     this._terrainRegions = regions || []
     this._terrainEdges = edges || {}
     this._terrainEdgePointById = new Map((edgePoints || []).map(p => [p.id, p]))
+    if (pointsById) {
+      for (const cell of (terrainPlots || [])) {
+        cell.polygon = resolvePolygon(cell.pointIds, pointsById) ?? cell.polygon
+      }
+    }
+    this._terrainPlots = terrainPlots || []
   }
 
-  setCityDistrictData(data) {
+  // `pointsById` (Map<id, {x,y,z}>) — see TerrainRenderer.setTerrainData's matching
+  // comment. When provided, every district's polygon is resolved fresh from its own
+  // pointIds instead of trusting the server's `.polygon` convenience copy.
+  setCityDistrictData(data, pointsById) {
     this._districtById = null
     if (Array.isArray(data)) {
       this.cityDistrictData = { districts: data, edges: {}, edgePoints: [] }
@@ -143,6 +152,11 @@ export default class DistrictRenderer {
       this.renderDistricts(data)
       this.renderCityEdges({})
     } else {
+      if (pointsById) {
+        for (const district of (data.districts || [])) {
+          district.polygon = resolvePolygon(district.pointIds, pointsById) ?? district.polygon
+        }
+      }
       this.cityDistrictData = data
       this.cityEdgePointsById = new Map((data.edgePoints || []).map(p => [p.id, p]))
       this.renderDistricts(data.districts || [])
@@ -171,10 +185,13 @@ export default class DistrictRenderer {
     const polygon = [...rawPoly]
     const vertices = polygon.map(v => [v.x, 0, v.y]).flat()
 
+    // Ear-clipping, not a fan from vertex 0 — a previewed (not yet locked) district can
+    // have a concave polygon once River/Cliff pullback insets part of its boundary, and
+    // a plain fan renders those wrong (see TerrainRenderer.buildRegionMesh for the same
+    // fix and why it matters).
+    const ears = triangulatePolygon(polygon)
     const triangles = []
-    for (let i = 1; i < polygon.length - 1; i++) {
-      triangles.push(0, i, i + 1)
-    }
+    for (const [a, b, c] of ears) triangles.push(a, b, c)
     if (triangles.length === 0) return null
 
     const geometry = new THREE.BufferGeometry()
@@ -212,10 +229,17 @@ export default class DistrictRenderer {
     const junctions = this.cityDistrictData?.streetGraph?.junctions
     if (!junctions?.length) return null
 
+    // StreetVoronoiGenerator rewrites a connection's null left/right (outer edge, facing
+    // unclaimed land) to the string 'terrain' once terrain plots exist nearby — which is
+    // as soon as any building generation has run, i.e. essentially always. An outer edge
+    // here is passed in with districtB === null (see callers), so treat 'terrain' the
+    // same as null or every Docks/Wall/Canal/MainRoad chain on an outer boundary silently
+    // fails to resolve (no chain found → no mesh built, even though the junctions exist).
+    const norm = (v) => (v === 'terrain' ? null : v)
     const matchesConn = (c) =>
       c.edgeKind === edgeKind &&
-      ((c.left === districtA && c.right === districtB) ||
-       (c.left === districtB && c.right === districtA))
+      ((norm(c.left) === districtA && norm(c.right) === districtB) ||
+       (norm(c.left) === districtB && norm(c.right) === districtA))
 
     // A junction is in the chain if it has at least one connection along this boundary.
     const matches = junctions.filter(j => (j.connections || []).some(matchesConn))
@@ -291,8 +315,14 @@ export default class DistrictRenderer {
         // on top, on whichever segments actually border water; the rest of this Docks
         // edge stays plain road with no extra geometry.
         nonWallEdges[edgeId] = edge
+        // A Docks edge's only real tie to a district is the street-graph seeds along its
+        // length — unlike Wall/Canal, there's no reason to wait for either neighbouring
+        // district to lock/preview before showing the Alley+Piers, so fall back to the
+        // raw edge polyline (already known from city genesis, see generateCityDistrictData)
+        // when no street-graph chain exists yet instead of rendering nothing.
         const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Docks')
-        if (chain) {
+          ?? (edge.pointIds || []).map(id => this.cityEdgePointsById.get(id)).filter(Boolean)
+        if (chain.length >= 2) {
           const mesh = this.buildDocksMesh(chain, edgeId)
           if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
         }
@@ -438,14 +468,24 @@ export default class DistrictRenderer {
   _segmentNearWater(a, b) {
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
     const THRESHOLD = 1.0
-    for (const region of (this._terrainRegions || [])) {
-      if (region.assignedType !== 'Sea' && region.assignedType !== 'Lake') continue
-      const poly = region.polygon
-      if (!poly) continue
-      if (pointInPolygon(mx, my, poly)) return true
-      for (let i = 0; i < poly.length; i++) {
-        const p = poly[i], q = poly[(i + 1) % poly.length]
-        if (distanceToLineSegment(mx, my, p.x, p.y, q.x, q.y) < THRESHOLD) return true
+    // Sea/Lake regions are checked against their actual fine terrain-plot cells, not
+    // region.polygon — that's a CONVEX HULL of those cells (TerrainVoronoiGenerator Step
+    // 6), which over-covers any concave stretch of coastline (a bay, inlet, etc.) and can
+    // report a land-facing segment on the far side of the notch as "near water" (Docks
+    // piers rendering on dry land — see Docks, CONTEXT_WorldTerrain.md).
+    const waterRegionIds = new Set((this._terrainRegions || [])
+      .filter(r => r.assignedType === 'Sea' || r.assignedType === 'Lake')
+      .map(r => r.id))
+    if (waterRegionIds.size) {
+      for (const cell of (this._terrainPlots || [])) {
+        if (!waterRegionIds.has(cell.parentRegionId)) continue
+        const poly = cell.polygon
+        if (!poly?.length) continue
+        if (pointInPolygon(mx, my, poly)) return true
+        for (let i = 0; i < poly.length; i++) {
+          const p = poly[i], q = poly[(i + 1) % poly.length]
+          if (distanceToLineSegment(mx, my, p.x, p.y, q.x, q.y) < THRESHOLD) return true
+        }
       }
     }
     for (const te of Object.values(this._terrainEdges || {})) {
@@ -479,20 +519,24 @@ export default class DistrictRenderer {
   }
 
   // Docks: a wood Alley (frontage strip, like Canal's stone / Wall's mud) plus discrete
-  // wood Piers projecting into the water, spaced one per block-frontage (street → cross
-  // Alley → Pier) — but ONLY on segments of `polyline` whose far side actually touches
-  // Sea/Lake/River; other segments of this same Docks edge get nothing here and stay
-  // plain road. Piers never project past half a River's width (the same
+  // wood Piers projecting into the water — but ONLY on segments of `polyline` whose far
+  // side actually touches Sea/Lake/River; other segments of this same Docks edge get
+  // nothing here and stay plain road. Piers spawn AT the polyline's own vertices rather
+  // than walking a fixed distance along it: when `polyline` is a real street-graph
+  // boundary chain (_extractBoundaryChain) those vertices are the actual junctions
+  // (spaced one per block-frontage, same cadence as plots along an ordinary street —
+  // see Pier, CONTEXT_WorldTerrain.md); when it's the raw-edge-polyline fallback (no
+  // district generated yet), they're that edge's own corners. Either way piers track
+  // whatever the district's real geometry is instead of an arbitrary fixed spacing that
+  // ignored it. Piers never project past half a River's width (the same
   // RIVER_CLIFF_HALF_WIDTH margin SetupPhase insets districts by) — for Sea/Lake there's
-  // no opposite bank to worry about, so no such cap applies. See Docks/Pier/Alley,
-  // CONTEXT_WorldTerrain.md.
+  // no opposite bank to worry about, so no such cap applies.
   buildDocksMesh(polyline, edgeId) {
     if (!polyline || polyline.length < 2) return null
     const W = 0.0875
     const halfAlley = W * 1.25
     const alleyY = 0.002
     const alleyColor = 0xa9855a   // wood
-    const PIER_SPACING = 0.2      // matches typical plot-frontage cadence along a street
     const PIER_LEN = W * 1.5
     const PIER_WIDTH = W * 0.6
 
@@ -507,29 +551,44 @@ export default class DistrictRenderer {
     const { left, right } = this._getMiteredCorners(polyline, halfAlley)
     const verts = [], idx = []
     const piers = []
-    let carry = 0
+
+    const segNearWater = []
+    for (let i = 0; i < polyline.length - 1; i++) segNearWater.push(this._segmentNearWater(polyline[i], polyline[i + 1]))
 
     for (let i = 0; i < polyline.length - 1; i++) {
+      if (!segNearWater[i]) continue
       const a = polyline[i], b = polyline[i + 1]
-      if (!this._segmentNearWater(a, b)) { carry = 0; continue }
-
       const b0 = verts.length / 3
       verts.push(right[i].x, alleyY, right[i].y, left[i].x, alleyY, left[i].y,
         left[i + 1].x, alleyY, left[i + 1].y, right[i + 1].x, alleyY, right[i + 1].y)
       idx.push(b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3)
+    }
 
-      const dx = b.x - a.x, dy = b.y - a.y, segLen = Math.hypot(dx, dy) || 1e-6
-      const ux = dx / segLen, uy = dy / segLen
-      let nx = -uy, ny = ux   // perpendicular — flipped below if it points toward the district
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
-      if (distCentroid && (distCentroid.x - mx) * nx + (distCentroid.y - my) * ny > 0) { nx = -nx; ny = -ny }
-      let d = PIER_SPACING - carry
-      while (d < segLen) {
-        const px = a.x + ux * d, py = a.y + uy * d
-        piers.push(this._buildPierMesh({ x: px + nx * halfAlley, y: py + ny * halfAlley }, ux, uy, nx, ny, PIER_LEN, PIER_WIDTH))
-        d += PIER_SPACING
+    // One pier per polyline vertex touching at least one water-facing segment — using
+    // the average of its adjacent segments' outward normals (mitred the same way the
+    // alley's own left/right offsets are) so a pier at a bend still points cleanly
+    // outward rather than along just one of its two segments.
+    for (let i = 0; i < polyline.length; i++) {
+      const prevNear = i > 0 && segNearWater[i - 1]
+      const nextNear = i < polyline.length - 1 && segNearWater[i]
+      if (!prevNear && !nextNear) continue
+      let nx = 0, ny = 0
+      if (prevNear) {
+        const a = polyline[i - 1], b = polyline[i]
+        const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1e-6
+        nx += -dy / len; ny += dx / len
       }
-      carry = segLen - (d - PIER_SPACING)
+      if (nextNear) {
+        const a = polyline[i], b = polyline[i + 1]
+        const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1e-6
+        nx += -dy / len; ny += dx / len
+      }
+      const nlen = Math.hypot(nx, ny) || 1
+      nx /= nlen; ny /= nlen
+      const p = polyline[i]
+      if (distCentroid && (distCentroid.x - p.x) * nx + (distCentroid.y - p.y) * ny > 0) { nx = -nx; ny = -ny }
+      const ux = -ny, uy = nx   // pier-width direction, perpendicular to the outward normal
+      piers.push(this._buildPierMesh({ x: p.x + nx * halfAlley, y: p.y + ny * halfAlley }, ux, uy, nx, ny, PIER_LEN, PIER_WIDTH))
     }
     if (!verts.length && !piers.length) return null
 
@@ -834,8 +893,11 @@ export default class DistrictRenderer {
     }
     if (type === 'Docks') {
       const edge = this.cityDistrictData?.edges?.[edgeId]
-      const chain = edge ? this._extractBoundaryChain(edge.districtA, edge.districtB, 'Docks') : null
-      if (chain) {
+      const chain = edge
+        ? (this._extractBoundaryChain(edge.districtA, edge.districtB, 'Docks')
+          ?? (edge.pointIds || []).map(id => this.cityEdgePointsById.get(id)).filter(Boolean))
+        : null
+      if (chain?.length >= 2) {
         const old = this.cityEdgeMeshes.get(edgeId)
         if (old) this.scene.remove(old)
         const mesh = this.buildDocksMesh(chain, edgeId)

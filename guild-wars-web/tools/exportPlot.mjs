@@ -6,6 +6,9 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import PlotVoronoiGenerator, { markSquareBlocks } from '../server/engine/CityGenerator/PlotVoronoiGenerator.js'
+import LandmarkPlacer from '../server/engine/CityGenerator/buildings/LandmarkPlacer.js'
+import { gutterRoadEdges } from '../server/engine/CityGenerator/CityBlockGenerator.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SAVES_DIR = path.join(__dirname, '..', 'server', 'saves')
@@ -58,9 +61,23 @@ if (!cityData) {
   process.exit(1)
 }
 
-const { districts = [], blocks = [], plots = [], streetGraph, landmarkBuildings = [] } = cityData
+const { districts = [], blocks = [], streetGraph, landmarkBuildings = [] } = cityData
 const junctions = streetGraph?.junctions ?? []
 const junctionById = new Map(junctions.map(j => [j.id, j]))
+
+// Save files never persist cityDistrictData.plots — server/index.js re-derives them on
+// load (SetupPhase.regeneratePlots()) instead of storing them, so a saved plots array is
+// always empty on disk. Mirror that same regeneration here (city-block plots only; this
+// tool doesn't need terrain plots) so --plot/--block exports actually have plots to hand
+// to the buildingparts preview instead of silently exporting zero every time.
+let plots = cityData.plots ?? []
+if (!plots.length && blocks.length && junctions.length) {
+  markSquareBlocks(blocks, districts)
+  const { footprints } = new LandmarkPlacer().generate(blocks, districts)
+  const roadEdges = gutterRoadEdges(junctions)
+  ;({ plots } = new PlotVoronoiGenerator().generate(blocks, districts, junctions, roadEdges, footprints))
+  console.log(`(save file had no persisted plots — regenerated ${plots.length} from blocks/junctions)`)
+}
 
 const roadIdsOfBlock = (block) => new Set((block.streetEdges || []).map(e => e.roadId).filter(Boolean))
 

@@ -19,10 +19,24 @@ export default class PolylineRenderer {
     this.thickness = options.thickness ?? 0.5
     this.stripY    = options.stripY    ?? 0.06
     this.fillY     = options.fillY     ?? (options.stripY ?? 0.06) + 0.005
-    // World-distance ceiling for the miter intersection from a junction point.
-    // Beyond this, the corner is beveled (two boundary points) instead of
-    // mitered to a single far-flung spike vertex. Default Infinity = no limit.
-    this.miterLimitDist = options.miterLimitDist ?? Infinity
+    // World-distance ceiling for the miter intersection from a junction point. Beyond
+    // this, the corner is beveled (two boundary points) instead of mitered to a single
+    // far-flung spike vertex. As the angle between two edges at a junction narrows, the
+    // miter point's distance from the joint grows as r/sin(angle/2) — unbounded as the
+    // angle approaches 0 — so leaving this at Infinity (the old default) let ANY
+    // sufficiently narrow junction spike arbitrarily far, for every edge type alike
+    // (river, cliff, wall...); confirmed as the actual cause of black spikes reported
+    // both in Terrain mode and, worse, in District mode, once river endpoints stopped
+    // getting their own workaround that happened to sidestep this for wide-gap cases.
+    // Was 4× thickness (SVG/Canvas's stroke-miterlimit convention) — still visibly
+    // spiky live at that bound: the interior-vertex case (_buildEdgeMesh) only CLAMPS
+    // the miter point's distance, it doesn't bevel into two flat points the way the
+    // junction case (_computeJunctionData) does, so a clamped-but-still-pointed corner
+    // at 4× thickness (2.0 world units at this renderer's 0.5 thickness) reads as a
+    // real spike, not a subtle imperfection. 1.5× keeps the same proportional-to-
+    // thickness behavior but bounds any residual spike small enough to be visually
+    // negligible instead of just "shorter".
+    this.miterLimitDist = options.miterLimitDist ?? this.thickness * 1.5
     // A colour that dominates junction fills when any adjacent edge has it (e.g.
     // a River, so its ends/junctions stay blue rather than the majority colour).
     this.priorityColor = options.priorityColor ?? null
@@ -84,7 +98,14 @@ export default class PolylineRenderer {
       geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1))
       geo.computeVertexNormals()
       const color = this._junctionColor(edgeIds)
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5 })
+      // DoubleSide: the fan's boundaryPts aren't guaranteed convex (beveled/clamped
+      // corners at sharp junctions can still locally reverse the polygon's winding for
+      // one or two triangles) — a backface-culled triangle there doesn't just look wrong,
+      // it shows the scene's clear colour straight through, which is what a "hole that
+      // changes colour between ISO/Debug camera modes" actually is (no geometry drawn,
+      // not literally missing terrain). See TerrainRenderer.buildRegionMesh's identical
+      // fix/comment for the same failure mode on terrain-plot fills.
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5, side: THREE.DoubleSide })
       const mesh = new THREE.Mesh(geo, mat)
       this.scene.add(mesh)
       this._junctionMeshes.set(ptId, mesh)
@@ -251,6 +272,23 @@ export default class PolylineRenderer {
       return { x: q1x + t * d1x, y: q1y + t * d1y }
     }
 
+    // Interior-vertex miter (below) has no shared junction data to fall back on the way
+    // _computeJunctionData's endpoint case does — it's always exactly one point per side,
+    // reused by both adjoining segments (see the strip-building loop below), so a proper
+    // two-point bevel isn't structurally available here without a third "cap" quad.
+    // Clamping the miter point's distance from the vertex to miterLimitDist is the
+    // minimal fix that stays within the existing one-point-per-side data shape: a sharp
+    // interior bend (e.g. a river kink) pulls back to a bounded corner instead of
+    // shooting out to an arbitrarily distant spike — normal (wide-angle) bends are
+    // unaffected since their miter point is already well within the limit.
+    const clampToLimit = (p, cx, cy) => {
+      const ddx = p.x - cx, ddy = p.y - cy
+      const d = Math.hypot(ddx, ddy)
+      if (d <= this.miterLimitDist || d < 1e-10) return p
+      const s = this.miterLimitDist / d
+      return { x: cx + ddx * s, y: cy + ddy * s }
+    }
+
     const corners = []
     for (let i = 0; i < n; i++) {
       const pt = points[i]
@@ -286,9 +324,11 @@ export default class PolylineRenderer {
         if (len1 < 1e-10 || len2 < 1e-10) { corners.push(null); continue }
         const ux1 = dx1/len1, uy1 = dy1/len1
         const ux2 = dx2/len2, uy2 = dy2/len2
+        const rawLeft  = lineIsect(pt.x - uy1*r, pt.y + ux1*r, ux1, uy1, pt.x - uy2*r, pt.y + ux2*r, ux2, uy2)
+        const rawRight = lineIsect(pt.x + uy1*r, pt.y - ux1*r, ux1, uy1, pt.x + uy2*r, pt.y - ux2*r, ux2, uy2)
         corners.push({
-          left:  lineIsect(pt.x - uy1*r, pt.y + ux1*r, ux1, uy1, pt.x - uy2*r, pt.y + ux2*r, ux2, uy2),
-          right: lineIsect(pt.x + uy1*r, pt.y - ux1*r, ux1, uy1, pt.x + uy2*r, pt.y - ux2*r, ux2, uy2)
+          left:  clampToLimit(rawLeft,  pt.x, pt.y),
+          right: clampToLimit(rawRight, pt.x, pt.y)
         })
       }
     }
@@ -315,7 +355,10 @@ export default class PolylineRenderer {
       return null
     }
 
-    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5 })
+    // DoubleSide: a quad whose corner points got clamped/beveled at a sharp bend can
+    // still end up wound backward locally — see the matching comment on the junction
+    // fill material above for why that must not backface-cull to nothing.
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, emissive: color, emissiveIntensity: 0.5, side: THREE.DoubleSide })
     const mesh = new THREE.Mesh(geometry, mat)
     mesh.userData = { edgeId }
     return mesh

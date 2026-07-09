@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import PolylineRenderer from './utils/PolylineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
-import { pointInPolygon, distanceToLineSegment, clipPolygonToBox } from './utils/renderUtils.js'
+import { pointInPolygon, distanceToLineSegment, clipPolygonToBox, triangulatePolygon, resolvePolygon } from './utils/renderUtils.js'
 
 const TERRAIN_COLORS = {
   City:          0x808080,
@@ -16,7 +16,7 @@ const TERRAIN_COLORS = {
   'Ice Sheet':   0xf4f8ff,
   unassigned:    0xb8a680,
   Cliff:         0xaaaaaa,
-  River:         0x4488ff,
+  River:         0x1a5abf,   // same as Lake — a river is the same water, just flowing
   get(type) {
     return this[type] ?? null
   }
@@ -36,6 +36,14 @@ export default class TerrainRenderer {
     this.terrainData = null
     this.worldSize = 50
     this.edgePointsById = new Map()
+    // Once true (see setCityModeActive), the raw River/Cliff/unassigned terrain-edge
+    // STROKE overlay (this.terrainPolylines) is a Terrain-Setup-only concept and never
+    // renders again — District mode shows only the filled river/cliff DCEL faces (see
+    // renderRiverCliffFaces) plus GroundRenderer's own district geometry. Without this,
+    // the stroke overlay was never torn down on the terrain->city mode transition and
+    // stayed visible underneath/alongside the new fills, showing through as black
+    // slivers at every seam (confirmed live).
+    this._cityModeActive = false
 
     this.regionMeshes = new Map()
     this.terrainPlotMeshes = new Map()
@@ -48,6 +56,7 @@ export default class TerrainRenderer {
 
     this.featureManager = new FeatureManager(scene)
     this.spawnedFeatureRegions = new Map()
+    this.spawnedFeaturePlots = new Set()   // plot ids that already have a terrain-district feature (e.g. fields)
 
     this._fpBandMeshes  = []
     this._fpBandCenters = []  // [{fp, worldX, worldZ}] for DOM label positioning
@@ -194,15 +203,51 @@ export default class TerrainRenderer {
 
   // ── Terrain data ────────────────────────────────────────────────────────────
 
-  setTerrainData(regions, edges, terrainPlots, edgePoints) {
+  // `pointsById` (Map<id, {x,y,z}>) is the client's copy of the server's Point registry
+  // (see GroundPointRegistry.js) — when provided, every terrain plot's polygon is
+  // resolved fresh from its own pointIds instead of trusting the server's `.polygon`
+  // convenience copy, so the client's ground truth is the registry, not a snapshot that
+  // could in principle drift from it. Falls back to the sent `.polygon` when a plot has
+  // no pointIds or pointsById isn't available yet (e.g. an older save mid-migration).
+  // riverCliffFaces: [{id, sourceEdgeId, assignedType, pointIds, polygon}] — real,
+  // gap-free DCEL faces for River/Cliff stretches (see SetupPhase._buildRiverCliffFaces,
+  // plan "typed-giggling-giraffe" addendum). Rendered as filled meshes exactly like
+  // Lake/Sea (buildRegionMesh), replacing the stroked-polyline overlay for whichever
+  // edges got a face — a chain that couldn't be built (confluence, etc) simply isn't in
+  // this array and keeps stroke-rendering via PolylineRenderer, unchanged.
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = []) {
     this.clearMarkers()
-    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points')
+    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points,', riverCliffFaces.length, 'river/cliff faces')
     this.edgePointsById = new Map((edgePoints || []).map(p => [p.id, p]))
-    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [] }
+    if (pointsById) {
+      for (const cell of (terrainPlots || [])) {
+        cell.polygon = resolvePolygon(cell.pointIds, pointsById) ?? cell.polygon
+      }
+      for (const face of riverCliffFaces) {
+        face.polygon = resolvePolygon(face.pointIds, pointsById) ?? face.polygon
+      }
+    }
+    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces }
     this.renderTerrain(regions, terrainPlots || [])
+    this.renderRiverCliffFaces(riverCliffFaces)
     this.drawVoronoiCenters(regions)
     if (edges && Object.keys(edges).length > 0) {
       this.renderEdges(edges)
+    }
+  }
+
+  // Filled meshes for River/Cliff DCEL faces — reuses buildRegionMesh unchanged (it's
+  // already generic over any {polygon, assignedType} shape; this is exactly what
+  // already renders Lake/Sea).
+  renderRiverCliffFaces(faces) {
+    this.riverCliffFaceMeshes ??= new Map()
+    this.riverCliffFaceMeshes.forEach(mesh => this.scene.remove(mesh))
+    this.riverCliffFaceMeshes.clear()
+    for (const face of faces || []) {
+      const mesh = this.buildRegionMesh(face)
+      if (!mesh) continue
+      this.scene.add(mesh)
+      this.riverCliffFaceMeshes.set(face.id, mesh)
     }
   }
 
@@ -241,7 +286,6 @@ export default class TerrainRenderer {
         if (region.assignedType === 'Hills')     this._spawnFeatureForRegion('hills', region.id)
         if (region.assignedType === 'Sea')       this._spawnFeatureForRegion('sea', region.id)
         if (region.assignedType === 'Lake')      this._spawnFeatureForRegion('lake', region.id)
-        if (region.terrainDistrict === 'Agriculture') this._spawnFieldsForRegion(region.id)
       }
     } else {
       let successCount = 0
@@ -266,9 +310,7 @@ export default class TerrainRenderer {
     const polygon = clipPolygonToBox(region.polygon, 0, this.worldSize, 0, this.worldSize)
     if (polygon.length < 3) return null
 
-    const cx = polygon.reduce((s, v) => s + v.x, 0) / polygon.length
-    const cy = polygon.reduce((s, v) => s + v.y, 0) / polygon.length
-    const vertices = [cx, 0, cy]
+    const vertices = []
     for (const v of polygon) {
       vertices.push(v.x || 0, 0, v.y || 0)
     }
@@ -277,12 +319,13 @@ export default class TerrainRenderer {
       return null
     }
 
+    // Ear-clipping, not a fan from the centroid — River/Cliff pullback routinely clips a
+    // concave notch into a terrain-plot polygon, and a centroid fan renders those wrong
+    // (missing/inverted triangles wherever the centroid can't "see" an edge — confirmed
+    // affecting hundreds of cells per generated world, not a rare corner case).
+    const ears = triangulatePolygon(polygon)
     const triangles = []
-    for (let i = 0; i < polygon.length; i++) {
-      const a = i + 1
-      const b = ((i + 1) % polygon.length) + 1
-      triangles.push(0, a, b)
-    }
+    for (const [a, b, c] of ears) triangles.push(a, b, c)
 
     if (triangles.length === 0) return null
 
@@ -299,12 +342,18 @@ export default class TerrainRenderer {
     }
 
     const color = TERRAIN_COLORS.get(region.assignedType) || TERRAIN_COLORS.unassigned
+    // DoubleSide: every other renderer in this codebase (DistrictRenderer, GroundRenderer)
+    // already renders this way — this was the one mesh left culling backfaces, so any
+    // wrong-winding polygon (several found this session, from different sources) went
+    // fully invisible instead of just rendering. See the winding-order fixes in
+    // SetupPhase.js for why a cell's winding can't be guaranteed at every call site.
     const material = new THREE.MeshStandardMaterial({
       color: color,
       roughness: 0.6,
       metalness: 0,
       emissive: color,
-      emissiveIntensity: 0.2
+      emissiveIntensity: 0.2,
+      side: THREE.DoubleSide
     })
 
     const mesh = new THREE.Mesh(geometry, material)
@@ -314,13 +363,31 @@ export default class TerrainRenderer {
     return mesh
   }
 
+  // Once city/district mode is active, this whole overlay stays dark permanently — see
+  // _cityModeActive's doc comment. setTerrainData still gets called on every subsequent
+  // sync while in that mode (it's unconditional in App.js), so this guard is what stops
+  // it from silently re-creating the stroke meshes setCityModeActive just tore down.
+  setCityModeActive(active) {
+    this._cityModeActive = active
+    if (active) this.terrainPolylines?.dispose()
+  }
+
   renderEdges(edges) {
+    if (this._cityModeActive) return
     if (!this.terrainPolylines) {
       this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.5, stripY: 0.01, priorityColor: TERRAIN_COLORS.River })
     }
-    console.log(`Rendering ${Object.keys(edges).length} edges`)
+    // River/Cliff edges that already got a filled DCEL face (see renderRiverCliffFaces)
+    // are dropped from the stroke pass — otherwise they'd double-render (a filled mesh
+    // AND a stroke on top of it). An edge whose face-construction was skipped this pass
+    // (confluence, etc — see _buildRiverCliffFaces) simply has no matching face and
+    // keeps stroke-rendering exactly as before this change; unassigned edges never have
+    // a face and are always unaffected.
+    const facedEdgeIds = new Set((this.terrainData?.riverCliffFaces || []).map(f => f.sourceEdgeId))
+    const strokedEdges = Object.fromEntries(Object.entries(edges).filter(([id]) => !facedEdgeIds.has(id)))
+    console.log(`Rendering ${Object.keys(strokedEdges).length} edges (${facedEdgeIds.size} covered by river/cliff faces instead)`)
     this.terrainPolylines.render(
-      edges,
+      strokedEdges,
       this.edgePointsById,
       (edge) => edge.assignedType ? TERRAIN_COLORS.get(edge.assignedType) : TERRAIN_COLORS.unassigned
     )
@@ -692,8 +759,17 @@ export default class TerrainRenderer {
     this.spawnedFeatureRegions.clear()
   }
 
-  spawnTerrainDistrictFeature(regionId, districtType) {
-    if (districtType === 'Agriculture') this._spawnFieldsForRegion(regionId)
+  // A terrain district (Forestry/Mining/Agriculture/Fishing) is assigned to ONE specific
+  // fine terrain plot, not its whole parent region (see assignTerrainDistrict, SetupPhase
+  // .js) — so its visual feature must anchor to that plot, not scatter across 1-2 random
+  // cells of the region (the previous _spawnFieldsForRegion(regionId) behaviour, which
+  // could decorate a completely different plot than the one actually assigned).
+  spawnTerrainDistrictFeature(regionId, plotId, districtType) {
+    if (districtType !== 'Agriculture') return
+    if (this.spawnedFeaturePlots.has(plotId)) return
+    this.spawnedFeaturePlots.add(plotId)
+    const cell = (this.terrainData?.terrainPlots || []).find(p => p.id === plotId)
+    if (cell) this.featureManager.spawn('fields', [cell])
   }
 
   deleteCityTerrainCells() {
@@ -722,6 +798,11 @@ export default class TerrainRenderer {
       }
       this.regionTerrainPlots.delete(regionId)
     }
+    // GroundRenderer takes over river/cliff face rendering too, from this point on (see
+    // TerrainPlotConverter's riverCliffFaces param) — retire these meshes the same way
+    // terrain-plot fills above are retired, or the two would double-render.
+    this.riverCliffFaceMeshes?.forEach(mesh => this.scene.remove(mesh))
+    this.riverCliffFaceMeshes?.clear()
   }
 
   // ── Hit testing ─────────────────────────────────────────────────────────────
@@ -955,30 +1036,57 @@ export default class TerrainRenderer {
     const pushV = (x, z) => { verts.push(x, Y, z); return vi++ }
 
     // ── Main strip ───────────────────────────────────────────────────────────
-    const oIdx = [], iIdx = []
-    for (let i = 0; i <= N_STRIP; i++) {
-      const t = t0 + (i / N_STRIP) * (t1 - t0)
-      const p = this._perimPt(t, W)
-      oIdx.push(pushV(p.x, p.y))
-      iIdx.push(pushV(p.x + p.inX * depth, p.y + p.inY * depth))
+    // Sample list = N_STRIP+1 evenly spaced t-values PLUS an exact sample at every map
+    // corner (k*W) that falls strictly inside (t0,t1) — enumerated dynamically since a
+    // band can wrap either direction (t0 can go negative, t1 can exceed 4W). Inserting a
+    // real sample at the corner (instead of interpolating across it and separately
+    // patching the resulting wedge with an ad-hoc triangle, which didn't align with the
+    // strip's own vertices there and left a visible seam/overlap) lets the SAME quad-
+    // building loop below bend cleanly through it once its inner point is mitered.
+    const ts = []
+    for (let i = 0; i <= N_STRIP; i++) ts.push(t0 + (i / N_STRIP) * (t1 - t0))
+    const cornerTs = new Set()
+    const kMin = Math.floor(t0 / W) - 1, kMax = Math.ceil(t1 / W) + 1
+    for (let k = kMin; k <= kMax; k++) {
+      const ct = k * W
+      if (ct > t0 + 1e-6 && ct < t1 - 1e-6) cornerTs.add(ct)
     }
-    for (let i = 0; i < N_STRIP; i++) {
-      const a = oIdx[i], b = iIdx[i], c = oIdx[i + 1], d = iIdx[i + 1]
-      tris.push(a, c, b,  b, c, d)
+    for (const ct of cornerTs) ts.push(ct)
+    ts.sort((a, b) => a - b)
+    // Dedup samples that landed within noise distance of each other (a corner can fall
+    // almost exactly on a regular grid sample).
+    const dedupTs = []
+    for (const t of ts) {
+      if (dedupTs.length && t - dedupTs[dedupTs.length - 1] < 1e-4) continue
+      dedupTs.push(t)
     }
 
-    // ── Corner fill triangles (closes the gap when strip wraps a map corner) ─
-    for (const ct of [W, 2 * W, 3 * W, 4 * W]) {
-      const frac = (ct - t0) / (t1 - t0) * N_STRIP
-      if (frac > 0.5 && frac < N_STRIP - 0.5) {
-        const pBefore = this._perimPt(ct - 0.01, W)
-        const pAfter  = this._perimPt(ct + 0.01, W)
-        const pCorner = this._perimPt(ct, W)
-        const iA = pushV(pBefore.x + pBefore.inX * depth, pBefore.y + pBefore.inY * depth)
-        const iB = pushV(pAfter.x  + pAfter.inX  * depth, pAfter.y  + pAfter.inY  * depth)
-        const ov = pushV(pCorner.x, pCorner.y)
-        tris.push(ov, iA, iB)
+    const oIdx = [], iIdx = []
+    for (const t of dedupTs) {
+      const p = this._perimPt(t, W)
+      oIdx.push(pushV(p.x, p.y))
+      let ix, iy
+      if (cornerTs.has(t)) {
+        // Proper bisector miter (same formula as _getMiteredCorners/SetupPhase.
+        // _pullBackPolygon) so the inset point clears `depth` from BOTH adjacent edges
+        // instead of the plain per-sample offset, which would leave a gap or overlap
+        // right at the corner where the inward normal jumps 90°.
+        const before = this._perimPt(t - 1e-3, W), after = this._perimPt(t + 1e-3, W)
+        const bx = before.inX + after.inX, by = before.inY + after.inY
+        const bl = Math.hypot(bx, by)
+        if (bl < 1e-6) { ix = before.inX; iy = before.inY }
+        else {
+          const s = 1 / Math.max(0.15, (bx * before.inX + by * before.inY) / bl)
+          ix = (bx / bl) * s; iy = (by / bl) * s
+        }
+      } else {
+        ix = p.inX; iy = p.inY
       }
+      iIdx.push(pushV(p.x + ix * depth, p.y + iy * depth))
+    }
+    for (let i = 0; i < dedupTs.length - 1; i++) {
+      const a = oIdx[i], b = iIdx[i], c = oIdx[i + 1], d = iIdx[i + 1]
+      tris.push(a, c, b,  b, c, d)
     }
 
     // ── Pill caps (rounded ends) ─────────────────────────────────────────────
@@ -1042,24 +1150,4 @@ export default class TerrainRenderer {
     return { x: hit.x + p.inX * 0.75, y: 4.0, z: hit.y + p.inY * 0.75 }
   }
 
-  _spawnFieldsForRegion(regionId) {
-    if (!this.spawnedFeatureRegions.has(regionId)) this.spawnedFeatureRegions.set(regionId, new Set())
-    const spawned = this.spawnedFeatureRegions.get(regionId)
-    if (spawned.has('fields')) return
-    spawned.add('fields')
-
-    const cells = this._cellsForRegion(regionId)
-    if (cells.length === 0) return
-
-    let s = (regionId * 2654435761) >>> 0
-    const rng = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0x100000000 }
-
-    const arr = [...cells]
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]]
-    }
-    const count = Math.min(arr.length, rng() < 0.5 ? 1 : 2)
-    this.featureManager.spawn('fields', arr.slice(0, count))
-  }
 }

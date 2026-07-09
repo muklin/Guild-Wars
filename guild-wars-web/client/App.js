@@ -35,6 +35,7 @@ export default class App {
     this.pendingCityEdgeType = null
 
     this.resourceRegistry = []
+    this.resourceDefinitions = {}
     this.threats = []
     this.tradingDestinations = []
     this.factions = []
@@ -153,6 +154,7 @@ export default class App {
         if (response.ok) {
           this.tradingDestinations = response.tradingDestinations
           if (response.resourceRegistry) { this.resourceRegistry = response.resourceRegistry; this.uiManager.updateResources(this.resourceRegistry) }
+          if (response.resourceDefinitions) this.resourceDefinitions = response.resourceDefinitions
           if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
           this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData)
           this.renderer.deselectRegion(regionId)
@@ -172,7 +174,6 @@ export default class App {
         if (response.ok) {
           this.threats = response.threats
           this.renderer.renderThreats(this.threats, this.renderer.terrainData?.regions)
-          this.uiManager.updateThreats(this.threats)
           this.renderer.deselectRegion(regionId)
           this.selectedTerrainRegionId = null
           this.selectedTerrainPlotId = null
@@ -234,8 +235,8 @@ export default class App {
       }
     })
 
-    this.eventBus.on('TERRAIN_DISTRICT_ASSIGN', async ({ regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs }) => {
-      await this._handleTerrainDistrictAssign(regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs)
+    this.eventBus.on('TERRAIN_DISTRICT_ASSIGN', async ({ regionId, plotId, districtType, description, producedResource, name, resourceDefs, resourceWiring }) => {
+      await this._handleTerrainDistrictAssign(regionId, plotId, districtType, description, producedResource, name, resourceDefs, resourceWiring)
     })
 
     this.eventBus.on('NEW_GAME', async () => {
@@ -316,7 +317,7 @@ export default class App {
           this.currentPhase = 'Complete'
           this.uiManager.showSetupPhase('Complete')
           this.uiManager.guildPanel.setData({
-            guild: res.guild, factions: this.factions,
+            guild: res.guild, factions: this.factions, resourceDefinitions: this.resourceDefinitions,
             districts: this.renderer.cityDistrictData?.districts || [],
             tokens: this._myTokens(), playerName: this._myPlayerName(),
           })
@@ -360,6 +361,7 @@ export default class App {
                 this.resourceRegistry = res.resourceRegistry
                 this.uiManager.updateResources(this.resourceRegistry)
               }
+              if (res.resourceDefinitions) this.resourceDefinitions = res.resourceDefinitions
             } else this.uiManager.showError(res.error || 'Failed to add God')
           } catch (e) { this.uiManager.showError(e.message) }
         },
@@ -625,7 +627,7 @@ export default class App {
         this.uiManager.showSetupPhase('Complete')
         const myGuild = this._myGuild()
         this.uiManager.guildPanel.setData({
-          guild: myGuild, factions: this.factions,
+          guild: myGuild, factions: this.factions, resourceDefinitions: this.resourceDefinitions,
           districts: response.cityDistrictData?.districts || [],
           tokens: this._myTokens(), playerName: this._myPlayerName(),
         })
@@ -781,7 +783,7 @@ export default class App {
 
     for (const ptId of freeEndpoints) {
       if (!this._isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap, pointPositions, worldSize)) {
-        return 'Endpoints must connect to a River, Sea, Lake, Ice Sheet, or the map edge'
+        return 'Endpoints must connect to a River, Sea, Lake, Ice Sheet, Mountains, or the map edge'
       }
     }
 
@@ -804,10 +806,11 @@ export default class App {
       const rA = regionMap.get(edge.regionA)
       const rB = regionMap.get(edge.regionB)
 
-      // Sea, Lake, or Ice Sheet adjacent to this point
+      // Sea, Lake, Ice Sheet, or Mountains (a river's source) adjacent to this point
       if (rA?.assignedType === 'Sea'       || rB?.assignedType === 'Sea')       return true
       if (rA?.assignedType === 'Lake'      || rB?.assignedType === 'Lake')      return true
       if (rA?.assignedType === 'Ice Sheet' || rB?.assignedType === 'Ice Sheet') return true
+      if (rA?.assignedType === 'Mountains' || rB?.assignedType === 'Mountains') return true
     }
     return false
   }
@@ -947,30 +950,46 @@ export default class App {
     this._refreshDistrictPanel()
   }
 
-  async _handleTerrainDistrictAssign(regionId, plotId, districtType, description = '', producedResource = '', consumedResources = [], name = '', resourceDefs = []) {
+  async _handleTerrainDistrictAssign(regionId, plotId, districtType, description = '', producedResource = '', name = '', resourceDefs = [], resourceWiring = []) {
     try {
-      const response = await GameAPI.assignTerrainDistrict(regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs)
+      const response = await GameAPI.assignTerrainDistrict(regionId, plotId, districtType, description, producedResource, name, resourceDefs)
       if (response.ok) {
         this.renderer.deselectRegion(regionId)
         this.renderer.clearTerrainPlotSelected()
         this.selectedTerrainRegionId = null
         this.selectedTerrainPlotId = null
         this.pendingTerrainAction = null
-        this.renderer.spawnTerrainDistrictFeature(regionId, districtType)
+        this.renderer.spawnTerrainDistrictFeature(regionId, plotId, districtType)
         if (response.resourceRegistry) {
           this.resourceRegistry = response.resourceRegistry
           this.uiManager.updateResources(this.resourceRegistry)
         }
+        if (response.resourceDefinitions) this.resourceDefinitions = response.resourceDefinitions
         if (response.factions) {
           this.factions = response.factions
           this.uiManager.updateFactions(this.factions)
         }
+        await this._applyResourceWiring(resourceWiring)
         this._refreshDistrictPanel()
       } else {
         this.uiManager.showError(response.error)
         this._refreshDistrictPanel()
       }
     } catch (error) { this.uiManager.showError(error.message); this._refreshDistrictPanel() }
+  }
+
+  // Wires newly-created resources in as an existing resource's 2nd ingredient (the New
+  // Resource dialog's "used as an ingredient for" node). Runs after the district that
+  // registers the new resource(s) has already been assigned, since the target lookup is
+  // server-authoritative and the new resource must exist in resourceDefinitions first.
+  async _applyResourceWiring(resourceWiring = []) {
+    for (const { resourceName, targetName } of resourceWiring) {
+      try {
+        const res = await GameAPI.attachIngredientToResource(resourceName, targetName)
+        if (res.ok && res.resourceDefinitions) this.resourceDefinitions = res.resourceDefinitions
+        else if (!res.ok) this.uiManager.showError(res.error)
+      } catch (error) { this.uiManager.showError(error.message) }
+    }
   }
 
   _handleDistrictPreview(districtType) {
@@ -1006,12 +1025,12 @@ export default class App {
   }
 
   // Apply = lock the district in. Validates + commits resources server-side.
-  async _handleDistrictApply({ name, description, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass, resourceDefs = [] }) {
+  async _handleDistrictApply({ name, description, producedResource, secondProducedResource, residentialClass, LeadershipClass, resourceDefs = [], resourceWiring = [] }) {
     if (this.selectedDistrictId === null || !this.pendingDistrictType) return
     const districtId = this.selectedDistrictId
     const districtType = this.pendingDistrictType
     try {
-      const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource, name, resourceDefs)
+      const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, residentialClass, LeadershipClass, secondProducedResource, name, resourceDefs)
       if (response.ok) {
         const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === districtId)
         if (district) {
@@ -1021,14 +1040,15 @@ export default class App {
           district.LeadershipClass = LeadershipClass || null
           district.description = description
           district.producedResource = producedResource || null
-          district.consumedResources = consumedResources || []
           district.locked = true
         }
         if (response.resourceRegistry) {
           this.resourceRegistry = response.resourceRegistry
           this.uiManager.updateResources(this.resourceRegistry)
         }
+        if (response.resourceDefinitions) this.resourceDefinitions = response.resourceDefinitions
         if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
+        await this._applyResourceWiring(resourceWiring)
         this.renderer.updateDistrictColor(districtId, districtType)
         this._renderCityGeometry(response.cityDistrictData)
         if (this.selectedDistrictId !== null) this.renderer.deselectDistrict(this.selectedDistrictId)
@@ -1272,6 +1292,7 @@ export default class App {
         regionId: this.selectedTerrainRegionId,
         plotId,
         resourceRegistry: this.resourceRegistry,
+        resourceDefinitions: this.resourceDefinitions,
         usedProducedResources: this._getUsedProducedResources(),
         isAdjacentToCity,
         leadershipTaken: leadershipTaken(),
@@ -1289,6 +1310,7 @@ export default class App {
         residentialClass: this.pendingResidentialClass,
         LeadershipClass: this.pendingLeadershipClass,
         resourceRegistry: this.resourceRegistry,
+        resourceDefinitions: this.resourceDefinitions,
         usedProducedResources: this._getUsedProducedResources(),
         leadershipTaken: leadershipTaken(this.selectedDistrictId),
         configOverrides: district?.configOverrides || {},
@@ -1379,11 +1401,17 @@ export default class App {
     this.gameState = state
     this.currentPhase = setupStep
     this.uiManager.setPlayerName(this._myPlayerName())
+    // The client's copy of the server's Point registry (see GroundPointRegistry.js) —
+    // threaded into every renderer setter below so terrain plots/districts resolve their
+    // own polygons from pointIds instead of trusting a server-sent .polygon snapshot.
+    const pointsById = new Map((state.pointRegistry || []).map(p => [p.id, p]))
     this.renderer.setTerrainData(
       regions,
       state.worldTerrainData.edges || {},
       state.worldTerrainData.terrainPlots || [],
-      state.worldTerrainData.edgePoints || []
+      state.worldTerrainData.edgePoints || [],
+      pointsById,
+      state.worldTerrainData.riverCliffFaces || []
     )
 
     const cityData = state.cityDistrictData
@@ -1393,7 +1421,13 @@ export default class App {
       const guildPhase = setupStep === 'GuildCreation' || setupStep === 'Complete'
       this.renderer.setCityEdgesHidden(guildPhase)
       this._finalizeTerrainDisplay()
-      this.renderer.setCityDistrictData(cityData)
+      this.renderer.setCityDistrictData(cityData, pointsById)
+      // Re-hide any already-promoted (City Expansion) terrain plots' source meshes —
+      // setTerrainData above just rebuilt every terrain plot mesh fresh (all visible),
+      // and _renderCityGeometry below (which normally does this) only runs when
+      // cityData.streetGraph exists, which a promoted-but-not-yet-typed district won't
+      // have yet. Without this, such a plot's terrain mesh reappears on every reload/sync.
+      this.renderer.syncPromotedPlots(cityData)
       this.renderer.setMode('city')
       this.renderer.setFinishedGround(guildPhase)
       this.renderer.drawDistrictCenters(cityData.districts)
@@ -1408,11 +1442,11 @@ export default class App {
 
     this.resourceRegistry = state.resourceRegistry || []
     this.uiManager.updateResources(this.resourceRegistry)
+    this.resourceDefinitions = state.resourceDefinitions || {}
 
     if (state.threats) {
       this.threats = state.threats
       this.renderer.renderThreats(this.threats, regions)
-      this.uiManager.updateThreats(this.threats)
     }
     if (state.tradingDestinations) {
       this.tradingDestinations = state.tradingDestinations
@@ -1434,6 +1468,7 @@ export default class App {
       this.uiManager.guildPanel.setData({
         guild: this._myGuild(),
         factions: this.factions,
+        resourceDefinitions: this.resourceDefinitions,
         districts: state.cityDistrictData?.districts || [],
         tokens: this._myTokens(), playerName: this._myPlayerName(),
       })
@@ -1584,8 +1619,16 @@ export default class App {
       const localNew = [...buys, ...sells].filter(r => r.isNew).map(r => r.name)
       return [...(this.resourceRegistry || []), ...localNew.filter(n => !(this.resourceRegistry||[]).some(r => r.toLowerCase() === n.toLowerCase()))]
     }
+    // Services can never be sold to a Foreign Power (CONTEXT_ResourcesServices.md) — Labour
+    // and Security are Services too, even though (like Gold) they have no resourceDefinitions
+    // entry of their own.
+    const PREDEFINED_SERVICES = new Set(['labour', 'security'])
+    const isService = (name) => {
+      const key = name.trim().toLowerCase()
+      return PREDEFINED_SERVICES.has(key) || this.resourceDefinitions?.[key]?.type === 'Service'
+    }
 
-    const makeGroup = (label, getItems, setItems, otherItems) => {
+    const makeGroup = (label, getItems, setItems, otherItems, excludeServices = false) => {
       const sec = document.createElement('div'); sec.style.marginBottom = '10px'
       const lbl = document.createElement('div'); lbl.textContent = label; lbl.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:5px'; sec.appendChild(lbl)
       const pills = document.createElement('div'); pills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'; sec.appendChild(pills)
@@ -1613,8 +1656,10 @@ export default class App {
 
       addBtn.addEventListener('click', () => {
         new ResourceDialog({
-          mode: 'consumed', showSpec: false, titleOverride: label,
-          resourceRegistry: extendedRegistry(),
+          mode: 'consumed', titleOverride: label,
+          resourceRegistry: excludeServices ? extendedRegistry().filter(n => !isService(n)) : extendedRegistry(),
+          resourceDefinitions: this.resourceDefinitions,
+          disallowServiceType: excludeServices,
           usedProduced: [],
           alreadySelected: [...getItems(), ...otherItems()].map(r => r.name),
           onAdd: item => { setItems([...getItems(), item]); refresh() }
@@ -1625,7 +1670,7 @@ export default class App {
       return sec
     }
 
-    const buysSection = makeGroup('Buys', () => buys, v => { buys = v }, () => sells)
+    const buysSection = makeGroup('Buys', () => buys, v => { buys = v }, () => sells, true)
     const sellsSection = makeGroup('Sells', () => sells, v => { sells = v }, () => buys)
     tradeSection.appendChild(buysSection); tradeSection.appendChild(sellsSection)
 
@@ -1657,6 +1702,7 @@ export default class App {
             if (res.tradingDestinations) { this.tradingDestinations = res.tradingDestinations; this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData) }
             if (res.factions) { this.factions = res.factions; this.uiManager.updateFactions(this.factions) }
             if (res.resourceRegistry) this.resourceRegistry = res.resourceRegistry
+            if (res.resourceDefinitions) this.resourceDefinitions = res.resourceDefinitions
             overlay.remove()
           } else this.uiManager.showError(res.error)
         }
@@ -1713,6 +1759,7 @@ export default class App {
         this._refreshTerrainPanel()
         this._refreshDistrictPanel()
         this.resourceRegistry = []
+        this.resourceDefinitions = {}
         this.threats = []
         this.tradingDestinations = []
         this.factions = []
@@ -1720,7 +1767,6 @@ export default class App {
         this.uiManager.guildPanel?.reset()
         this.uiManager.updateResources([])
         this.uiManager.updateFactions([])
-        this.uiManager.updateThreats([])
         this.renderer.clearStreetLayer()
         this.renderer.clearDerivedLayers()
         this.renderer.clearAllDebugObjects()
@@ -1728,7 +1774,7 @@ export default class App {
         this.renderer.setMode('terrain')
         this.renderer.guildSetupActive = false
         this.renderer.setCityEdgesHidden(false)
-        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [])
+        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [])
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')
         this._focusCameraOnCity(response.regions)

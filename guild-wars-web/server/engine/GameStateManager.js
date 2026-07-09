@@ -1,3 +1,5 @@
+import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
+
 export default class GameStateManager {
   constructor() {
     this.guilds = new Map()
@@ -10,6 +12,11 @@ export default class GameStateManager {
     this.currentPhase = 'Setup'
     this.cityLeader = null
     this.successionMethod = null
+
+    // The authoritative shared Groundplane vertex store — see GroundPointRegistry.js.
+    // A peer of worldTerrainData/cityDistrictData, not nested in either, since districts
+    // reuse their originating terrain plot's point ids directly.
+    this.pointRegistry = new GroundPointRegistry()
 
     // Hierarchical terrain data
     this.worldTerrainData = {
@@ -99,6 +106,7 @@ export default class GameStateManager {
       tradingDestinations: this.tradingDestinations,
       currentRound: this.currentRound,
       currentPhase: this.currentPhase,
+      pointRegistry: this.pointRegistry.toJSON(),
       worldTerrainData: this.worldTerrainData,
       cityDistrictData: this.cityDistrictData
     }
@@ -116,6 +124,7 @@ export default class GameStateManager {
       currentPhase: this.currentPhase,
       cityLeader: this.cityLeader,
       successionMethod: this.successionMethod,
+      pointRegistry: this.pointRegistry.toJSON(),
       worldTerrainData: this.worldTerrainData,
       cityDistrictData: this.cityDistrictData ? {
         ...this.cityDistrictData,
@@ -127,6 +136,8 @@ export default class GameStateManager {
   }
 
   deserialize(data) {
+    // Reconstruct the point registry before anything that references it by id.
+    this.pointRegistry = new GroundPointRegistry(data.pointRegistry || [])
     if (data.guilds) {
       data.guilds.forEach(g => this.addGuild(g))
     }
@@ -168,6 +179,7 @@ export default class GameStateManager {
     this.currentPhase = 'Setup'
     this.cityLeader = null
     this.successionMethod = null
+    this.pointRegistry = new GroundPointRegistry()
     this.worldTerrainData = {
       worldSize: 50,
       regions: [],

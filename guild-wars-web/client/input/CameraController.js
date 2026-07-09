@@ -254,18 +254,45 @@ export default class CameraController {
     return rayOrigin.addScaledVector(rayDir, t) // y ≈ 0
   }
 
+  // Ground-plane hit points for a screen row (fixed screenY, both left/right edges),
+  // clamped inward if the raw row misses the ground plane entirely. That miss happens
+  // once the frustum's world-space half-height at the current zoom exceeds the camera's
+  // height above ground (see raycastToGroundPlane) — i.e. zoomed out far enough that the
+  // screen's near edge looks past the ground's "horizon" into empty space, not more
+  // ground. Only the vertical screen axis can do this: the camera never rolls, so its
+  // right vector is always horizontal and ndcX never affects whether a ray reaches y=0.
+  // Without this clamp, getVisibleGroundBounds silently dropped that whole row, and the
+  // bound came from only the OTHER (surviving) row's two corners — which share one of
+  // the two screen-axis offsets and so collapse to a near-zero-width box on that axis,
+  // making enforceWorldBounds clamp panning far more tightly than intended right at the
+  // zoom levels where the whole map is meant to be visible and pannable.
+  _edgeGroundPoints(rect, screenY, ndcYRaw) {
+    const l = this.raycastToGroundPlane(rect.left, screenY)
+    const r = this.raycastToGroundPlane(rect.right, screenY)
+    if (l && r) return [l, r]
+
+    const up = new THREE.Vector3(), right = new THREE.Vector3(), backward = new THREE.Vector3()
+    this.camera.matrixWorld.extractBasis(right, up, backward)
+    const rayDirY = -backward.y
+    if (Math.abs(rayDirY) < 0.0001 || Math.abs(up.y) < 1e-9) return null
+
+    const halfH = (this.camera.top - this.camera.bottom) / (2 * this.camera.zoom)
+    // ndcY where the ray origin's y-offset alone reaches 0 — the closest this row can
+    // get to screenY while still hitting the ground (t=0 boundary). Nudged 0.1% back
+    // toward centre so floating-point noise doesn't land just past it into t<0.
+    const ndcYCrit = (-this.camera.position.y / (halfH * up.y)) * 0.999
+    const ndcYClamped = ndcYRaw > 0 ? Math.min(ndcYRaw, ndcYCrit) : Math.max(ndcYRaw, ndcYCrit)
+    const clampedScreenY = rect.top + rect.height * (1 - ndcYClamped) / 2
+    const l2 = this.raycastToGroundPlane(rect.left, clampedScreenY)
+    const r2 = this.raycastToGroundPlane(rect.right, clampedScreenY)
+    return (l2 && r2) ? [l2, r2] : null
+  }
+
   getVisibleGroundBounds() {
     const rect = this.renderer.domElement.getBoundingClientRect()
-
-    const pts = [
-      [rect.left,  rect.top],
-      [rect.right, rect.top],
-      [rect.left,  rect.bottom],
-      [rect.right, rect.bottom]
-    ].map(([sx, sy]) => {
-      const pt = this.raycastToGroundPlane(sx, sy)
-      return pt ? { x: pt.x, z: pt.z } : null
-    }).filter(Boolean)
+    const topPts    = this._edgeGroundPoints(rect, rect.top, 1)
+    const bottomPts = this._edgeGroundPoints(rect, rect.bottom, -1)
+    const pts = [...(topPts || []), ...(bottomPts || [])]
 
     if (pts.length === 0) return null
     return {

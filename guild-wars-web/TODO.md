@@ -2,30 +2,71 @@
 
 - Map movement at full zoom out is broken.  The map goes to the top of the screen and can't move the map down.  zoom in fixes it, but we want to be able to zoom out to the point that the whole map is visible and we can still pan around.  
 - Terrain plots still showing after Conversion to district. 
-- terrains / districts not pulling back from Rivers and Cliffs still
 - No Docks visible. 
-- No Building type.  
+- Claude was verifying against current code: your plot_underfill_bug memory implies a shared computeVoronoiCells exists for world/city scales — it doesn't. TerrainVoronoiGenerator and StreetVoronoiGenerator each keep their own local circumcenter code; only the half-plane variant is actually shared. 
+- Foreign Powers going around corners produces artifacts.  I still don't like the FP indication.  FP names are often not rendered.
 
-- Add Concept of City Gate.
-- Trade routes should establish a road in the direction of the Foreign Power, back to the nearest city gate.  
-- Forestry, mines, etc, regional improvements should add a small number of roads and buildings, AND a road back to the nearest city gate. 
-- FPs going around corners produces artifacts.  I still don't like the FP indication.  FP names are often not rendered.
+- Archways are not appearing in game.  I've not yet found one.  
 
-- Add a "regenerate names" option.  
-- Triple the number of random Names in all district, etc, naming categories.  (not character names)
-
-- Hovering ie Mines, Fishing Factions, doesn't highlight their position onthe map.  it should. 
-- Hovering Foreign Powers (Trade routes or Threats) doesn't highlight their position onthe map.  it should. 
 - Mines, Forestry, when defined, seem to apply to their whole terrain, not just the terrain plot
 - For Factions producing resources, the ingredients should still be specified, on existing resources.  
 
 - Only Gold is showing across the top in the resources section, in Guild setup.  
 
+- http://localhost:5173/buildingparts.html doesn't render any buildings.
+
 
 # Baby Features:
 ## Names 
 - Don't name Threats and Trade Routes.  Allow the option to rename it, but mainly we're looking for the description.
-- Don't name Walls, Canals, Main Roads.
+- Cliff Names are optional.  
+- Add a "regenerate names" option.  
+- Triple the number of random Names in all district, etc, naming categories.  (not character names)
+
+- we may consider changing away from a forced square World area to a circular-ish set of terrains.  
+
+- Add Concept of City Gate.
+- Trade routes should establish a road in the direction of the Foreign Power, back to the nearest city gate.  
+- Forestry, mines, etc, regional improvements should add a small number of roads and buildings, AND a road back to the nearest city gate. 
+
+- Hovering ie Mines, Fishing Factions, doesn't highlight their position onthe map.  it should. 
+- Hovering Foreign Powers (Trade routes or Threats) doesn't highlight their position onthe map.  it should. 
+
+Changes to Rivers.  
+1. Rivers can begin and end at Mountains.
+2. Rivers and Canals should be the same colour as Lakes.
+2. River endpoints should appear to flow out of/into seas and lakes.   
+ - To achieve this alter the polyline Junctions ONLY At river endpoints to be 4 side fan generation, rather than 3 sided tris.  P
+
+Replace the Resource graph with a proper connected resource/service value stream 
+Also show this during Resource Creation in District setup Phase. 
+
+
+
+need to do more to help, suggest, guide Resources and Services
+Resources and Services are manufactured out of 1-2 inputs, and then either Labour, Gold or Worship. Recipes are public knowledge. 
+Items are declared as Raw, Resource, Service
+Raw resources can only be harvested from Terrain plots, and their recipe is always Labour and Security, they can be identified as Basic Food.  
+Districts consumed resources and services are completely defined by the resources they create, recipe. 
+Services can be marked as Entertainment, or be regularly traded Services, just like resources. 
+Services can never be sold to a foreign Power. 
+
+
+A use case might be: 
+1. User 1 defines Iron as a produced resource in an industry district.  
+ - They define the resource as a Resource, not a service.  
+ - They decide the recipe is Coal, Iron Ore and Labour. 
+ - Industry can produce 2 Resources, so they also add Coal as a produced resource in the same industry district.  
+ - They define the resource as a Resource, not a service.  
+ - They decide the recipe is Wood, <undefined> and Labour. 
+2. User 2 defines magic Items as a produced resource in an industry district.
+
+
+The Market Phase is a Live trading game, where users buy from the market in real-time.  They buy at a price based on their own relationship with the seller, but the purchase decreases supply, and increases the price of the next purchase made of that item, and fractionally reduces the price of all other items, in the market at the time, as attention in that product wanes. 
+
+Trade routes can supply all items, but again, the users relationship with the trade route affects price, AND the Trade route sells more expensively, AND buys for less, to begin with.  
+
+
 
 
 
@@ -128,4 +169,38 @@ Archways, Portals or passages that pass under a building to the Courtyard beyond
 - Type can be Residental, Industial, Commercial, Military, Public
 - All Types also have Subtypes:  Residential: [Slum, MiddleClass, Noble], Commercial:[ <resource>trader, (incl food and Labour), Banks, MoneyLenders, etc.], Industial:[forge, smelter,blacksmith, bowyer-fletcher, etc. ], Public: [tavern, inn, whorehouse, buskers alley, etc.], etc.  
 - Type and subtype influence the Buildings initial geometry. 
+
+
+
+
+
+I feel like the current problem: "trying to add Cliffs and Rivers as contiguous regions, with out breaking the adjacent terrain plots, Maps almost exactly to the Generation of Streets in the Street Generator / renderer.   We have solved that problem (see image.  Green circle has many streets which were once only edges, which have been successfully widened into consistent width streets, with no gaps or spikes in the adjacent terrain plots.)  Compare the two solutions and analyze if we might just use the same logic in Terrain plot regeneration.  
+
+Note that there are differences.   
+1. Streets end in square Dead Ends, not spiked ends ie. Cliff end points.
+2. Streets are generated into a separate street graph.    We don't need this for Terrain edges.  But maybe its easier to just have them?   (We sort of have this in the riverCliffFaces element.)  
+
+
+
+I have removed the now defunct ADR 018 from the Filesystem.
+You still mention it in K:\UnityProjects\Guild-Wars\guild-wars-web\server\engine\CityGenerator\GroundPointRegistry.js.  that file mentions ADR20 which doesn't exist yet? 
+
+I don't understand the need for pointRegistry.type  DCEL edges shouldn't know what they're saving.  They should only save the groundplane.
+ 
+gameState.pointRegistry and gameState.cityDistrictData.points seem to be performing the same job at different scales?  We should have exactly one point registry, which is a DCEL map.  
+
+why do gameState.worldTerrainData : regions, terrainPlots and edgePoints still have x,y coordinates?  shouldn't these all be references to the pointRegistry now? 
+
+We have two parallel data structures : worldTerrainData and cityDistrictData.  These should be merged into a single Groundplane structure.  
+This should store exatly and only: 
+- pointRegistry - DCEL register of points.  provides: 1. the only place to store groundplane positional data.  2. Enables us to guarantee no holes. 3. Is unaware what its points represent - is a pure DCEL implementation.  
+- Edges - these are needed during setup phases, and probably more in the future, to enable the hover and redefinition of those edges as something else.  store two or more pointRegistry records, and a type.  Ie, TerrainEdge, (can be converted into a river or Cliff.)  
+- plots - These are single cells in the DCEL structure.  These are block plots, Terrain plots, segments of Rivers or cliffs, street junctions and street segments. They record a list of DCEL point ids, and type.
+- regions - These are groups of plots.  Streets, cliffs, rivers, terrain regions, City regions, are all examples of regions.  They record a list of plot ids, and type.  
+
+
+
+
+
+
 

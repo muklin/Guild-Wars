@@ -1,0 +1,314 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Savegame Schema — autosave.json</title>
+<style>
+  :root {
+    --bg: #edeee7; --bg-panel: #f8f8f4; --bg-raised: #ffffff;
+    --ink: #1c2321; --ink-soft: #59635e; --ink-faint: #8a938d;
+    --line: #d9dbd0; --line-strong: #c3c6b8;
+    --accent: #2b5d63; --accent-soft: #dfe9e7;
+    --obj: #4a6b8a; --obj-soft: #e2e9f0;
+    --arr: #8a5f9e; --arr-soft: #efe6f2;
+    --str: #3c6e3f; --str-soft: #e0ead9;
+    --num: #a3651f; --num-soft: #f2e6d3;
+    --bool: #b23a1f; --bool-soft: #f6ddd3;
+    --nul: #8a938d; --nul-soft: #eceee9;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", "Liberation Mono", monospace;
+    --sans: -apple-system, "Segoe UI", "Helvetica Neue", ui-sans-serif, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181a; --bg-panel: #1a2022; --bg-raised: #1f2628;
+      --ink: #e8ece8; --ink-soft: #a2ada6; --ink-faint: #6c766f;
+      --line: #2a3234; --line-strong: #38423f;
+      --accent: #74bcc0; --accent-soft: #223335;
+      --obj: #8fb0d4; --obj-soft: #202b36;
+      --arr: #c39fd6; --arr-soft: #2b2333;
+      --str: #82c087; --str-soft: #1c2b1e;
+      --num: #dba15b; --num-soft: #2e2416;
+      --bool: #e08061; --bool-soft: #2e1e18;
+      --nul: #6c766f; --nul-soft: #1c2022;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.5; }
+  .page { max-width: 920px; margin: 0 auto; padding: 48px 24px 96px; }
+  header { padding-bottom: 24px; border-bottom: 2px solid var(--ink); margin-bottom: 28px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
+  h1 { font-size: 26px; margin: 0 0 10px; }
+  header p { margin: 0; color: var(--ink-soft); font-size: 14px; max-width: 70ch; }
+  header .src { font-family: var(--mono); font-size: 12.5px; color: var(--ink-faint); margin-top: 10px; }
+
+  details.node { border: 1px solid var(--line); border-radius: 4px; background: var(--bg-panel); margin: 6px 0; }
+  details.node > summary {
+    cursor: pointer; padding: 8px 12px; font-family: var(--mono); font-size: 13.5px;
+    display: flex; align-items: center; gap: 8px; list-style: none;
+  }
+  details.node > summary::-webkit-details-marker { display: none; }
+  details.node > summary::before { content: "▸"; color: var(--ink-faint); font-size: 11px; transition: transform 0.1s; }
+  details.node[open] > summary::before { transform: rotate(90deg); }
+  details.node > summary:hover { background: var(--bg-raised); }
+  .node-body { padding: 4px 12px 10px 26px; border-top: 1px solid var(--line); }
+
+  .leaf { font-family: var(--mono); font-size: 13.5px; padding: 6px 12px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .leaf:hover { background: var(--bg-panel); border-radius: 3px; }
+
+  .key { font-weight: 600; }
+  .req { color: var(--bool); margin-left: 1px; }
+
+  .badge {
+    font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em;
+    padding: 2px 7px; border-radius: 3px; text-transform: lowercase; white-space: nowrap;
+  }
+  .badge-object { color: var(--obj); background: var(--obj-soft); }
+  .badge-array  { color: var(--arr); background: var(--arr-soft); }
+  .badge-string { color: var(--str); background: var(--str-soft); }
+  .badge-number { color: var(--num); background: var(--num-soft); }
+  .badge-boolean{ color: var(--bool); background: var(--bool-soft); }
+  .badge-null   { color: var(--nul); background: var(--nul-soft); }
+
+  .example { color: var(--ink-soft); font-size: 13px; }
+
+  p.note { font-size: 12.5px; color: var(--ink-faint); margin: 6px 0 8px; max-width: 80ch; }
+  p.note code { font-family: var(--mono); background: var(--bg-raised); border: 1px solid var(--line); padding: 0.05em 0.35em; border-radius: 3px; }
+
+  footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div class="eyebrow">guild-wars-web — savegame reference</div>
+    <h1>Savegame schema — autosave.json</h1>
+    <p>Every field in the save format, with its type and a real example value pulled from the current save. Click any row to expand it. Dictionary-shaped objects (many keys sharing one structure, e.g. terrain edges keyed by region pair) are collapsed to one representative entry, with every other key still listed.</p>
+    <div class="src">Schema: docs/schemas/json-schema-autosave.json · Example data: server/saves/autosave.json · Generated 2026-07-09T22:33:45.396Z</div>
+  </header>
+  <details class="node">
+      <summary><span class="key">autosave.json</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">name</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"autosave"</span></div><div class="leaf"><span class="key">savedAt</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"2026-07-09T22:25:01.868Z"</span></div><div class="leaf"><span class="key">version</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">1</span></div><details class="node">
+      <summary><span class="key">gameState</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><details class="node">
+      <summary><span class="key">guilds</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">districts</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">factions</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">threats</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">tradingDestinations</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><div class="leaf"><span class="key">currentRound</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">1</span></div><div class="leaf"><span class="key">currentPhase</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"Setup"</span></div><div class="leaf"><span class="key">cityLeader</span><span class="req" title="required">*</span> <span class="badge badge-null">null / unknown</span> <span class="example">null</span></div><div class="leaf"><span class="key">successionMethod</span><span class="req" title="required">*</span> <span class="badge badge-null">null / unknown</span> <span class="example">null</span></div><details class="node">
+      <summary><span class="key">pointRegistry</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 581 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 581:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">id</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">0</span></div><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">21.215109358622303</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">33.63990154609048</span></div><div class="leaf"><span class="key">z</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">0</span></div><div class="leaf"><span class="key">kind</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"terrain"</span></div><div class="leaf"><span class="key">halfEdge</span> <span class="badge badge-number">number</span> <span class="example">912</span></div></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">worldTerrainData</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">worldSize</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">50</span></div><details class="node">
+      <summary><span class="key">regions</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 15 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 15:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">id</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">0</span></div><details class="node">
+      <summary><span class="key">seedPoint</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">24.117084329619782</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">25.056011392959853</span></div></div>
+    </details><details class="node">
+      <summary><span class="key">polygon</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 8 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 8:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">17.195716281217162</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">22.637337192496446</span></div><div class="leaf"><span class="key">id</span> <span class="badge badge-number">number</span> <span class="example">24</span></div></div>
+    </details></div>
+    </details><div class="leaf"><span class="key">assignedType</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">null</span></div><div class="leaf"><span class="key">description</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">""</span></div><div class="leaf"><span class="key">isEdge</span><span class="req" title="required">*</span> <span class="badge badge-boolean">boolean</span> <span class="example">false</span></div><div class="leaf"><span class="key">isNorthEdge</span><span class="req" title="required">*</span> <span class="badge badge-boolean">boolean</span> <span class="example">false</span></div><div class="leaf"><span class="key">name</span> <span class="badge badge-string">string</span></div></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">terrainPlots</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 150 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 150:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">id</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">0</span></div><details class="node">
+      <summary><span class="key">seedPoint</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">23.233735703262937</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">32.13897421033362</span></div></div>
+    </details><details class="node">
+      <summary><span class="key">polygon</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 5 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 5:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">21.215109358622303</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">33.63990154609048</span></div></div>
+    </details></div>
+    </details><div class="leaf"><span class="key">assignedType</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">null</span></div><div class="leaf"><span class="key">gridX</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">2</span></div><div class="leaf"><span class="key">gridZ</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">3</span></div><div class="leaf"><span class="key">description</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">""</span></div><div class="leaf"><span class="key">parentRegionId</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">13</span></div><details class="node">
+      <summary><span class="key">pointIds</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 5 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 5:</p><div class="leaf"> <span class="badge badge-number">number</span> <span class="example">0</span></div></div>
+    </details><details class="node">
+      <summary><span class="key">_rawPolygon</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 5 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 5:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">21.215109358622303</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">33.63990154609048</span></div></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">_rawPointIds</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 5 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 5:</p><div class="leaf"> <span class="badge badge-number">number</span> <span class="example">0</span></div></div>
+    </details></div>
+    </details></div>
+    </details><details class="node">
+        <summary><span class="key">edges</span><span class="req" title="required">*</span> <span class="badge badge-object">dictionary · 34 entries</span></summary>
+        <div class="node-body">
+          <p class="note">34 keys in this dictionary, one object per key — shapes vary slightly (e.g. only an assigned edge has description/name). Showing the richest entry (<code>3-8</code>) as the fullest example. All keys present in the current save: <code>1-6</code>, <code>6-14</code>, <code>1-14</code>, <code>8-14</code>, <code>11-14</code>, <code>3-8</code>, <code>0-11</code>, <code>11-13</code>, …</p>
+          <details class="node">
+      <summary><span class="key">3-8</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">regionA</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span></div><div class="leaf"><span class="key">regionB</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span></div><details class="node">
+      <summary><span class="key">pointIds</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><div class="leaf"><span class="key">assignedType</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span></div><div class="leaf"><span class="key">description</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span></div><div class="leaf"><span class="key">name</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span></div></div>
+    </details>
+        </div>
+      </details><details class="node">
+      <summary><span class="key">edgePoints</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 144 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 144:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">id</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">0</span></div><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">21.215109358622303</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">33.63990154609048</span></div></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">riverCliffFaces</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 13 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 13:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">id</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">151</span></div><div class="leaf"><span class="key">sourceEdgeId</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"6-10"</span></div><div class="leaf"><span class="key">assignedType</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"River"</span></div><details class="node">
+      <summary><span class="key">pointIds</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 22 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 22:</p><div class="leaf"> <span class="badge badge-number">number</span> <span class="example">1187</span></div></div>
+    </details><details class="node">
+      <summary><span class="key">polygon</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 22 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 22:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">42.173948143358295</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">16.10583320295572</span></div></div>
+    </details></div>
+    </details></div>
+    </details></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">cityDistrictData</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><details class="node">
+      <summary><span class="key">districts</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 11 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 11:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">id</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">0</span></div><details class="node">
+      <summary><span class="key">seedPoint</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">35.222686325103794</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">32.79314799565833</span></div></div>
+    </details><details class="node">
+      <summary><span class="key">polygon</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 5 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 5:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">37.81581943359763</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">35.248425899532336</span></div></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">pointIds</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 5 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 5:</p><div class="leaf"> <span class="badge badge-number">number</span> <span class="example">44</span></div></div>
+    </details><div class="leaf"><span class="key">originPlotId</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">8</span></div><div class="leaf"><span class="key">assignedType</span><span class="req" title="required">*</span> <span class="badge badge-null">null / unknown</span> <span class="example">null</span></div><div class="leaf"><span class="key">description</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">""</span></div></div>
+    </details></div>
+    </details><details class="node">
+        <summary><span class="key">edges</span><span class="req" title="required">*</span> <span class="badge badge-object">dictionary · 24 entries</span></summary>
+        <div class="node-body">
+          <p class="note">24 keys in this dictionary, one object per key — shapes vary slightly (e.g. only an assigned edge has description/name). Showing the richest entry (<code>0-2</code>) as the fullest example. All keys present in the current save: <code>0-1</code>, <code>0-3</code>, <code>0-2</code>, <code>0-8</code>, <code>0-5</code>, <code>1-6</code>, <code>1-3</code>, <code>1-5</code>, …</p>
+          <details class="node">
+      <summary><span class="key">0-2</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">districtA</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span></div><div class="leaf"><span class="key">districtB</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span></div><details class="node">
+      <summary><span class="key">pointIds</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><div class="leaf"><span class="key">assignedType</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span></div><div class="leaf"><span class="key">description</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span></div><div class="leaf"><span class="key">name</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span></div></div>
+    </details>
+        </div>
+      </details><details class="node">
+      <summary><span class="key">edgePoints</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 34 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 34:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">id</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">44</span></div><div class="leaf"><span class="key">x</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">37.81581943359763</span></div><div class="leaf"><span class="key">y</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">35.248425899532336</span></div></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">eligiblePromotionPlotIds</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 23 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 23:</p><div class="leaf"> <span class="badge badge-number">number</span> <span class="example">0</span></div></div>
+    </details><div class="leaf"><span class="key">streetGraph</span><span class="req" title="required">*</span> <span class="badge badge-null">null / unknown</span></div><details class="node">
+      <summary><span class="key">blocks</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">buildingData</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"></div>
+    </details><div class="leaf"><span class="key">nextFactionAutoId</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">100</span></div></div>
+    </details><details class="node">
+      <summary><span class="key">setupPhase</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">currentStep</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"Terrain"</span></div><details class="node">
+      <summary><span class="key">terrainPlacements</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 1 item</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 1:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">regionId</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">1</span></div><div class="leaf"><span class="key">terrainType</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"Ice Sheet"</span></div><div class="leaf"><span class="key">description</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">""</span></div><div class="leaf"><span class="key">name</span> <span class="badge badge-string">string</span> <span class="example">"Lost Gamblers"</span></div></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">edgePlacements</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 13 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 13:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">edgeId</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"2-8"</span></div><div class="leaf"><span class="key">edgeType</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"River"</span></div><div class="leaf"><span class="key">description</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">""</span></div><div class="leaf"><span class="key">name</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"Gilded Stream"</span></div></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">districtTypePlacements</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">districtEdgePlacements</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">districtClassAssignments</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">resourceRegistry</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">resourceDefinitions</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"></div>
+    </details><details class="node">
+      <summary><span class="key">threats</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">tradingDestinations</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">factions</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">gods</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><div class="leaf"><span class="key">magicSystem</span><span class="req" title="required">*</span> <span class="badge badge-null">null / unknown</span> <span class="example">null</span></div><details class="node">
+      <summary><span class="key">foreignPowers</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><div class="leaf"><span class="key">worldDomains</span><span class="req" title="required">*</span> <span class="badge badge-null">null / unknown</span> <span class="example">null</span></div><details class="node">
+      <summary><span class="key">terrainDistrictPlots</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><details class="node">
+      <summary><span class="key">terrainFeaturePlots</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">multiplayer</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><details class="node">
+      <summary><span class="key">seats</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 2 items</span></summary>
+      <div class="node-body"><p class="note">Showing <code>[0]</code> of 2:</p><details class="node" open>
+      <summary> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">id</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">1</span></div><div class="leaf"><span class="key">name</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"Mark"</span></div><div class="leaf"><span class="key">seatKey</span><span class="req" title="required">*</span> <span class="badge badge-string">string</span> <span class="example">"98d45fa1348efc1e08f5ce4ba70d18ee"</span></div><div class="leaf"><span class="key">guildId</span><span class="req" title="required">*</span> <span class="badge badge-null">null / unknown</span> <span class="example">null</span></div><div class="leaf"><span class="key">connected</span><span class="req" title="required">*</span> <span class="badge badge-boolean">boolean</span> <span class="example">true</span></div><div class="leaf"><span class="key">initiativeRoll</span><span class="req" title="required">*</span> <span class="badge badge-null">null / unknown</span> <span class="example">null</span></div><div class="leaf"><span class="key">passed</span><span class="req" title="required">*</span> <span class="badge badge-boolean">boolean</span> <span class="example">false</span></div><details class="node">
+      <summary><span class="key">tokens</span><span class="req" title="required">*</span> <span class="badge badge-object">object</span></summary>
+      <div class="node-body"><div class="leaf"><span class="key">veto</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">1</span></div></div>
+    </details></div>
+    </details></div>
+    </details><details class="node">
+      <summary><span class="key">initiativeOrder</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details><div class="leaf"><span class="key">activeIndex</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">0</span></div><div class="leaf"><span class="key">started</span><span class="req" title="required">*</span> <span class="badge badge-boolean">boolean</span> <span class="example">false</span></div><div class="leaf"><span class="key">nextSeatId</span><span class="req" title="required">*</span> <span class="badge badge-number">number</span> <span class="example">3</span></div><details class="node">
+      <summary><span class="key">secrets</span><span class="req" title="required">*</span> <span class="badge badge-array">array · 0 items</span></summary>
+      <div class="node-body"><p class="note">Empty in the current save — no example available.</p></div>
+    </details></div>
+    </details></div>
+    </details>
+  <footer>Regenerate after any save-format change: node tools/generateSaveSchema.mjs &amp;&amp; node tools/generateSchemaViewer.mjs</footer>
+</div>
+</body>
+</html>

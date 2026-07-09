@@ -5,6 +5,7 @@ import { HQ_UPGRADES, UPGRADE_BY_ID } from '../../shared/hqUpgrades.js'
 import GameAPI from '../api/GameAPI.js'
 import { DISTRICT_COLORS } from '../rendering/DistrictRenderer.js'
 import * as ViewStack from './ViewStack.js'
+import { buildCommodityGraph, renderCommodityGraphSVG } from './ValueStreamGraph.js'
 
 function _factionCssColor(faction) {
   let n
@@ -52,6 +53,7 @@ export default class GuildPanel {
     this.el = null
     this.guild = null
     this.factions = []
+    this.resourceDefinitions = {}
     this.districts = []
     this.hq = null
     this.tokens = { veto: 0, guild: 0, character: 0, round: 0 }
@@ -130,9 +132,10 @@ export default class GuildPanel {
     if (this.el) this._render()
   }
 
-  setData({ guild, factions, districts, tokens, playerName } = {}) {
+  setData({ guild, factions, resourceDefinitions, districts, tokens, playerName } = {}) {
     if (guild      !== undefined) this.guild      = guild
     if (factions)                 this.factions   = factions
+    if (resourceDefinitions)      this.resourceDefinitions = resourceDefinitions
     if (districts)                this.districts  = districts
     if (tokens != null)           this.tokens     = tokens
     if (playerName !== undefined) this.playerName = playerName
@@ -812,179 +815,31 @@ export default class GuildPanel {
       }
     }
 
-    // ── Resource dependency graph ──────────────────────────────────────────────
+    // ── Resource/Service value-stream graph ─────────────────────────────────────
     body.appendChild(sectionHdr('Resource Flow', '#a0a0ff'))
-    this._renderResourceGraph(body, this.factions, std)
+    const producersByCommodity = this._producersByCommodity(this.factions, std)
+    const { nodes, edges } = buildCommodityGraph(this.resourceDefinitions, [...producersByCommodity.keys()].map(k => producersByCommodity.get(k).name), producersByCommodity)
+    body.appendChild(renderCommodityGraphSVG(nodes, edges, { emptyMessage: 'No known faction produces anything yet.' }))
   }
 
-  // Compute per-round resource production/consumption for a faction.
-  // Fixed row order: Gold, Labour, Basic Food, Security.
-  _factionFlows(f) {
-    const sub      = f.subclass || ''
-    const typeName = f.typeName || ''
-    const isResidential    = f.type === 'district' && (typeName === 'Residential' || /Residential/i.test(typeName))
-    const isLabourProducer = isResidential && /Slums|Middle/i.test(sub)
-    const isMarket         = f.type === 'district' && typeName === 'Market'
-    const isNonResidential = f.type === 'district' && !isResidential
-    const isLeadership     = f.type === 'leadership'
-
-    const produces = {}, consumes = {}
-
-    // Gold upkeep — all factions
-    consumes.Gold = f.upkeep ?? 5
-
-    // Labour
-    if (isLabourProducer)                 produces.Labour = 15
-    if (isNonResidential || isLeadership) consumes.Labour = isLeadership ? 20 : 10
-
-    // Basic Food — residential districts
-    if (isResidential) {
-      const food = Math.max(1, Math.floor((f.health ?? 70) / 2))
-      produces['Basic Food'] = food
-      consumes['Basic Food'] = 10
+  // Which Commodities each faction currently produces, and whether that's visible to the
+  // player yet (Standing fog-of-war — mirrors the old graph's THRESHOLD behaviour).
+  _producersByCommodity(factions, guildStanding) {
+    const STANDING_THRESHOLD = 70
+    const map = new Map() // lowercase name -> { name, producers: Set<string>, known: boolean }
+    const add = (rawName, faction, known) => {
+      if (!rawName) return
+      const key = rawName.trim().toLowerCase()
+      if (!map.has(key)) map.set(key, { name: rawName.trim(), producers: new Set(), known: false })
+      const entry = map.get(key)
+      if (known) { entry.producers.add(faction.name || faction.typeName || ''); entry.known = true }
     }
-
-    // Market: produces Gold. 2× when not producing other resources.
-    if (isMarket) {
-      const producingOther = Object.keys(produces).some(r => r !== 'Gold')
-      produces.Gold = producingOther ? 10 : 20
+    for (const f of factions) {
+      const known = f.type === 'leadership' || (guildStanding[f.id] ?? 50) >= STANDING_THRESHOLD
+      if (f.producedResource) add(f.producedResource, f, known)
+      if (f.secondProducedResource) add(f.secondProducedResource, f, known)
     }
-
-    // Security — demand set by events
-    if (f.securityDemand) consumes.Security = f.securityDemand
-
-    return { produces, consumes }
-  }
-
-  _renderResourceGraph(body, factions, guildStanding) {
-    const SVG_NS = 'http://www.w3.org/2000/svg'
-    const RES_ORDER  = ['Gold', 'Labour', 'Basic Food', 'Security']
-    const RES_COLORS = { Gold: '#ffd700', Labour: '#8888d8', 'Basic Food': '#70c860', Security: '#ff8040' }
-    const THRESHOLD  = 70
-
-    // Build node data for all factions (known + always-visible leadership)
-    const nodes = factions.map(f => ({
-      f,
-      flows: this._factionFlows(f),
-      known: f.type === 'leadership' || (guildStanding[f.id] ?? 50) >= THRESHOLD
-    }))
-
-    // Layout: 3-column grid, centre each row
-    const COLS = 3, NW = 190, NH = 104, GX = 28, GY = 36, PAD = 16
-    const rows = Math.ceil(nodes.length / COLS)
-    const W = 740, H = rows * (NH + GY) + PAD * 2
-
-    nodes.forEach((n, i) => {
-      const col = i % COLS, row = Math.floor(i / COLS)
-      const countInRow = Math.min(COLS, nodes.length - row * COLS)
-      const rowW = countInRow * NW + (countInRow - 1) * GX
-      const x0 = (W - rowW) / 2
-      n.x  = x0 + col * (NW + GX)
-      n.y  = PAD + row * (NH + GY)
-      n.cx = n.x + NW / 2
-      n.cy = n.y + NH / 2
-    })
-
-    const svg = document.createElementNS(SVG_NS, 'svg')
-    svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
-    svg.setAttribute('width', '100%')
-    svg.setAttribute('style', 'display:block')
-
-    const mkEl = (tag, attrs = {}) => {
-      const el = document.createElementNS(SVG_NS, tag)
-      for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
-      return el
-    }
-
-    // ── Edges: resource flow producer → consumer ───────────────────────────────
-    for (const res of RES_ORDER) {
-      const color = RES_COLORS[res]
-      const producers = nodes.filter(n => n.flows.produces[res] && n.known)
-      const consumers = nodes.filter(n => n.flows.consumes[res])
-      for (const p of producers) {
-        for (const c of consumers) {
-          if (p === c) continue  // skip self-loops
-          // Offset parallel lines slightly per resource
-          const idx = RES_ORDER.indexOf(res)
-          const offX = (idx - 1.5) * 2.5
-          svg.appendChild(mkEl('line', {
-            x1: p.cx + offX, y1: p.cy,
-            x2: c.cx + offX, y2: c.cy,
-            stroke: color, 'stroke-width': '1.5', opacity: '0.4',
-            'marker-end': `url(#arr-${res.replace(' ', '')})`
-          }))
-        }
-      }
-    }
-
-    // Arrow markers
-    for (const res of RES_ORDER) {
-      const id = `arr-${res.replace(' ', '')}`
-      const marker = mkEl('marker', { id, markerWidth: '6', markerHeight: '6', refX: '5', refY: '3', orient: 'auto' })
-      const arrow  = mkEl('path',   { d: 'M0,0 L0,6 L6,3 z', fill: RES_COLORS[res], opacity: '0.6' })
-      marker.appendChild(arrow)
-      const defs = mkEl('defs', {})
-      defs.appendChild(marker)
-      svg.appendChild(defs)
-    }
-
-    // ── Nodes ──────────────────────────────────────────────────────────────────
-    for (const n of nodes) {
-      const { f, flows, x, y, cx } = n
-      const fColor = _factionCssColor(f)
-      const nm = f.name || f.typeName || ''
-
-      // Card background
-      svg.appendChild(mkEl('rect', { x, y, width: NW, height: NH, rx: 3, fill: '#0b0b0b', stroke: fColor, 'stroke-width': '1.5' }))
-
-      // Name
-      const nameEl = mkEl('text', { x: cx, y: y + 13, 'font-size': '8.5', fill: '#ddd', 'text-anchor': 'middle', 'font-weight': 'bold' })
-      nameEl.textContent = nm.length > 24 ? nm.slice(0, 23) + '…' : nm
-      svg.appendChild(nameEl)
-
-      // Divider
-      svg.appendChild(mkEl('line', { x1: x + 4, y1: y + 17, x2: x + NW - 4, y2: y + 17, stroke: fColor, 'stroke-width': '0.5', opacity: '0.5' }))
-
-      // Resource rows in fixed order
-      let ly = y + 27
-      for (const res of RES_ORDER) {
-        const prod = flows.produces[res] ?? 0
-        const cons = flows.consumes[res] ?? 0
-        if (prod === 0 && cons === 0) { ly += 17; continue }
-        const color = RES_COLORS[res]
-
-        // Resource name
-        const rLabel = mkEl('text', { x: x + 6, y: ly, 'font-size': '7.5', fill: color, opacity: n.known ? '1' : '0.4' })
-        rLabel.textContent = res
-        svg.appendChild(rLabel)
-
-        // Production (green +)
-        const prodEl = mkEl('text', { x: x + NW - 52, y: ly, 'font-size': '7.5', fill: '#4ade80', 'text-anchor': 'end' })
-        prodEl.textContent = n.known && prod ? `+${prod}` : ''
-        svg.appendChild(prodEl)
-
-        // Consumption (red -)
-        const consEl = mkEl('text', { x: x + NW - 6, y: ly, 'font-size': '7.5', fill: '#f87171', 'text-anchor': 'end' })
-        consEl.textContent = n.known && cons ? `−${cons}` : (n.known ? '' : '?')
-        svg.appendChild(consEl)
-
-        ly += 17
-      }
-    }
-
-    // Legend
-    const legY = H - 10
-    let lx = 8
-    for (const res of RES_ORDER) {
-      const color = RES_COLORS[res]
-      svg.appendChild(mkEl('line', { x1: lx, y1: legY, x2: lx + 14, y2: legY, stroke: color, 'stroke-width': '2' }))
-      const lt = mkEl('text', { x: lx + 18, y: legY + 4, 'font-size': '7.5', fill: '#666' })
-      lt.textContent = res
-      svg.appendChild(lt)
-      lx += res.length * 5 + 30
-    }
-
-    body.appendChild(svg)
+    return map
   }
 
   _tabHeadquarters(body) {

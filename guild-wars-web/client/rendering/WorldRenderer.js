@@ -283,6 +283,9 @@ export default class WorldRenderer {
     if (mode === 'city' || mode === 'streets') {
       this.terrainRenderer.deleteCityTerrainCells()
       this.terrainRenderer.clearDebugObjects()
+      this.terrainRenderer.setCityModeActive(true)
+    } else {
+      this.terrainRenderer.setCityModeActive(false)
     }
     if (mode === 'streets') {
       this.districtRenderer.clearDistrictLayer()
@@ -319,9 +322,9 @@ export default class WorldRenderer {
 
   // ── Terrain delegation ──────────────────────────────────────────────────────
 
-  setTerrainData(regions, edges, terrainPlots, edgePoints) {
-    this.districtRenderer.setTerrainWaterData(regions, edges, edgePoints)
-    return this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints)
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = []) {
+    this.districtRenderer.setTerrainWaterData(regions, edges, edgePoints, terrainPlots, pointsById)
+    return this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces)
   }
 
   // Hide/show terrain plot meshes and exclude/include them from hit-testing based on
@@ -412,8 +415,8 @@ export default class WorldRenderer {
     return this.terrainRenderer.clearMarkers()
   }
 
-  spawnTerrainDistrictFeature(regionId, districtType) {
-    return this.terrainRenderer.spawnTerrainDistrictFeature(regionId, districtType)
+  spawnTerrainDistrictFeature(regionId, plotId, districtType) {
+    return this.terrainRenderer.spawnTerrainDistrictFeature(regionId, plotId, districtType)
   }
 
   getRegionAtWorldPos(worldX, worldY) {
@@ -458,8 +461,8 @@ export default class WorldRenderer {
 
   // ── District delegation ─────────────────────────────────────────────────────
 
-  setCityDistrictData(data) {
-    this.districtRenderer.setCityDistrictData(data)
+  setCityDistrictData(data, pointsById) {
+    this.districtRenderer.setCityDistrictData(data, pointsById)
     this.groundRenderer.setStreetGraph(this.districtRenderer.cityDistrictData?.streetGraph)
   }
 

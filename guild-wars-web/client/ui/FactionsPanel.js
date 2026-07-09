@@ -21,6 +21,7 @@ function factionColorHex(faction) {
   if (faction.type === 'district')   return (faction.subclass && DISTRICT_COLORS.get(faction.subclass)) || DISTRICT_COLORS.get(faction.typeName) || DISTRICT_COLORS.Residential
   if (faction.type === 'terrain')    return 0x6a9b5a
   if (faction.type === 'trade')      return 0xd4a017
+  if (faction.type === 'threat')     return 0xcc2222
   return DISTRICT_COLORS.Neutral
 }
 const toCss = (n) => '#' + (n >>> 0).toString(16).padStart(6, '0')
@@ -34,7 +35,6 @@ export default class FactionsPanel {
     this.eventBus = eventBus
     this._root = null
     this._contentEl = null
-    this.threatsSection = null
     this.factionsSection = null
     this._guild = null
     this._factions = []
@@ -80,17 +80,6 @@ export default class FactionsPanel {
     root.appendChild(content)
     this._contentEl = content
 
-    // ── Threats section ──
-    const threatWrapper = document.createElement('div')
-    threatWrapper.style.cssText = 'flex:0 0 auto;max-height:25%;min-height:60px;display:flex;flex-direction:column;padding:8px 10px 4px 10px'
-    threatWrapper.appendChild(this._sectionLabel('Threats'))
-    this.threatsSection = document.createElement('div')
-    this.threatsSection.style.cssText = 'overflow-y:auto;flex:1'
-    threatWrapper.appendChild(this.threatsSection)
-    content.appendChild(threatWrapper)
-
-    content.appendChild(this._divider())
-
     // ── Factions section ──
     const factionsWrapper = document.createElement('div')
     factionsWrapper.style.cssText = 'flex:1;min-height:100px;display:flex;flex-direction:column;padding:8px 10px 8px 10px'
@@ -104,7 +93,6 @@ export default class FactionsPanel {
     this._root = root
     this._makeDraggable(titleBar)
 
-    this.updateThreats([])
     this.update([])
   }
 
@@ -143,28 +131,6 @@ export default class FactionsPanel {
     this._rebuildFactions()
   }
 
-  updateThreats(threats = []) {
-    if (!this.threatsSection) return
-    this.threatsSection.innerHTML = ''
-    if (threats.length === 0) {
-      const empty = document.createElement('div')
-      empty.textContent = 'No threats yet'
-      empty.style.cssText = 'font-size:11px;color:#555;font-style:italic'
-      this.threatsSection.appendChild(empty)
-      return
-    }
-    for (const t of threats) {
-      const item = document.createElement('div')
-      item.style.cssText = 'margin-bottom:3px;padding:3px 6px;background:#2a1010;border:1px solid #552222;border-radius:3px'
-      const label = document.createElement('div')
-      label.textContent = `${t.name || 'Threat'}${t.description ? ' — ' + t.description : ''}`
-      label.title = t.description || ''
-      label.style.cssText = 'font-size:10px;color:#ff8888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'
-      item.appendChild(label)
-      this.threatsSection.appendChild(item)
-    }
-  }
-
   update(factions = []) {
     this._factions = factions
     this._rebuildFactions()
@@ -184,8 +150,10 @@ export default class FactionsPanel {
     }
 
     const sorted = [
+      ...factions.filter(f => f.type === 'threat'),
       ...factions.filter(f => f.type === 'leadership'),
-      ...factions.filter(f => f.type !== 'leadership')
+      ...factions.filter(f => f.type === 'district'),
+      ...factions.filter(f => f.type !== 'threat' && f.type !== 'leadership' && f.type !== 'district'),
     ]
 
     for (const faction of sorted) {
@@ -298,9 +266,4 @@ export default class FactionsPanel {
     return el
   }
 
-  _divider() {
-    const d = document.createElement('div')
-    d.style.cssText = 'flex-shrink:0;border-top:1px solid #444'
-    return d
-  }
 }

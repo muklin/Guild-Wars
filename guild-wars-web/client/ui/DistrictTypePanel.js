@@ -40,11 +40,11 @@ export default class DistrictTypePanel {
     this._anchorPoints = []
     this._el = null
     this._cameraCB = null
-    // Resource selection state — reset when type or context changes
-    this._cityConsumed = []
+    // Resource selection state — reset when type or context changes. Consumption is
+    // fully derived from produced Recipes (see App.js/SetupPhase.js) so only the
+    // produced side is tracked here.
     this._cityProduced = []
     this._lastCityPendingType = null
-    this._terrainConsumed = []
     this._terrainProduced = null
     this._lastTerrainKey = null
     this._tradeBuys = []
@@ -160,7 +160,7 @@ export default class DistrictTypePanel {
     const {
       regionType, isEdge = false, hasDistrict = false,
       pendingAction = null, regionId, plotId,
-      resourceRegistry = [], usedProducedResources = [],
+      resourceRegistry = [], resourceDefinitions = {}, usedProducedResources = [],
       isAdjacentToCity = false, leadershipTaken = false
     } = options
 
@@ -360,46 +360,22 @@ export default class DistrictTypePanel {
     // Reset terrain state when region/action changes
     const terrainKey = `${regionId}:${districtType}`
     if (terrainKey !== this._lastTerrainKey) {
-      this._terrainConsumed = []
       this._terrainProduced = null
       this._lastTerrainKey = terrainKey
     }
 
-    const terrainConsumedSection = document.createElement('div')
     const terrainProducedSection = document.createElement('div')
 
+    // Consumption is fully derived from the Recipe of what's produced (plus the always-
+    // implicit Water + Basic Food upkeep below) — there is no manual consumed picker.
     const renderTerrainResources = () => {
-      terrainConsumedSection.innerHTML = ''
       terrainProducedSection.innerHTML = ''
 
-      const localNewNames = [...this._terrainConsumed, ...(this._terrainProduced ? [this._terrainProduced] : [])]
-        .filter(r => r.isNew).map(r => r.name)
+      const localNewNames = this._terrainProduced?.isNew ? [this._terrainProduced.name] : []
       const extendedRegistry = [
         ...resourceRegistry,
         ...localNewNames.filter(n => !resourceRegistry.some(r => r.toLowerCase() === n.toLowerCase()))
       ]
-
-      terrainConsumedSection.appendChild(this._fieldLabel('Consumed Resources or Services'))
-      const consPills = document.createElement('div')
-      consPills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
-      for (const item of this._terrainConsumed) {
-        consPills.appendChild(this._resourcePill(item.name, () => {
-          this._terrainConsumed = this._terrainConsumed.filter(r => r !== item)
-          renderTerrainResources()
-        }))
-      }
-      terrainConsumedSection.appendChild(consPills)
-      if (this._terrainConsumed.length < 3) {
-        terrainConsumedSection.appendChild(this._addResourceButton('Add Consumed Resource or Service', () => {
-          new ResourceDialog({
-            mode: 'consumed',
-            resourceRegistry: extendedRegistry,
-            usedProduced: [],
-            alreadySelected: this._terrainConsumed.map(r => r.name),
-            onAdd: item => { this._terrainConsumed.push(item); renderTerrainResources() }
-          }).open()
-        }))
-      }
 
       terrainProducedSection.appendChild(this._fieldLabel('Produced Resource or Service'))
       if (this._terrainProduced) {
@@ -415,9 +391,9 @@ export default class DistrictTypePanel {
           new ResourceDialog({
             mode: 'produced',
             resourceRegistry: extendedRegistry,
+            resourceDefinitions,
             usedProduced: usedProducedResources,
             alreadySelected: [],
-            consumedResources: this._terrainConsumed.map(r => r.name),
             onAdd: item => { this._terrainProduced = item; renderTerrainResources() }
           }).open()
         }))
@@ -425,11 +401,10 @@ export default class DistrictTypePanel {
     }
 
     renderTerrainResources()
-    container.appendChild(terrainConsumedSection)
     container.appendChild(terrainProducedSection)
 
     const implicitNote = document.createElement('div')
-    implicitNote.textContent = 'Always consumed: Water, Basic Food'
+    implicitNote.textContent = 'Always consumed each round: Water, Basic Food'
     implicitNote.style.cssText = 'font-size:10px;color:#555;font-style:italic;margin-bottom:5px'
     container.appendChild(implicitNote)
 
@@ -442,18 +417,17 @@ export default class DistrictTypePanel {
     applyBtn.style.cssText = 'width:100%;padding:7px;background:#2a3a2a;color:#fff;border:1px solid #4a7c59;border-radius:3px;cursor:pointer;font-weight:bold;font-size:12px'
     applyBtn.addEventListener('click', () => {
       const produced = this._terrainProduced?.name || ''
-      const consumed = this._terrainConsumed.map(r => r.name)
       if (!produced) { validWarn.textContent = 'Must define at least one produced resource or service.'; validWarn.style.display = 'block'; return }
-      if (consumed.length < 2) { validWarn.textContent = 'Must define at least 2 consumed resources or services.'; validWarn.style.display = 'block'; return }
       validWarn.style.display = 'none'
       applyBtn.disabled = true
       applyBtn.style.opacity = '0.6'
       applyBtn.style.cursor = 'default'
-      const resourceDefs = [...this._terrainConsumed, this._terrainProduced].filter(r => r?.isNew)
+      const resourceDefs = [this._terrainProduced].filter(r => r?.isNew)
+      const resourceWiring = resourceDefs.filter(r => r.wireIntoExisting).map(r => ({ resourceName: r.name, targetName: r.wireIntoExisting }))
       const dialog = new NameDialog({
         entityKind: 'terrain-district', entityLabel: districtType, subType: districtType, producedResource: produced,
         onApply: (name, description) => {
-          this.eventBus.emit('TERRAIN_DISTRICT_ASSIGN', { regionId, plotId, districtType, description, producedResource: produced, consumedResources: consumed, name, resourceDefs })
+          this.eventBus.emit('TERRAIN_DISTRICT_ASSIGN', { regionId, plotId, districtType, description, producedResource: produced, name, resourceDefs, resourceWiring })
         },
         onCancel: () => {
           applyBtn.disabled = false
@@ -751,7 +725,7 @@ export default class DistrictTypePanel {
     document.body.appendChild(panel)
   }
 
-  _buildDistrictContent(container, { pendingType, residentialClass = null, LeadershipClass = null, resourceRegistry = [], usedProducedResources = [], configOverrides = {}, locked = false, leadershipTaken = false }) {
+  _buildDistrictContent(container, { pendingType, residentialClass = null, LeadershipClass = null, resourceRegistry = [], resourceDefinitions = {}, usedProducedResources = [], configOverrides = {}, locked = false, leadershipTaken = false }) {
     // Resolve the config key for the settings dialog
     const _districtKey = pendingType === 'Residential' ? `Residential-${residentialClass || 'Middle'}`
       : pendingType === 'Leadership' ? `Leadership-${LeadershipClass || 'Monarchy'}`
@@ -841,7 +815,7 @@ export default class DistrictTypePanel {
         const dialog = new NameDialog({
           entityKind: 'district', entityLabel: 'Leadership', subType: 'Leadership',
           onApply: (name, description) => {
-            this.eventBus.emit('DISTRICT_APPLY', { description, producedResource: '', consumedResources: [], residentialClass: null, LeadershipClass, name })
+            this.eventBus.emit('DISTRICT_APPLY', { description, producedResource: '', residentialClass: null, LeadershipClass, name })
           },
           onCancel: () => {
             applyBtn.disabled = false
@@ -860,102 +834,71 @@ export default class DistrictTypePanel {
     const isNoble = isResidential && residentialClass === 'Noble'
     const isIndustry = pendingType === 'Industry'
     const isMarket = pendingType === 'Market'
-    const maxConsumed = isIndustry ? 5 : 3
     const maxProduced = isIndustry ? 2 : 1
 
     // Reset state when type changes
     if (pendingType !== this._lastCityPendingType) {
-      this._cityConsumed = []
       this._cityProduced = []
       this._lastCityPendingType = pendingType
     }
 
+    // Consumption is fully derived from the Recipe of what's produced (plus the always-
+    // implicit Water + Basic Food upkeep below) — there is no manual consumed picker.
     const renderResourceSection = () => {
-      consumedSection.innerHTML = ''
       producedSection.innerHTML = ''
+      if (isResidential) return
 
-      // Merge locally-pending new resources into the registry so each dialog
-      // can see resources defined in the same editing session (not yet submitted).
-      const localNewNames = [...this._cityConsumed, ...this._cityProduced]
-        .filter(r => r.isNew).map(r => r.name)
+      // Merge locally-pending new resources into the registry so the dialog can see
+      // resources defined in the same editing session (not yet submitted).
+      const localNewNames = this._cityProduced.filter(r => r.isNew).map(r => r.name)
       const extendedRegistry = [
         ...resourceRegistry,
         ...localNewNames.filter(n => !resourceRegistry.some(r => r.toLowerCase() === n.toLowerCase()))
       ]
 
-      // ── Consumed ──
-      consumedSection.appendChild(this._fieldLabel(`Consumed Resources or Services${isIndustry ? ' (up to 5)' : ''}`))
-      const consPills = document.createElement('div')
-      consPills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
-      for (const item of this._cityConsumed) {
-        consPills.appendChild(this._resourcePill(item.name, () => {
-          this._cityConsumed = this._cityConsumed.filter(r => r !== item)
+      producedSection.appendChild(this._fieldLabel(isIndustry ? 'Produced Resources or Services (up to 2)' : 'Produced Resource or Service'))
+      const prodPills = document.createElement('div')
+      prodPills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
+      for (const item of this._cityProduced) {
+        prodPills.appendChild(this._resourcePill(item.name, () => {
+          this._cityProduced = this._cityProduced.filter(r => r !== item)
           renderResourceSection()
         }))
       }
-      consumedSection.appendChild(consPills)
+      producedSection.appendChild(prodPills)
 
-      if (this._cityConsumed.length < maxConsumed) {
-        const addBtn = this._addResourceButton('Add Consumed Resource or Service', () => {
+      if (this._cityProduced.length < maxProduced) {
+        const usedForDialog = isMarket
+          ? usedProducedResources.filter(r => r !== 'gold')
+          : usedProducedResources
+        const addProdBtn = this._addResourceButton('Add Produced Resource or Service', () => {
           new ResourceDialog({
-            mode: 'consumed',
+            mode: 'produced',
             resourceRegistry: extendedRegistry,
-            usedProduced: [],
-            alreadySelected: this._cityConsumed.map(r => r.name),
-            onAdd: item => { this._cityConsumed.push(item); renderResourceSection() }
+            resourceDefinitions,
+            usedProduced: usedForDialog,
+            alreadySelected: this._cityProduced.map(r => r.name),
+            isMarket,
+            onAdd: item => { this._cityProduced.push(item); renderResourceSection() }
           }).open()
         })
-        consumedSection.appendChild(addBtn)
+        producedSection.appendChild(addProdBtn)
       }
 
-      // ── Produced ──
-      if (!isResidential) {
-        producedSection.appendChild(this._fieldLabel(isIndustry ? 'Produced Resources or Services (up to 2)' : 'Produced Resource or Service'))
-        const prodPills = document.createElement('div')
-        prodPills.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px'
-        for (const item of this._cityProduced) {
-          prodPills.appendChild(this._resourcePill(item.name, () => {
-            this._cityProduced = this._cityProduced.filter(r => r !== item)
-            renderResourceSection()
-          }))
-        }
-        producedSection.appendChild(prodPills)
-
-        if (this._cityProduced.length < maxProduced) {
-          const usedForDialog = isMarket
-            ? usedProducedResources.filter(r => r !== 'gold')
-            : usedProducedResources
-          const addProdBtn = this._addResourceButton('Add Produced Resource or Service', () => {
-            new ResourceDialog({
-              mode: 'produced',
-              resourceRegistry: extendedRegistry,
-              usedProduced: usedForDialog,
-              alreadySelected: this._cityProduced.map(r => r.name),
-              consumedResources: this._cityConsumed.map(r => r.name),
-              isMarket,
-              onAdd: item => { this._cityProduced.push(item); renderResourceSection() }
-            }).open()
-          })
-          producedSection.appendChild(addProdBtn)
-        }
-
-        const goldNote = document.createElement('div')
-        goldNote.textContent = isMarket
-          ? 'Note: Markets can produce Gold directly (sells consumed items at +10%)'
-          : 'Note: always produces Gold (automatic)'
-        goldNote.style.cssText = 'font-size:10px;color:#aa8800;font-style:italic;margin-bottom:3px'
-        producedSection.appendChild(goldNote)
-      }
+      const goldNote = document.createElement('div')
+      goldNote.textContent = isMarket
+        ? 'Note: Markets can produce Gold directly (sells consumed items at +10%)'
+        : 'Note: always produces Gold (automatic)'
+      goldNote.style.cssText = 'font-size:10px;color:#aa8800;font-style:italic;margin-bottom:3px'
+      producedSection.appendChild(goldNote)
     }
 
-    const consumedSection = document.createElement('div')
     const producedSection = document.createElement('div')
     renderResourceSection()
-    container.appendChild(consumedSection)
     container.appendChild(producedSection)
 
     const implicitNote = document.createElement('div')
-    implicitNote.textContent = 'Always consumed: Water, Basic Food'
+    implicitNote.textContent = 'Always consumed each round: Water, Basic Food'
     implicitNote.style.cssText = 'font-size:10px;color:#555;font-style:italic;margin-bottom:5px'
     container.appendChild(implicitNote)
 
@@ -975,26 +918,19 @@ export default class DistrictTypePanel {
     applyBtn.addEventListener('click', () => {
       const produced = isResidential ? '' : (this._cityProduced[0]?.name || '')
       const produced2 = isIndustry ? (this._cityProduced[1]?.name || '') : ''
-      const consumed = this._cityConsumed.map(r => r.name)
       if (!isResidential && !isNoble && !produced) { validWarn.textContent = 'Must define a produced resource or service (in addition to Gold).'; validWarn.style.display = 'block'; return }
       if (!isMarket && produced.toLowerCase() === 'gold') { validWarn.textContent = 'Gold is produced automatically — choose a different resource or service.'; validWarn.style.display = 'block'; return }
       if (produced && produced2 && produced.toLowerCase() === produced2.toLowerCase()) { validWarn.textContent = 'Cannot produce the same resource or service twice.'; validWarn.style.display = 'block'; return }
-      const minConsumed = (isIndustry && produced2) ? 5 : (!isResidential ? 2 : 0)
-      if (minConsumed && consumed.length < minConsumed) {
-        validWarn.textContent = produced2
-          ? 'Must consume 5 Resources or Services when producing 2.'
-          : 'Must consume at least 2 Resources or Services.'
-        validWarn.style.display = 'block'; return
-      }
       validWarn.style.display = 'none'
       applyBtn.disabled = true
       applyBtn.style.opacity = '0.6'
       applyBtn.style.cursor = 'default'
-      const resourceDefs = [...this._cityConsumed, ...this._cityProduced].filter(r => r.isNew)
+      const resourceDefs = this._cityProduced.filter(r => r.isNew)
+      const resourceWiring = resourceDefs.filter(r => r.wireIntoExisting).map(r => ({ resourceName: r.name, targetName: r.wireIntoExisting }))
       const dialog = new NameDialog({
         entityKind: 'district', entityLabel: label, subType: pendingType, producedResource: produced || produced2,
         onApply: (name, description) => {
-          this.eventBus.emit('DISTRICT_APPLY', { description, producedResource: produced, secondProducedResource: produced2, consumedResources: consumed, residentialClass: isResidential ? residentialClass : null, name, resourceDefs })
+          this.eventBus.emit('DISTRICT_APPLY', { description, producedResource: produced, secondProducedResource: produced2, residentialClass: isResidential ? residentialClass : null, name, resourceDefs, resourceWiring })
         },
         onCancel: () => {
           applyBtn.disabled = false

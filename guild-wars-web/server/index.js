@@ -63,13 +63,32 @@ try {
     await autoSave()
     console.log('Migrated save: generated missing street graph')
   }
+  // Re-derive every terrain plot's and district's polygon straight from its seed point
+  // (see _recoverGeometryFromSeeds — safe and correct on every load, no compounding: it
+  // always derives the same true shape from the same never-mutated seeds), then re-apply
+  // River/Cliff pullback fresh on top. district.polygon/cell.polygon only get pulled
+  // back inside _generateStreetGraph()/_applyRiverCliffPullbackToTerrainPlots(), which
+  // run on the NEXT district lock or edge assignment — a district locked in an earlier
+  // session never gets revisited on its own otherwise, so its saved polygon could
+  // otherwise go stale (or, before _recoverGeometryFromSeeds existed, compound worse
+  // every reload — see that method's comment for what this replaced).
+  let pulledBack = false
+  {
+    setupPhase._recoverGeometryFromSeeds()
+    const typedDistricts = (gameStateManager.cityDistrictData?.districts || []).filter(d => d.assignedType)
+    if (typedDistricts.length) { setupPhase._applyRiverCliffPullback(typedDistricts); pulledBack = true }
+    if (gameStateManager.worldTerrainData?.terrainPlots?.length) { setupPhase._applyRiverCliffPullbackToTerrainPlots(); pulledBack = true }
+  }
   // Regenerate all plots (city block + terrain) from saved blocks and junctions.
+  let regeneratedCount = 0
   if (gameStateManager.cityDistrictData?.blocks?.length) {
-    const count = setupPhase.regeneratePlots()
-    if (count) {
-      await autoSave()
-      console.log(`Regenerated ${count} plots on load`)
-    }
+    regeneratedCount = setupPhase.regeneratePlots()
+  }
+  if (regeneratedCount) {
+    await autoSave()
+    console.log(`Regenerated ${regeneratedCount} plots on load`)
+  } else if (pulledBack) {
+    await autoSave()
   }
 } catch {
   console.log('No auto-save found, starting fresh')
@@ -118,6 +137,7 @@ app.get('/api/state', (req, res) => {
     guilds: snap.guilds.map(enrichGuild),
     setupStep: setupPhase.currentStep,
     resourceRegistry: setupPhase.resourceRegistry,
+    resourceDefinitions: setupPhase.resourceDefinitions,
     threats: setupPhase.threats,
     tradingDestinations: setupPhase.tradingDestinations,
     factions: setupPhase.factions,
@@ -350,7 +370,7 @@ app.post('/api/setup/terrain/god', async (req, res) => {
     const seat = seatOf(req)
     const god = setupPhase.addGod({ domains: domains || [], name: name.trim(), description: description || '', seatId: seat?.id ?? null })
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'God', entityName: name.trim(), vetoable: true } : null)
-    res.json({ ok: true, god, worldDomains: setupPhase.worldDomains, resourceRegistry: setupPhase.resourceRegistry })
+    res.json({ ok: true, god, worldDomains: setupPhase.worldDomains, resourceRegistry: setupPhase.resourceRegistry, resourceDefinitions: setupPhase.resourceDefinitions })
   } catch (error) {
     console.error('Add god error:', error)
     res.status(400).json({ ok: false, error: error.message })
@@ -442,7 +462,7 @@ app.post('/api/setup/trade', requireActiveSeat, async (req, res) => {
     const result = setupPhase.addTradingDestination(regionId, description, name, buys, sells, resourceDefs || [])
     const seat = seatOf(req)
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Trading Destination', entityName: name || 'Trade Route', vetoable: true } : null)
-    res.json({ ok: true, tradingDestinations: result.tradingDestinations, trade: result.trade, factions: result.factions, resourceRegistry: result.resourceRegistry, log: result.log })
+    res.json({ ok: true, tradingDestinations: result.tradingDestinations, trade: result.trade, factions: result.factions, resourceRegistry: result.resourceRegistry, resourceDefinitions: result.resourceDefinitions, log: result.log })
   } catch (error) {
     console.error('Add trade error:', error)
     res.status(400).json({ ok: false, error: error.message })
@@ -465,12 +485,12 @@ app.post('/api/setup/city/preview', requireActiveSeat, async (req, res) => {
 // POST /api/setup/city/assign - Apply (lock) a city district with its resources
 app.post('/api/setup/city/assign', requireActiveSeat, async (req, res) => {
   try {
-    const { districtId, districtType, description, name, producedResource, secondProducedResource, consumedResources, residentialClass, LeadershipClass, resourceDefs } = req.body
-    const result = setupPhase.assignDistrictType(districtId, districtType, description, producedResource, consumedResources, residentialClass, LeadershipClass, secondProducedResource, name, resourceDefs || [])
+    const { districtId, districtType, description, name, producedResource, secondProducedResource, residentialClass, LeadershipClass, resourceDefs } = req.body
+    const result = setupPhase.assignDistrictType(districtId, districtType, description, producedResource, residentialClass, LeadershipClass, secondProducedResource, name, resourceDefs || [])
     const seat = seatOf(req)
     const entityName = name?.trim() || residentialClass || LeadershipClass || districtType
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'District', entityName, vetoable: true } : null)
-    res.json({ ok: result.ok, resourceRegistry: result.resourceRegistry, factions: result.factions, cityDistrictData: setupPhase.getCityDistrictDataForClient(), log: result.log })
+    res.json({ ok: result.ok, resourceRegistry: result.resourceRegistry, resourceDefinitions: result.resourceDefinitions, factions: result.factions, cityDistrictData: setupPhase.getCityDistrictDataForClient(), log: result.log })
   } catch (error) {
     console.error('District assign error:', error)
     res.status(400).json({ ok: false, error: error.message })
@@ -578,13 +598,37 @@ app.post('/api/setup/subdivision/assign', requireActiveSeat, async (req, res) =>
 // POST /api/setup/terrain-district - Assign a district type to a terrain region
 app.post('/api/setup/terrain-district', requireActiveSeat, async (req, res) => {
   try {
-    const { regionId, plotId, districtType, description, name, producedResource, consumedResources, resourceDefs } = req.body
-    const result = setupPhase.assignTerrainDistrict(regionId, plotId, districtType, description, producedResource, consumedResources, name, resourceDefs || [])
+    const { regionId, plotId, districtType, description, name, producedResource, resourceDefs } = req.body
+    const result = setupPhase.assignTerrainDistrict(regionId, plotId, districtType, description, producedResource, name, resourceDefs || [])
     const seat = seatOf(req)
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'District', entityName: name?.trim() || districtType, vetoable: true } : null)
-    res.json({ ok: true, resourceRegistry: result.resourceRegistry, factions: result.factions, log: result.log })
+    res.json({ ok: true, resourceRegistry: result.resourceRegistry, resourceDefinitions: result.resourceDefinitions, factions: result.factions, log: result.log })
   } catch (error) {
     console.error('Terrain district assign error:', error)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// GET /api/setup/resource/:name/wiring-candidates - Existing resources this resource could
+// be wired into as a 2nd ingredient (the New Resource dialog's "used as an ingredient for" node)
+app.get('/api/setup/resource/:name/wiring-candidates', (req, res) => {
+  try {
+    res.json({ ok: true, candidates: setupPhase.getWiringCandidates(req.params.name) })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
+// POST /api/setup/resource/attach-ingredient - Wire an existing resource in as another
+// existing resource's 2nd ingredient
+app.post('/api/setup/resource/attach-ingredient', requireActiveSeat, async (req, res) => {
+  try {
+    const { resourceName, targetName } = req.body
+    const result = setupPhase.attachIngredientToResource(resourceName, targetName)
+    await autoSave()
+    res.json({ ok: true, resourceDefinitions: result.resourceDefinitions, log: result.log })
+  } catch (error) {
+    console.error('Attach ingredient error:', error)
     res.status(400).json({ ok: false, error: error.message })
   }
 })

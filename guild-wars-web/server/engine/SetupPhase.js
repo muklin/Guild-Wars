@@ -8,7 +8,9 @@ import TextureTemplateGenerator from './CityGenerator/buildings/TextureTemplateG
 import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
 import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
 import { buildPointRegistry } from './CityGenerator/PointRegistry.js'
-import { pip, clipPolygonToSide, polygonCrossesSegment } from './voronoi/VoronoiUtils.js'
+import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
+import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
+import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane } from './voronoi/VoronoiUtils.js'
 import pc from 'polygon-clipping'
 import { getDistrictConfig } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
@@ -247,6 +249,7 @@ export default class SetupPhase {
     this.districtEdgePlacements = []
     this.districtClassAssignments = new Map()
     this.resourceRegistry = []
+    this.resourceDefinitions = {}
     this.threats = []
     this.tradingDestinations = []
     this.factions = []
@@ -267,6 +270,7 @@ export default class SetupPhase {
     this.districtEdgePlacements = []
     this.districtClassAssignments.clear()
     this.resourceRegistry = []
+    this.resourceDefinitions = {}
     this.threats = []
     this.tradingDestinations = []
     this.factions = []
@@ -279,7 +283,7 @@ export default class SetupPhase {
     this.log.push('Initializing Setup Phase...')
 
     this.worldGenerator = new TerrainVoronoiGenerator()
-    const worldData = this.worldGenerator.generate(15, 50, 0)
+    const worldData = this.worldGenerator.generate(15, 50, 0, 0, this.gameStateManager.pointRegistry)
     this.gameStateManager.worldTerrainData = worldData
     this.log.push(`Generated ${worldData.regions.length} terrain regions`)
 
@@ -309,37 +313,46 @@ export default class SetupPhase {
       terrainPlots: worldData.terrainPlots,
       edges: worldData.edges,
       edgePoints: worldData.edgePoints,
+      pointRegistry: this.gameStateManager.pointRegistry.toJSON(),
       log: this.log
     }
   }
 
   // Build city district data (districts + shared edges) from terrain plots inside the city region.
   generateCityDistrictData(cityTerrainPlots) {
+    // Each district's pointIds is a direct copy of its originating terrain plot's own
+    // pointIds — the SAME global registry ids, not a coordinate-matched approximation.
+    // This is the concrete "district reuses terrain-plot ids by construction" mechanism
+    // the Point/Surface refactor is built around: two districts that were adjacent
+    // terrain-plot cells share the identical id at their common corner, guaranteed,
+    // with no eps-rounding dedup pass needed (that pass — and the second, independent
+    // one _addPromotedDistrictEdges used to run — are both deleted; see plan §2).
     const districts = cityTerrainPlots.map((cell, i) => ({
       id: i,
       seedPoint: { x: cell.seedPoint.x, y: cell.seedPoint.y },
       polygon: cell.polygon.map(v => ({ x: v.x, y: v.y })),
+      pointIds: [...cell.pointIds],
+      // Which worldTerrainData.terrainPlots entry this district mirrors — promoted
+      // districts already track this via promotedFromPlotId; this is the same concept
+      // for the INITIAL batch, letting _applyRiverCliffPullback adopt a district's
+      // pullback directly from its terrain plot's own (see that function's doc comment
+      // for why: two independently-computed pullbacks of the same physical corner used
+      // to leave a visible seam between a district's outer edge and adjacent terrain).
+      originPlotId: cell.id,
       assignedType: null,
       description: ''
     }))
 
-    // Deduplicate polygon vertices by coordinate so shared borders snap together.
-    const eps = 0.001
-    const vertexByKey = new Map()
-    let nextVId = 0
-    const getVertex = (x, y) => {
-      const key = `${Math.round(x / eps)},${Math.round(y / eps)}`
-      if (!vertexByKey.has(key)) vertexByKey.set(key, { id: nextVId++, x, y })
-      return vertexByKey.get(key)
-    }
-
-    // Map each polygon segment to the district(s) that contain it.
+    // Map each polygon segment to the district(s) that contain it, keyed on the real
+    // global point ids directly — exact equality, no coordinate tolerance.
     const segmentMap = new Map()
     for (let dIdx = 0; dIdx < cityTerrainPlots.length; dIdx++) {
       const poly = cityTerrainPlots[dIdx].polygon
+      const ids = cityTerrainPlots[dIdx].pointIds
       for (let i = 0; i < poly.length; i++) {
-        const va = getVertex(poly[i].x, poly[i].y)
-        const vb = getVertex(poly[(i + 1) % poly.length].x, poly[(i + 1) % poly.length].y)
+        const va = { id: ids[i], x: poly[i].x, y: poly[i].y }
+        const j = (i + 1) % poly.length
+        const vb = { id: ids[j], x: poly[j].x, y: poly[j].y }
         if (va.id === vb.id) continue
         const lo = Math.min(va.id, vb.id), hi = Math.max(va.id, vb.id)
         const segKey = `${lo}:${hi}`
@@ -595,6 +608,8 @@ export default class SetupPhase {
       }
     }
 
+    if (autoCliffEdgeIds.length || clearedEdgeIds.length) this._applyRiverCliffPullbackToTerrainPlots()
+
     return { ok: true, clearedEdgeIds, autoCliffEdgeIds, log: this.log }
   }
 
@@ -608,12 +623,13 @@ export default class SetupPhase {
     edge.name = name?.trim() || ''
     this.edgePlacements.push({ edgeId, edgeType, description, name: edge.name })
     this.log.push(`Assigned ${edgeType} to edge ${edgeId}`)
+    if (edgeType === 'River' || edgeType === 'Cliff') this._applyRiverCliffPullbackToTerrainPlots()
     return { ok: true, log: this.log }
   }
 
   // Apply = lock the district in (final). The type may already have been set by
   // previewDistrictType; here we validate resources, commit them, and lock.
-  assignDistrictType(districtId, districtType, description = '', producedResource = '', consumedResources = [], residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '', resourceDefs = []) {
+  assignDistrictType(districtId, districtType, description = '', producedResource = '', residentialClass = null, LeadershipClass = null, secondProducedResource = '', name = '', resourceDefs = []) {
     const district = this.gameStateManager.cityDistrictData.districts.find(d => d.id === districtId)
     if (!district) throw new Error(`District ${districtId} not found`)
     if (district.locked) throw new Error(`District ${districtId} is already locked`)
@@ -641,7 +657,6 @@ export default class SetupPhase {
         throw new Error(`Invalid Leadership class: ${LeadershipClass}`)
       }
       producedResource = ''
-      consumedResources = []
     }
 
     const normalizedProd = producedResource?.trim().toLowerCase()
@@ -668,17 +683,13 @@ export default class SetupPhase {
     checkDupe(normalizedProd, producedResource)
     checkDupe(normalizedProd2, secondProducedResource)
 
-    // Store new resource definitions (name, gpValue, ingredients) in the registry
+    // Store new resource definitions (name, gpValue, type, ingredients, specialInput, ...)
     for (const def of resourceDefs) {
       if (def?.name) this._registerResourceDef(def)
     }
 
-    const explicitConsumed = (consumedResources || []).map(r => r.trim()).filter(Boolean)
     const isNoble = isResidential && residentialClass === 'Noble'
-    const hasTwoProductions = !!(normalizedProd && normalizedProd2)
     if (!isNoble && !isLeadership && !normalizedProd) throw new Error('A district must produce at least one resource or service (in addition to Gold)')
-    if (!isResidential && !isLeadership && hasTwoProductions && explicitConsumed.length < 5) throw new Error('An Industry district producing 2 resources or services must consume at least 5')
-    if (!isResidential && !isLeadership && !hasTwoProductions && explicitConsumed.length < 2) throw new Error('A district must consume at least 2 resources or services (in addition to Water and Basic Food)')
 
     district.assignedType = districtType
     district.residentialClass = isResidential ? (residentialClass || null) : null
@@ -687,10 +698,15 @@ export default class SetupPhase {
     district.name = name?.trim() || ''
     district.producedResource = producedResource?.trim() || null
     district.secondProducedResource = secondProducedResource?.trim() || null
+
+    // Consumption is fully derived from the Recipes of whatever the district produces,
+    // plus the always-implicit Water + Basic Food upkeep (a per-round health mechanic —
+    // never selectable as a recipe ingredient; see CONTEXT_ResourcesServices.md).
+    const derivedConsumed = this._deriveConsumption([district.producedResource, district.secondProducedResource].filter(Boolean))
     const IMPLICIT_CONSUMED = isLeadership ? [] : ['Water', 'Basic Food']
     district.consumedResources = [
-      ...explicitConsumed,
-      ...IMPLICIT_CONSUMED.filter(r => !explicitConsumed.some(e => e.toLowerCase() === r.toLowerCase()))
+      ...derivedConsumed,
+      ...IMPLICIT_CONSUMED.filter(r => !derivedConsumed.some(e => e.toLowerCase() === r.toLowerCase()))
     ]
 
     const displayType = isResidential ? `Residential (${residentialClass})` : districtType
@@ -704,9 +720,6 @@ export default class SetupPhase {
     if (district.secondProducedResource && !PREDEFINED_LOWER.includes(district.secondProducedResource.toLowerCase())) {
       this._registerResource(district.secondProducedResource)
     }
-    for (const r of explicitConsumed) {
-      if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
-    }
 
     if (isLeadership) {
       const insertIdx = this.factions.findIndex(f => f.type !== 'leadership')
@@ -714,7 +727,7 @@ export default class SetupPhase {
       if (insertIdx === -1) this.factions.push(faction)
       else this.factions.splice(insertIdx, 0, faction)
     } else {
-      this.factions.push({ id: this.factions.length, health: 70, type:'district', typeName: districtType, name: district.name, subclass: residentialClass || null, districtId, standing: {} })
+      this.factions.push({ id: this.factions.length, health: 70, type:'district', typeName: districtType, name: district.name, subclass: residentialClass || null, districtId, producedResource: district.producedResource || '', secondProducedResource: district.secondProducedResource || '', standing: {} })
     }
 
     // Commit: freeze the street seed, lock the district, and regenerate.
@@ -730,7 +743,7 @@ export default class SetupPhase {
     this._retryIfVoid(districtId)
     this._removeAbsorbedDistrictEdgePlacements()
 
-    return { ok: true, resourceRegistry: this.resourceRegistry, factions: this.factions, log: this.log }
+    return { ok: true, resourceRegistry: this.resourceRegistry, resourceDefinitions: this.resourceDefinitions, factions: this.factions, log: this.log }
   }
 
   // Roll per-edge Wall assignment for a newly locked district. Uses the locking
@@ -790,13 +803,120 @@ export default class SetupPhase {
     }
   }
 
-  _registerResourceDef({ name, gpValue, ingredients }) {
-    this._registerResource(name)
+  // type: 'Raw' | 'Resource' | 'Service'. Raw items have a fixed recipe (Labour + Security)
+  // and never store player-chosen ingredients/specialInput. rawSubtype ('Food'|'Resource')
+  // applies only to Raw; tradeCategory ('Entertainment'|'Tradeable') applies only to Service.
+  // specialInput is one concrete resource name — 'Labour', 'Gold', or a specific
+  // "Worship of <god>" — never Water/Basic Food (those are a separate per-round upkeep,
+  // not a Recipe ingredient), and never a Worship value when the Commodity being defined
+  // is itself Worship (no self-reference).
+  _registerResourceDef({ name, gpValue, ingredients, type, rawSubtype, specialInput, tradeCategory }) {
     if (!this.resourceDefinitions) this.resourceDefinitions = {}
     const key = name.trim().toLowerCase()
-    if (!this.resourceDefinitions[key]) {
-      this.resourceDefinitions[key] = { name: name.trim(), gpValue: Number(gpValue) || 0, ingredients: ingredients || [] }
+    if (this.resourceDefinitions[key]) return // already defined — first write wins
+
+    const resolvedType = type || 'Resource'
+    const isWorship = key.startsWith('worship of ')
+    const def = { name: name.trim(), gpValue: Number(gpValue) || 0, type: resolvedType, rawSubtype: null, ingredients: [], specialInput: null, tradeCategory: null }
+
+    if (resolvedType === 'Raw') {
+      def.rawSubtype = rawSubtype === 'Food' ? 'Food' : 'Resource'
+    } else {
+      const cleanIngredients = [...new Set((ingredients || []).map(i => (i || '').trim()).filter(Boolean))].slice(0, 2)
+      if (cleanIngredients.length < 1) throw new Error(`"${name}" needs at least 1 ingredient`)
+      if (cleanIngredients.some(ing => ['water', 'basic food'].includes(ing.toLowerCase()))) {
+        throw new Error('Water and Basic Food are per-round upkeep, not a Recipe ingredient')
+      }
+      if (cleanIngredients.some(ing => this._dependsOn([ing], key))) {
+        throw new Error(`"${name}" cannot use an ingredient that already depends on "${name}"`)
+      }
+      const input = (specialInput || '').trim()
+      const inputLower = input.toLowerCase()
+      const isValidSpecial = inputLower === 'labour' || inputLower === 'gold' || inputLower.startsWith('worship of ')
+      if (!isValidSpecial) throw new Error(`"${name}" needs a special input of Labour, Gold, or Worship`)
+      if (isWorship && inputLower.startsWith('worship of ')) throw new Error('Worship cannot use Worship as its own special input')
+      def.ingredients = cleanIngredients
+      def.specialInput = input
+      if (resolvedType === 'Service') def.tradeCategory = tradeCategory === 'Entertainment' ? 'Entertainment' : 'Tradeable'
     }
+
+    this.resourceDefinitions[key] = def
+    this._registerResource(name)
+  }
+
+  // Wires an already-registered resource in as an EXISTING target resource's second
+  // ingredient (the "used as an ingredient for" node in the New Resource dialog). Only
+  // legal when the target currently has exactly 1 ingredient and the addition wouldn't
+  // create a circular dependency.
+  attachIngredientToResource(resourceName, targetName) {
+    const resourceKey = resourceName.trim().toLowerCase()
+    const targetKey = targetName.trim().toLowerCase()
+    const target = this.resourceDefinitions?.[targetKey]
+    if (!target) throw new Error(`"${targetName}" is not a defined resource`)
+    if (target.type === 'Raw') throw new Error('Raw resources have a fixed recipe and cannot take an extra ingredient')
+    if (!this.resourceDefinitions?.[resourceKey]) throw new Error(`"${resourceName}" is not a defined resource`)
+    if (target.ingredients.length !== 1) throw new Error(`"${targetName}" does not have room for a second ingredient`)
+    if (target.ingredients.some(i => i.trim().toLowerCase() === resourceKey)) throw new Error(`"${targetName}" already uses "${resourceName}"`)
+    if (this._dependsOn([resourceName], targetKey)) throw new Error(`Adding "${resourceName}" to "${targetName}" would create a circular dependency`)
+    target.ingredients = [...target.ingredients, resourceName.trim()]
+    this.log.push(`Wired "${resourceName}" in as an ingredient of "${targetName}"`)
+    return { ok: true, resourceDefinitions: this.resourceDefinitions, log: this.log }
+  }
+
+  // Eligible targets for the "used as an ingredient for" node: existing Resource/Service
+  // defs with exactly 1 ingredient so far, excluding anything that would create a cycle
+  // if `resourceName` were added as their 2nd ingredient.
+  getWiringCandidates(resourceName) {
+    const resourceKey = resourceName.trim().toLowerCase()
+    return Object.values(this.resourceDefinitions || {})
+      .filter(def => def.type !== 'Raw' && def.ingredients.length === 1 && def.name.trim().toLowerCase() !== resourceKey)
+      .filter(def => !this._dependsOn([resourceName], def.name.trim().toLowerCase()))
+      .map(def => def.name)
+  }
+
+  // Does `startNames` (a Commodity's ingredients/specialInput, or a candidate list being
+  // considered for one) transitively reach `needleKey`? Used to block circular recipes —
+  // e.g. before wiring a new resource in as an existing resource's 2nd ingredient, or
+  // before letting a new resource pick an ingredient that would loop back to itself.
+  _dependsOn(startNames, needleKey, visited = new Set()) {
+    for (const raw of (startNames || [])) {
+      if (!raw) continue
+      const key = raw.trim().toLowerCase()
+      if (key === needleKey) return true
+      if (visited.has(key)) continue
+      visited.add(key)
+      const def = this.resourceDefinitions?.[key]
+      if (!def) continue
+      const deps = [...(def.ingredients || []), ...(def.specialInput ? [def.specialInput] : [])]
+      if (this._dependsOn(deps, needleKey, visited)) return true
+    }
+    return false
+  }
+
+  // A district's consumed Resources/Services are fully derived from the Recipes of
+  // everything it produces: Raw producers always consume Labour + Security; Resource/Service
+  // producers consume their recipe's ingredients plus its chosen special input. Predefined
+  // auto-produced items (Gold, Labour) have no resourceDefinitions entry and derive nothing.
+  _deriveConsumption(producedNames) {
+    const out = []
+    const seen = new Set()
+    const add = (name) => {
+      if (!name) return
+      const key = name.trim().toLowerCase()
+      if (!seen.has(key)) { seen.add(key); out.push(name) }
+    }
+    for (const raw of (producedNames || [])) {
+      if (!raw) continue
+      const def = this.resourceDefinitions?.[raw.trim().toLowerCase()]
+      if (!def) continue
+      if (def.type === 'Raw') {
+        add('Labour'); add('Security')
+      } else {
+        for (const ing of (def.ingredients || [])) add(ing)
+        if (def.specialInput) add(def.specialInput)
+      }
+    }
+    return out
   }
 
   addThreat(regionId, description = '', name = '') {
@@ -842,7 +962,7 @@ export default class SetupPhase {
 
     this.factions.push({ id: this.factions.length, health: 70, type:'trade', typeName: region.assignedType || 'Trade Route', name: tradeName, subclass: null, regionId, standing: {} })
 
-    return { ok: true, tradingDestinations: this.tradingDestinations, trade, factions: this.factions, resourceRegistry: this.resourceRegistry, log: this.log }
+    return { ok: true, tradingDestinations: this.tradingDestinations, trade, factions: this.factions, resourceRegistry: this.resourceRegistry, resourceDefinitions: this.resourceDefinitions, log: this.log }
   }
 
   _findRoadPath(startRegionId) {
@@ -1000,14 +1120,24 @@ export default class SetupPhase {
     const terrPtMap = new Map((terrainData.edgePoints || []).map(p => [p.id, p]))
     const THRESHOLD = 1.0
 
-    for (const region of (terrainData.regions || [])) {
-      if (region.assignedType !== 'Sea' && region.assignedType !== 'Lake') continue
-      const poly = region.polygon
-      for (const pt of pts) {
-        if (this._ptInPoly(pt.x, pt.y, poly)) return true
-        for (let i = 0; i < poly.length; i++) {
-          const a = poly[i], b = poly[(i + 1) % poly.length]
-          if (this._segDist(pt.x, pt.y, a.x, a.y, b.x, b.y) < THRESHOLD) return true
+    // Sea/Lake regions are checked against their actual fine terrain-plot cells, not
+    // region.polygon — that's a CONVEX HULL of those cells (see TerrainVoronoiGenerator
+    // Step 6), which over-covers any concave stretch of coastline (a bay, inlet, etc.)
+    // and can report land segments on the far side of the notch as "near water".
+    const waterRegionIds = new Set((terrainData.regions || [])
+      .filter(r => r.assignedType === 'Sea' || r.assignedType === 'Lake')
+      .map(r => r.id))
+    if (waterRegionIds.size) {
+      for (const cell of (terrainData.terrainPlots || [])) {
+        if (!waterRegionIds.has(cell.parentRegionId)) continue
+        const poly = cell.polygon
+        if (!poly?.length) continue
+        for (const pt of pts) {
+          if (this._ptInPoly(pt.x, pt.y, poly)) return true
+          for (let i = 0; i < poly.length; i++) {
+            const a = poly[i], b = poly[(i + 1) % poly.length]
+            if (this._segDist(pt.x, pt.y, a.x, a.y, b.x, b.y) < THRESHOLD) return true
+          }
         }
       }
     }
@@ -1044,6 +1174,49 @@ export default class SetupPhase {
     return Math.sqrt((px - x1 - t * dx) ** 2 + (py - y1 - t * dy) ** 2)
   }
 
+  // Is cell edge (a,b) genuinely alongside the river/cliff polyline — not just touching
+  // it at one shared vertex? A single "is any point on this edge within MATCH_TOL of the
+  // river" check (segment-to-segment distance) is true for a cell edge that merely shares
+  // its start vertex with the river (a common Voronoi-vertex-of-3-regions situation at a
+  // river's endpoint) even when that edge runs off toward an unrelated distant corner for
+  // the rest of its length — confirmed on a real save: a 6-unit-long edge matched this
+  // way, because ONE endpoint sat exactly on the river while the other was 3.7 units
+  // away. The resulting buffer quad clipped a long, thin, spurious notch along that
+  // unrelated edge — the "antenna" gaps radiating away from river bends. Requiring BOTH
+  // endpoints to be near the river (checked against the whole polyline, not one segment,
+  // so a long edge running alongside a curving river still matches correctly along its
+  // full length) rejects that case while keeping every genuine river-adjacent edge.
+  _edgeNearRiverCliff(ax, ay, bx, by, riverCliffSegs) {
+    return this._matchedRiverCliffEdgeId(ax, ay, bx, by, riverCliffSegs) != null
+  }
+
+  // Same "both endpoints near a single segment" matching rule as _edgeNearRiverCliff,
+  // but returns WHICH source terrain edge (worldTerrainData.edges key) matched, or null.
+  // Picks the segment minimizing max(distA,distB) among segments where both endpoints
+  // are within tolerance, so a plot edge running alongside two different river/cliff
+  // chains (near a confluence) still resolves to exactly one chain, not an arbitrary one.
+  _matchedRiverCliffEdgeId(ax, ay, bx, by, riverCliffSegs) {
+    const tol = SetupPhase.RIVER_CLIFF_MATCH_TOL
+    let best = null, bestMax = Infinity
+    for (const { seg: [p, q], sourceEdgeId } of riverCliffSegs) {
+      const distA = this._segDist(ax, ay, p.x, p.y, q.x, q.y)
+      const distB = this._segDist(bx, by, p.x, p.y, q.x, q.y)
+      // Tried rescuing the rare genuine edge whose far endpoint lands just outside tol
+      // with an "or the midpoint is close" fallback — but a long unrelated edge's
+      // midpoint can coincidentally land near a DIFFERENT segment of the same (multi-
+      // segment, winding) river purely by chance, reopening the exact false-positive
+      // hole this exists to close (confirmed: reintroduced 12 of the original multi-unit
+      // spurious matches on a real save). Strict "both endpoints near" occasionally
+      // under-matches by a little (a cell ends up with slightly less than the nominal
+      // half-width clearance instead of none) — a far smaller problem than a long
+      // spurious clip, so left as the plain AND.
+      if (distA >= tol || distB >= tol) continue
+      const m = Math.max(distA, distB)
+      if (m < bestMax) { bestMax = m; best = sourceEdgeId }
+    }
+    return best
+  }
+
   // River and Cliff terrain Edges render as a fixed-thickness polyline CENTRED on the
   // edge (TerrainRenderer: thickness 0.5), extending RIVER_CLIFF_HALF_WIDTH into both
   // neighbouring plots' nominal area — so a district's raw Voronoi-cell polygon
@@ -1054,64 +1227,126 @@ export default class SetupPhase {
   // Recomputes each district's polygon fresh from a preserved pristine copy every call
   // (`district._rawPolygon`, set once) rather than insetting in place repeatedly, since
   // this runs on every street-graph (re)generation over the course of District Setup.
-  _applyRiverCliffPullback(districts) {
-    const RIVER_CLIFF_HALF_WIDTH = 0.25
-    // Matching tolerance for "does this district edge lie along a River/Cliff terrain
-    // edge" — deliberately generous (matches the THRESHOLD already used for the same
-    // kind of district/terrain proximity test in _cityEdgeIsNearWater above) rather than
-    // requiring near-exact coincidence: fine district polygons and coarse terrain edges
-    // are independently generated, so their shared boundary line isn't bit-for-bit
-    // identical between the two.
-    const MATCH_TOL = 1.0
+  //
+  // Pulling back `district.polygon` alone is NOT enough: StreetVoronoiGenerator.generate()
+  // builds the actual street-graph boundary nodes for every city edge (inner AND outer)
+  // straight from `cityData.edgePoints` (via cityEdge.pointIds), not from district.polygon
+  // — district.polygon only seeds the district's own interior micro-Voronoi. Those
+  // edgePoints are a separate, shared coordinate set untouched by the inset above, so
+  // without also shifting them, blocks/plots/buildings still hug the original
+  // (un-pulled-back) boundary regardless of how far district.polygon itself moved. So
+  // every vertex displacement computed below is mirrored onto any cityData.edgePoints
+  // entry sitting at that same (pristine) coordinate.
+  // Matching tolerance for "does this polygon edge lie along a River/Cliff terrain
+  // edge" — deliberately generous (matches the THRESHOLD already used for the same kind
+  // of proximity test in _cityEdgeIsNearWater above) rather than requiring near-exact
+  // coincidence: independently-generated polygons don't share a bit-for-bit identical
+  // boundary line.
+  static RIVER_CLIFF_MATCH_TOL = 1.0
+
+  // Collect every River/Cliff terrain edge as a flat list of {seg:[p,q], sourceEdgeId}
+  // entries, in the world-terrain coordinate space shared by district polygons and
+  // terrain plot cells. sourceEdgeId is the worldTerrainData.edges key ("${rA}-${rB}")
+  // — carried through matching (_matchedRiverCliffEdgeId) and pullback (edgeMatched) so
+  // a land face's split half-edges can later be tagged with which physical river/cliff
+  // chain they belong to (see DCEL.tagChain / _buildRiverCliffFaces).
+  _riverCliffSegments() {
     const terrainData = this.gameStateManager.worldTerrainData
     const terrPtMap = new Map((terrainData?.edgePoints || []).map(p => [p.id, p]))
-    const riverCliffSegs = []
-    for (const te of Object.values(terrainData?.edges || {})) {
+    const segs = []
+    for (const [edgeKey, te] of Object.entries(terrainData?.edges || {})) {
       if (te.assignedType !== 'River' && te.assignedType !== 'Cliff') continue
       const pts = (te.pointIds || []).map(id => terrPtMap.get(id)).filter(Boolean)
-      for (let i = 0; i < pts.length - 1; i++) riverCliffSegs.push([pts[i], pts[i + 1]])
+      for (let i = 0; i < pts.length - 1; i++) segs.push({ seg: [pts[i], pts[i + 1]], sourceEdgeId: edgeKey })
     }
-    let matchedEdgeCount = 0, matchedDistrictCount = 0
+    return segs
+  }
 
-    for (const d of districts) {
-      if (!d._rawPolygon) d._rawPolygon = d.polygon.map(v => ({ x: v.x, y: v.y }))
-      const poly = d._rawPolygon
-      const n = poly.length
-      if (n < 3 || !riverCliffSegs.length) { d.polygon = poly.map(v => ({ x: v.x, y: v.y })); continue }
+  // Inset a single (pristine) polygon by halfWidth along any edge that lies on a
+  // River/Cliff terrain segment, using a proper bisector miter at corners where two
+  // matched edges meet (same formula as DistrictRenderer._getMiteredCorners — scale the
+  // unit bisector by 1/cos(halfAngle), clamped to 0.15 against miter blowout at sharp
+  // reflex corners) rather than an unweighted average, which shrinks toward zero the
+  // more the two edges diverge. Returns the pushed polygon plus, per vertex index, the
+  // (dx,dy) it moved by (0,0 if untouched) — callers that need to keep OTHER shared
+  // structures (e.g. cityData.edgePoints) in sync with specific vertices use those.
+  // edgeMatched[i] (returned) is the sourceEdgeId (worldTerrainData.edges key) of the
+  // river/cliff segment edge i (poly[i]->poly[i+1]) lies along, or null — this is what
+  // lets a land face's split half-edges later be tagged with which physical river/cliff
+  // chain they belong to (see _buildRiverCliffFaces).
+  _pullBackPolygon(poly, riverCliffSegs, halfWidth) {
+    const n = poly.length
+    const zeroDeltas = () => new Array(n).fill(null).map(() => ({ dx: 0, dy: 0 }))
+    if (n < 3 || !riverCliffSegs.length) return { pushed: poly.map(v => ({ x: v.x, y: v.y })), deltas: zeroDeltas(), anyMatch: false, edgeMatched: new Array(n).fill(null) }
 
-      let cx = 0, cy = 0
-      for (const v of poly) { cx += v.x; cy += v.y }
-      cx /= n; cy /= n
+    let cx = 0, cy = 0
+    for (const v of poly) { cx += v.x; cy += v.y }
+    cx /= n; cy /= n
 
-      const edgeMatched = new Array(n)
-      let anyMatch = false
-      for (let i = 0; i < n; i++) {
-        const a = poly[i], b = poly[(i + 1) % n]
-        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
-        edgeMatched[i] = riverCliffSegs.some(([p, q]) => this._segDist(mx, my, p.x, p.y, q.x, q.y) < MATCH_TOL)
-        if (edgeMatched[i]) { anyMatch = true; matchedEdgeCount++ }
-      }
-      if (anyMatch) matchedDistrictCount++
+    const edgeMatched = new Array(n)
+    let anyMatch = false
+    for (let i = 0; i < n; i++) {
+      const a = poly[i], b = poly[(i + 1) % n]
+      edgeMatched[i] = this._matchedRiverCliffEdgeId(a.x, a.y, b.x, b.y, riverCliffSegs)
+      if (edgeMatched[i] != null) anyMatch = true
+    }
+    if (!anyMatch) return { pushed: poly.map(v => ({ x: v.x, y: v.y })), deltas: zeroDeltas(), anyMatch: false, edgeMatched }
 
+    const computeAt = (hw) => {
       const pushed = poly.map(v => ({ x: v.x, y: v.y }))
+      const deltas = zeroDeltas()
       for (let i = 0; i < n; i++) {
         const prevMatched = edgeMatched[(i - 1 + n) % n], nextMatched = edgeMatched[i]
         if (!prevMatched && !nextMatched) continue
-        let px = 0, py = 0, count = 0
-        if (prevMatched) {
-          const { nx, ny } = this._inwardNormal(poly[(i - 1 + n) % n], poly[i], cx, cy)
-          px += nx; py += ny; count++
+        const n1 = prevMatched ? this._inwardNormal(poly[(i - 1 + n) % n], poly[i], cx, cy) : null
+        const n2 = nextMatched ? this._inwardNormal(poly[i], poly[(i + 1) % n], cx, cy) : null
+        let mx, my
+        if (n1 && n2) {
+          const bx = n1.nx + n2.nx, by = n1.ny + n2.ny
+          const bl = Math.hypot(bx, by)
+          if (bl < 1e-6) { mx = n1.nx; my = n1.ny }
+          else {
+            const s = 1 / Math.max(0.15, (bx * n1.nx + by * n1.ny) / bl)
+            mx = (bx / bl) * s; my = (by / bl) * s
+          }
+        } else {
+          const only = n1 ?? n2
+          mx = only.nx; my = only.ny
         }
-        if (nextMatched) {
-          const { nx, ny } = this._inwardNormal(poly[i], poly[(i + 1) % n], cx, cy)
-          px += nx; py += ny; count++
-        }
-        pushed[i].x += (px / count) * RIVER_CLIFF_HALF_WIDTH
-        pushed[i].y += (py / count) * RIVER_CLIFF_HALF_WIDTH
+        // Clamp the push to a fraction of this vertex's own adjacent edges — a
+        // "transition" vertex (only one side matched) gets pushed the full hw
+        // regardless of how short its OWN edges are, so on a small/sliver polygon the
+        // pushed point can end up far outside its tiny neighbouring edges: a visible
+        // spike jutting off the vertex rather than a clean inset. Bounding the push to
+        // half the shorter adjacent edge keeps it proportionate to the local geometry —
+        // less clearance right at that one corner beats a spike that reads as broken.
+        const prevLen = Math.hypot(poly[i].x - poly[(i - 1 + n) % n].x, poly[i].y - poly[(i - 1 + n) % n].y)
+        const nextLen = Math.hypot(poly[(i + 1) % n].x - poly[i].x, poly[(i + 1) % n].y - poly[i].y)
+        const effHw = Math.min(hw, 0.5 * Math.min(prevLen, nextLen))
+        const dx = mx * effHw, dy = my * effHw
+        pushed[i].x += dx
+        pushed[i].y += dy
+        deltas[i] = { dx, dy }
       }
-      d.polygon = pushed
+      return { pushed, deltas }
     }
-    console.log(`[river-cliff-pullback] ${riverCliffSegs.length} river/cliff terrain segments, ${matchedEdgeCount} district edge(s) across ${matchedDistrictCount}/${districts.length} district(s) pulled back`)
+
+    // The miter bisector's 1/cos(halfAngle) scale can overshoot far enough at a sharp or
+    // reflex corner to push a vertex past another edge of the SAME polygon, self-
+    // intersecting it — confirmed happening (~15% of stress-tested cases): the resulting
+    // bowtie shape's fan triangulation renders broken/inverted, which is what "removing
+    // whole districts" looked like. Halve halfWidth and retry until the result is a
+    // simple (non-self-intersecting) polygon rather than ever shipping a broken one —
+    // less clearance at that one corner beats a corrupted district.
+    let hw = halfWidth
+    let result = computeAt(hw)
+    let attempts = 0
+    while (this._polygonSelfIntersects(result.pushed) && attempts < 8) {
+      hw *= 0.5
+      result = computeAt(hw)
+      attempts++
+    }
+    return { pushed: result.pushed, deltas: result.deltas, anyMatch, edgeMatched }
   }
 
   _inwardNormal(a, b, cx, cy) {
@@ -1120,6 +1355,931 @@ export default class SetupPhase {
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
     if ((cx - mx) * nx + (cy - my) * ny < 0) { nx = -nx; ny = -ny }
     return { nx, ny }
+  }
+
+  _polygonSelfIntersects(poly) {
+    const n = poly.length
+    for (let i = 0; i < n; i++) {
+      const a1 = poly[i], a2 = poly[(i + 1) % n]
+      for (let j = i + 1; j < n; j++) {
+        if (j === i || j === (i + 1) % n || i === (j + 1) % n) continue
+        if (this._segmentsProperlyCross(a1, a2, poly[j], poly[(j + 1) % n])) return true
+      }
+    }
+    return false
+  }
+
+  _segmentsProperlyCross(p1, p2, p3, p4) {
+    const d1x = p2.x - p1.x, d1y = p2.y - p1.y, d2x = p4.x - p3.x, d2y = p4.y - p3.y
+    const denom = d1x * d2y - d1y * d2x
+    if (Math.abs(denom) < 1e-12) return false
+    const t = ((p3.x - p1.x) * d2y - (p3.y - p1.y) * d2x) / denom
+    const u = ((p3.x - p1.x) * d1y - (p3.y - p1.y) * d1x) / denom
+    return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9
+  }
+
+  // River and Cliff terrain Edges render as a fixed-thickness polyline CENTRED on the
+  // edge (TerrainRenderer: thickness 0.5), extending RIVER_CLIFF_HALF_WIDTH into both
+  // neighbouring plots' nominal area — so a district's raw Voronoi-cell polygon
+  // otherwise reaches past the river bank / cliff face into the rendered water/rock
+  // (see Edge, CONTEXT_WorldTerrain.md). Sea/Lake need no pullback — they're already
+  // filled region polygons, not a centreline+width polyline.
+  //
+  // Point/Surface model (see GroundPointRegistry.js, plan "typed-giggling-giraffe"): a
+  // district's pullback is POINT-SPLITTING, not coordinate-editing. `district._rawPolygon`/
+  // `_rawPointIds` (captured once, from the TRUE pristine geometry — never re-captured,
+  // never mutated) are recomputed fresh into `district.polygon`/`.pointIds` every call.
+  // An untouched vertex keeps its original id (still shares it with every other Surface
+  // that also didn't move it). A displaced vertex resolves via
+  // registry.getOrCreateSplit(baseId, group, ...) — `group` is the exact {dx,dy} object
+  // _computeRiverCliffDeltas resolved for that vertex, and is REFERENCE-shared across
+  // every polygon/vertex that landed in the same direction-group at that baseId — so two
+  // Surfaces whose corners should move together land on the literal same split point id,
+  // by construction, not by coordinate-matching after the fact.
+  //
+  // Pulling back `district.polygon`/`.pointIds` alone is NOT enough: cityData.edges
+  // captured their own snapshot of pointIds at construction time (see
+  // generateCityDistrictData / _addPromotedDistrictEdges) and don't automatically follow
+  // along when a district's pointIds get rewritten here. Every edge's raw ids are always
+  // a contiguous run of its OWNING district's own raw pointIds, so each edge is re-derived
+  // by mapping its own raw ids through that same district's rawId->currentId remap built
+  // below — landing on the identical split ids the district itself just resolved, with no
+  // separate matching step. cityData.edgePoints is then rebuilt as a pure materialized
+  // view of whatever cityData.edges/districts currently reference, for consumers not yet
+  // reading the point registry directly (StreetVoronoiGenerator — see plan Stage 6).
+
+  // DCEL cutover (plan "typed-giggling-giraffe", migration step 7): shared by both
+  // district and terrain-plot pullback. Builds a fresh DCEL every call (never
+  // persisted — matches the existing "_rawPolygon, recomputed every call" philosophy),
+  // inserts every face from its pristine ids, resolves the river-mouth/multi-bank case
+  // via splitVertexGeneral where _computeRiverCliffDeltas flagged it ambiguous (the
+  // common 2-group case only — a 3+-way confluence falls through to the existing
+  // single-group heuristic already baked into `deltas`, unchanged from before this
+  // cutover), then splitVertexSimple for every other corner. Returns one
+  // {pointIds, polygon} per input face, parallel to rawPolys/rawIds — note a water
+  // face's pointIds can come back LONGER than its raw input if splitVertexGeneral gave
+  // it an extra vertex; callers that need a 1:1 remap (only districts do — terrain
+  // plots have no dependent edges structure) must build it themselves and can only
+  // rely on same-length zipping where isWaterByIndex is false for that face.
+  // edgeSourceIds (optional, parallel to rawPolys/rawIds, see _computeRiverCliffDeltas)
+  // drives river/cliff FACE construction (see _buildRiverCliffFaces) — omit it (or pass
+  // null) to get exactly the old pullback-only behavior with no faces built.
+  _dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, splitKind, isWaterByIndex, edgeSourceIds = null) {
+    const registry = this.gameStateManager.pointRegistry
+    const dcel = new DCEL(registry)
+
+    const dcelFaces = new Array(rawPolys.length).fill(null)
+    const dedupedIdsByFace = new Array(rawPolys.length).fill(null)
+    for (let fi = 0; fi < rawPolys.length; fi++) {
+      const ids = dedupeConsecutiveIds(rawIds[fi])
+      dedupedIdsByFace[fi] = ids
+      if (ids.length < 3) continue
+      try { dcelFaces[fi] = dcel.insertFace(ids, 'pullback', { water: isWaterByIndex(fi) }) }
+      catch (e) { console.warn(`[river-cliff-pullback] insertFace failed for face #${fi}: ${e.message}`) }
+    }
+
+    const deltaByFaceVertex = new Map()
+    const allVertexIds = new Set()
+    for (let fi = 0; fi < rawPolys.length; fi++) {
+      const face = dcelFaces[fi]
+      if (!face) continue
+      const ids = rawIds[fi], polyDeltas = deltas[fi]
+      for (let vi = 0; vi < ids.length; vi++) {
+        deltaByFaceVertex.set(`${face.id},${ids[vi]}`, polyDeltas[vi])
+        allVertexIds.add(ids[vi])
+      }
+    }
+
+    for (const [vertexId, groups] of ambiguous) {
+      if (groups.length !== 2) continue
+      let fan
+      try { fan = dcel.outgoingFan(vertexId) } catch { continue }
+      const waterHe = fan.find(he => dcel.getFace(he.face)?.water === true)
+      if (!waterHe) continue
+      // groupA/groupB must be passed in FAN order (predecessor, successor) — `groups`
+      // itself came from a Set built in arbitrary contribution order (see
+      // _computeRiverCliffDeltas), not winding order, and splicing them in the wrong
+      // order produces a self-crossing "bowtie" notch instead of a clean flat one
+      // (confirmed live: two terrain plots self-intersecting after the cutover, traced
+      // to exactly this). heIn.twin's face is the fan-predecessor's own arm (same
+      // identity splitVertexGeneral itself uses internally) — match that against
+      // `groups` to find which one is actually groupA.
+      const heIn = dcel.getHalfEdge(waterHe.prev)
+      const predFaceId = heIn ? dcel.getHalfEdge(heIn.twin)?.face : null
+      const predGroup = predFaceId != null ? deltaByFaceVertex.get(`${predFaceId},${vertexId}`) : null
+      let groupA = groups.find(g => g === predGroup)
+      let groupB = groups.find(g => g !== groupA)
+      if (!groupA || !groupB) { [groupA, groupB] = groups }   // couldn't determine fan order — fall back rather than skip
+      try { dcel.splitVertexGeneral(vertexId, waterHe, groupA, groupB, splitKind) }
+      catch (e) { console.warn(`[river-mouth] splitVertexGeneral failed at vertex ${vertexId}: ${e.message} — falling back to single-position split`) }
+    }
+
+    for (const vertexId of allVertexIds) {
+      dcel.splitVertexSimple(
+        vertexId,
+        (heOut) => {
+          const d = deltaByFaceVertex.get(`${heOut.face},${vertexId}`)
+          return (!d || (d.dx === 0 && d.dy === 0)) ? null : d
+        },
+        (group) => {
+          const base = dcel.points.get(vertexId)
+          return { x: base.x + group.dx, y: base.y + group.dy, z: base.z ?? 0 }
+        },
+        splitKind
+      )
+    }
+
+    // Tag chains, once every face's boundary is in its final split form (splitting
+    // only ever reassigns `.origin` on an existing half-edge, never reorders/resizes a
+    // face's loop — see DCEL.js — so `hes[i]` here is still "the edge that started as
+    // raw edge i" for every face). Skipped for a face whose ids got collapsed by
+    // dedupeConsecutiveIds (rare near-duplicate-corner case) — the index shift would
+    // misalign edgeSourceIds against the DCEL's own loop; that one small stretch just
+    // falls back to stroke rendering, same as any other face-construction failure.
+    const riverCliffFaces = []
+    if (edgeSourceIds) {
+      for (let fi = 0; fi < rawPolys.length; fi++) {
+        const face = dcelFaces[fi]
+        if (!face || rawIds[fi].length !== dedupedIdsByFace[fi].length) continue
+        let hes
+        try { hes = dcel._faceHalfEdges(face.id) } catch { continue }
+        const sources = edgeSourceIds[fi]
+        for (let i = 0; i < hes.length && i < sources.length; i++) {
+          const sourceEdgeId = sources[i]
+          if (sourceEdgeId == null) continue
+          dcel.tagChain(hes[i].id, sourceEdgeId)
+        }
+      }
+      riverCliffFaces.push(...this._buildRiverCliffFaces(dcel))
+    }
+
+    const results = new Array(rawPolys.length).fill(null)
+    let matchedCount = 0
+    for (let fi = 0; fi < rawPolys.length; fi++) {
+      const face = dcelFaces[fi]
+      if (!face) continue
+      let hes
+      try { hes = dcel._faceHalfEdges(face.id) }
+      catch (e) { console.warn(`[river-cliff-pullback] face #${fi} walk failed: ${e.message}`); continue }
+      const pointIds = hes.map(he => he.origin)
+      const polygon = pointIds.map(id => { const p = registry.get(id); return p ? { x: p.x, y: p.y } : null }).filter(Boolean)
+      const changed = pointIds.length !== rawIds[fi].length || pointIds.some((id, i) => id !== rawIds[fi][i])
+      if (changed) matchedCount++
+      results[fi] = { pointIds, polygon }
+    }
+
+    const riverCliffResults = riverCliffFaces.map(face => {
+      const hes = dcel._faceHalfEdges(face.id)
+      const pointIds = hes.map(he => he.origin)
+      const polygon = pointIds.map(id => { const p = registry.get(id); return p ? { x: p.x, y: p.y } : null }).filter(Boolean)
+      return { id: face.id, sourceEdgeId: face.sourceEdgeId, assignedType: face.assignedType, pointIds, polygon }
+    })
+
+    return { results, matchedCount, riverCliffFaces: riverCliffResults }
+  }
+
+  // Assemble a real DCEL Face for every River/Cliff chain whose half-edges got tagged
+  // above, from the bank chains its land faces' own splitVertexSimple pullback already
+  // produced (see plan "typed-giggling-giraffe" addendum). Every boundary segment
+  // (interior AND the two end-cap transitions) is a freshly-minted half-edge — NOT a
+  // reclaim of the land faces' own void placeholders, even for the interior runs:
+  // splitVertexSimple only ever reassigns `.origin`, it never touches
+  // `_heByDirectedPair`, so a tagged half-edge's `.twin` goes stale (still pointer-
+  // linked to whatever the OTHER bank's own half-edge became, not a void placeholder)
+  // the moment the two banks split independently. insertFace still produces a correct
+  // polygon regardless (it just mints fresh half-edges instead of reclaiming stale
+  // ones) — the loop this hands it is built entirely from the SAME split-vertex ids the
+  // land faces already resolved to, so it's still exactly the gap boundary by
+  // construction, just not literally sharing half-edge identity with the land faces.
+  // Confluence chains (3+ banks meeting, or an internal anomaly — see
+  // _extractRiverBankPaths) are skipped this pass — deliberately deferred pending a fix
+  // to splitVertexGeneral's known self-intersection bug (see plan) — they simply fall
+  // back to stroke rendering, same as any other face-construction failure below.
+  _buildRiverCliffFaces(dcel) {
+    const terrainData = this.gameStateManager.worldTerrainData
+    const built = []
+    const allChains = dcel.getAllChains()
+    console.log(`[river-cliff-face] ${allChains.length} distinct river/cliff chain(s) tagged (${allChains.map(c => `${c.id}:${c.halfEdges.length}`).join(', ')})`)
+    for (const chain of allChains) {
+      const heIds = chain.halfEdges
+      if (heIds.length === 0) continue
+
+      const te = terrainData?.edges?.[chain.id]
+      if (!te) { console.warn(`[river-cliff-face] chain ${chain.id}: no matching worldTerrainData.edges entry — skipped`); continue }
+
+      // A genuine gap in chain-tagging — a fine terrain-plot edge that lies along this
+      // chain but didn't itself pass _matchedRiverCliffEdgeId's tolerance test (common
+      // right at a T-junction, where three coarse regions meet and the fine tessellation
+      // doesn't line up as cleanly with the region-boundary polyline — see
+      // _riverCliffSegments' doc comment) fragments ONE physical bank into two disjoint
+      // paths, not a genuine extra bank. Bridge any such small gaps by merging paths
+      // whose nearest endpoints sit within ordinary matching tolerance BEFORE requiring
+      // exactly 2 — a true third bank (a real confluence) has its endpoints nowhere
+      // near this close to either fragment, so this doesn't risk conflating them.
+      let paths = this._extractRiverBankPaths(dcel, heIds)
+      if (paths && paths.length > 2) paths = this._mergeNearbyPathFragments(dcel, paths, SetupPhase.RIVER_CLIFF_MATCH_TOL)
+      if (!paths || paths.length !== 2) {
+        console.warn(`[river-cliff-face] chain ${chain.id} (${te.assignedType}, ${heIds.length} tagged edge(s)): got ${paths ? paths.length + ' path(s)' : 'an anomaly (branch/closed loop)'}, need exactly 2 — skipped, falls back to stroke`)
+        continue
+      }
+
+      const [bankA, bankB] = paths
+
+      const dist = (idA, idB) => {
+        const a = dcel.points.get(idA), b = dcel.points.get(idB)
+        if (!a || !b) return Infinity
+        return Math.hypot(a.x - b.x, a.y - b.y)
+      }
+      const aStart = bankA[0], aEnd = bankA[bankA.length - 1]
+      const bStart = bankB[0], bEnd = bankB[bankB.length - 1]
+      // Match A's end to whichever of B's ends is nearer, requiring the OTHER pairing
+      // (B's far end to A's start) to also close — confirms a genuine physical terminus
+      // pairing (map boundary today; a water-body/confluence terminus would fail this
+      // and correctly fall through to "skip", since neither bank's walk includes a
+      // shared vertex with the other in that case).
+      const tol = SetupPhase.RIVER_CLIFF_MATCH_TOL * 4
+      let bankBOrdered = null
+      if (dist(aEnd, bStart) < tol && dist(bEnd, aStart) < tol) bankBOrdered = bankB
+      else if (dist(aEnd, bEnd) < tol && dist(bStart, aStart) < tol) bankBOrdered = [...bankB].reverse()
+      if (!bankBOrdered) {
+        console.warn(`[river-cliff-face] chain ${chain.id} (${te.assignedType}): 2 banks found (${bankA.length}/${bankB.length} vertices) but termini don't close within tol=${tol.toFixed(2)} — d(aEnd,bStart)=${dist(aEnd, bStart).toFixed(2)} d(bEnd,aStart)=${dist(bEnd, aStart).toFixed(2)} d(aEnd,bEnd)=${dist(aEnd, bEnd).toFixed(2)} d(bStart,aStart)=${dist(bStart, aStart).toFixed(2)} — skipped`)
+        continue
+      }
+
+      const loop = dedupeConsecutiveIds([...bankA, ...bankBOrdered])
+      if (loop.length < 3) continue
+
+      // insertFace only validates topology (no conflicting directed edges) — it does
+      // NOT check that the loop is a simple polygon. A bank-merge bridging a genuine
+      // gap (see _mergeNearbyPathFragments) could in principle produce a technically-
+      // valid-but-crossed loop; that would silently succeed here and render as exactly
+      // the black-wedge/bad-triangulation artifact this whole feature exists to
+      // eliminate. Reject it the same way _pullBackPolygon already does for the land
+      // faces' own pullback, rather than ship a broken mesh.
+      const loopPoly = loop.map(id => dcel.points.get(id)).filter(Boolean)
+      if (loopPoly.length !== loop.length || this._polygonSelfIntersects(loopPoly)) {
+        console.warn(`[river-cliff-face] chain ${chain.id} (${te.assignedType}): assembled loop self-intersects (or has an unresolved vertex) — skipped, falls back to stroke`)
+        continue
+      }
+
+      try {
+        const face = dcel.insertFace(loop, 'river-cliff-face', { assignedType: te.assignedType, sourceEdgeId: chain.id })
+        built.push(face)
+      } catch (e) {
+        console.warn(`[river-cliff-face] insertFace failed for chain ${chain.id}: ${e.message}`)
+      }
+    }
+    return built
+  }
+
+  // Bridge small gaps in path-extraction (see _buildRiverCliffFaces' call site) by
+  // repeatedly merging whichever pair of fragments has the closest pair of endpoints,
+  // as long as that distance is within tol — stops as soon as no pair qualifies, so a
+  // genuine third bank (whose endpoints are nowhere near this close to either fragment)
+  // is correctly left alone rather than wrongly stitched in. Tries all 4 end-to-end
+  // orientations (a fragment's own direction is arbitrary relative to its neighbor's).
+  _mergeNearbyPathFragments(dcel, paths, tol) {
+    const frags = paths.map(p => [...p])
+    const dist = (idA, idB) => {
+      const a = dcel.points.get(idA), b = dcel.points.get(idB)
+      if (!a || !b) return Infinity
+      return Math.hypot(a.x - b.x, a.y - b.y)
+    }
+    let progress = true
+    while (progress && frags.length > 2) {
+      progress = false
+      let bestI = -1, bestJ = -1, bestD = tol, bestMode = null
+      for (let i = 0; i < frags.length; i++) {
+        for (let j = i + 1; j < frags.length; j++) {
+          const a = frags[i], b = frags[j]
+          const combos = [
+            ['end-start', dist(a[a.length - 1], b[0])],
+            ['end-end', dist(a[a.length - 1], b[b.length - 1])],
+            ['start-start', dist(a[0], b[0])],
+            ['start-end', dist(a[0], b[b.length - 1])],
+          ]
+          for (const [mode, d] of combos) {
+            if (d < bestD) { bestD = d; bestI = i; bestJ = j; bestMode = mode }
+          }
+        }
+      }
+      if (bestI === -1) break
+      const a = frags[bestI], b = frags[bestJ]
+      let combined
+      if (bestMode === 'end-start') combined = [...a, ...b]
+      else if (bestMode === 'end-end') combined = [...a, ...[...b].reverse()]
+      else if (bestMode === 'start-start') combined = [...[...a].reverse(), ...b]
+      else combined = [...b, ...a]   // start-end: b's end meets a's start
+      frags.splice(bestJ, 1)
+      frags.splice(bestI, 1)
+      frags.push(combined)
+      progress = true
+    }
+    return frags
+  }
+
+  // Partition a chain's ENTIRE tagged half-edge set (both banks together — no
+  // pre-classification) into disjoint simple paths, purely by vertex connectivity:
+  // each half-edge contributes the step he.origin -> he.next.origin (its own current,
+  // post-split endpoints — the next vertex around the SAME land face's own loop, which
+  // for a lone matched edge is just its other endpoint; for a face with two consecutive
+  // matched edges, e.g. a bend, this naturally chains both without extra work). NOT via
+  // `.twin` — see _buildRiverCliffFaces' doc comment on why that pointer is stale here.
+  //
+  // This is deliberately NOT geometric (no axis/direction heuristic): bank-A's split
+  // vertices are NEVER shared with bank-B's (different push-group -> different
+  // getOrCreateSplitVertex id, even at the same original baseId — see
+  // GroundPointRegistry.getOrCreateSplit's reference-identity memoization), so the
+  // combined graph across BOTH banks' half-edges already decomposes into exactly one
+  // connected simple path per physical bank, with zero geometric reasoning needed —
+  // robust to arbitrarily winding/zigzagging chains, unlike an earlier version of this
+  // method that classified banks via a single fixed chain-axis cross-product and failed
+  // on sharp back-to-back bends (confirmed live: most chains fell back to stroke
+  // rendering instead of building a face).
+  //
+  // Returns an array of paths (each an ordered vertex-id array) — length 2 for a plain
+  // 2-bank stretch, 3+ at a confluence (not handled by the caller this pass), or null
+  // if any vertex has out-degree >1 (a genuine anomaly, not just "wrong bucket" — with
+  // banks never sharing vertices, this shouldn't happen for a well-formed chain) or if
+  // every vertex has an incoming edge (a closed loop, e.g. a river encircling an
+  // island — not handled this pass).
+  _extractRiverBankPaths(dcel, heIds) {
+    const next = new Map()
+    const hasIncoming = new Set()
+    for (const heId of heIds) {
+      const he = dcel.getHalfEdge(heId)
+      const nextHe = he && dcel.getHalfEdge(he.next)
+      if (!he || !nextHe) return null
+      if (next.has(he.origin)) return null   // genuine branch — bail on the whole chain
+      next.set(he.origin, nextHe.origin)
+      hasIncoming.add(nextHe.origin)
+    }
+
+    const starts = [...next.keys()].filter(id => !hasIncoming.has(id))
+    if (starts.length === 0) return null   // every vertex has incoming — closed loop(s), not handled this pass
+
+    const paths = []
+    let totalSteps = 0
+    const guard = next.size + 1
+    for (const start of starts) {
+      const path = [start]
+      let cur = start
+      for (let i = 0; i < guard; i++) {
+        const dest = next.get(cur)
+        if (dest == null) break
+        path.push(dest)
+        cur = dest
+      }
+      totalSteps += path.length - 1
+      paths.push(path)
+    }
+    return totalSteps === next.size ? paths : null   // every edge accounted for exactly once
+  }
+
+  // A district's boundary is always a direct copy of its originating terrain plot's own
+  // pointIds (see generateCityDistrictData / promoteTerrainPlotToDistrict — both copy
+  // directly, never coordinate-matched). This used to independently RE-DERIVE the same
+  // river/cliff pullback a second time — its own half-width (0.35 vs terrain plots' then-
+  // 0.25), its own _computeRiverCliffDeltas call producing its own {dx,dy} group objects
+  // — meaning even a corner shared byte-for-byte with the adjacent world-terrain plot
+  // resolved to a DIFFERENT split point, at a DIFFERENT distance, than that plot's own
+  // pullback. Confirmed live as a persistent black seam between a district's outer edge
+  // and adjacent Lake/Sea terrain. Districts now simply ADOPT whatever their originating
+  // terrain plot's own pullback (_applyRiverCliffPullbackToTerrainPlots, run first, right
+  // below) already resolved — making a district's inner boundary and the world terrain's
+  // fine-cell boundary the SAME geometry by construction, not two independently-tuned
+  // heuristics landing close enough. This also removes the redundant double-computation
+  // this session's plan Grounding findings flagged from the start.
+  _applyRiverCliffPullback(districts) {
+    this._applyRiverCliffPullbackToTerrainPlots()
+
+    const wt = this.gameStateManager.worldTerrainData
+    const plotById = new Map((wt?.terrainPlots || []).map(p => [p.id, p]))
+
+    for (const d of districts) {
+      if (!d._rawPolygon) d._rawPolygon = d.polygon.map(v => ({ x: v.x, y: v.y }))
+      if (!d._rawPointIds) d._rawPointIds = [...d.pointIds]
+    }
+
+    const remapByDistrict = new Map()
+    let matchedDistrictCount = 0
+    for (const d of districts) {
+      const originId = d.originPlotId ?? d.promotedFromPlotId
+      const plot = originId != null ? plotById.get(originId) : null
+      if (!plot || plot.pointIds.length !== d._rawPointIds.length) {
+        console.warn(`[river-cliff-pullback] district ${d.id}: no matching originating terrain plot (origin=${originId}) — pullback skipped for it this pass`)
+        continue
+      }
+      const changed = plot.pointIds.some((id, i) => id !== d._rawPointIds[i])
+      if (changed) matchedDistrictCount++
+      d.pointIds = [...plot.pointIds]
+      d.polygon = plot.polygon.map(v => ({ x: v.x, y: v.y }))
+      const remap = new Map()
+      for (let i = 0; i < d._rawPointIds.length; i++) remap.set(d._rawPointIds[i], d.pointIds[i])
+      remapByDistrict.set(d.id, remap)
+    }
+
+    // Re-derive every city edge's pointIds from its owning district's remap (see doc
+    // comment above) instead of matching by coordinate.
+    const cityData = this.gameStateManager.cityDistrictData
+    for (const edge of Object.values(cityData?.edges || {})) {
+      if (!edge._rawPointIds) edge._rawPointIds = [...edge.pointIds]
+      const remap = remapByDistrict.get(edge.districtA)
+      if (!remap) continue
+      edge.pointIds = edge._rawPointIds.map(id => remap.has(id) ? remap.get(id) : id)
+    }
+
+    this._rebuildEdgePoints(cityData)
+
+    console.log(`[river-cliff-pullback] district(s) adopted from terrain-plot pullback: ${matchedDistrictCount}/${districts.length}`)
+  }
+
+  // Rebuild cityData.edgePoints as a pure materialized view: every point id referenced
+  // by any district or edge, resolved against the live registry. Purely a transitional
+  // convenience for consumers not yet reading gameStateManager.pointRegistry directly
+  // (see plan Stage 5/6) — it holds no state of its own and is safe to discard and
+  // recompute on every call.
+  _rebuildEdgePoints(cityData) {
+    if (!cityData) return
+    const registry = this.gameStateManager.pointRegistry
+    const ids = new Set()
+    for (const e of Object.values(cityData.edges || {})) for (const id of (e.pointIds || [])) ids.add(id)
+    for (const d of (cityData.districts || [])) for (const id of (d.pointIds || [])) ids.add(id)
+    const points = []
+    for (const id of ids) {
+      const p = registry.get(id)
+      if (p) points.push({ id, x: p.x, y: p.y })
+    }
+    cityData.edgePoints = points
+  }
+
+  // DCEL Step 3 (plan "typed-giggling-giraffe"): diagnostic-only parity check between
+  // the shipping flat-array pullback path (getOrCreateSplit + a private pointIds/polygon
+  // array per Surface) and the new DCEL vertex-split path (splitVertexSimple's
+  // materialization: dcel.getOrCreateSplitVertex + reassigning a half-edge's origin).
+  // Both consume the EXACT SAME already-computed `deltas` (from _computeRiverCliffDeltas,
+  // unchanged) so this only tests whether the two MATERIALIZATION strategies agree, not
+  // whether the pullback math itself agrees (that's shared, by construction).
+  //
+  // Builds a throwaway DCEL over a throwaway registry seeded from a snapshot of the
+  // real registry's durable 'terrain' points (same ids, so `rawIds` resolves identically
+  // in both), inserts every face, materializes the same deltas, and diffs the resolved
+  // polygon against `faces[i].polygon` (already written by the flat-array path). Never
+  // mutates real game state — the throwaway registry/DCEL are discarded after logging.
+  // Per the plan: only delete the flat-array path once this stays clean on real cities.
+  _dcelParityCheck(kind, faces, rawPolys, rawIds, deltas, splitKind) {
+    const registry = this.gameStateManager.pointRegistry
+    const parityRegistry = new GroundPointRegistry(registry.toJSON().filter(p => p.kind === 'terrain'))
+    const dcel = new DCEL(parityRegistry)
+
+    const dcelFaces = new Array(rawPolys.length).fill(null)
+    for (let i = 0; i < rawPolys.length; i++) {
+      const ids = dedupeConsecutiveIds(rawIds[i])
+      if (ids.length < 3 || ids.length !== rawIds[i].length) {
+        // A dedup here means this face has a genuinely degenerate (near-zero-length)
+        // edge in its own raw geometry — not something this parity check can compare
+        // apples-to-apples against the flat-array path's own (undeduped) output, so
+        // skip it rather than report a false mismatch.
+        continue
+      }
+      try { dcelFaces[i] = dcel.insertFace(ids, kind, {}) }
+      catch (e) { console.warn(`[dcel-parity] ${kind} #${i}: insertFace failed — ${e.message}`) }
+    }
+
+    for (let i = 0; i < rawPolys.length; i++) {
+      const face = dcelFaces[i]
+      if (!face) continue
+      const poly = rawPolys[i], ids = rawIds[i], polyDeltas = deltas[i]
+      let hes
+      try { hes = dcel._faceHalfEdges(face.id) } catch (e) { console.warn(`[dcel-parity] ${kind} #${i}: face walk failed — ${e.message}`); continue }
+      for (let j = 0; j < ids.length; j++) {
+        const d0 = polyDeltas[j]
+        if (d0.dx === 0 && d0.dy === 0) continue
+        const split = dcel.getOrCreateSplitVertex(ids[j], d0, poly[j].x + d0.dx, poly[j].y + d0.dy, 0, splitKind)
+        hes[j].origin = split.id
+      }
+    }
+
+    let mismatches = 0
+    for (let i = 0; i < rawPolys.length; i++) {
+      const face = dcelFaces[i]
+      if (!face) continue
+      let dcelPoly
+      try { dcelPoly = dcel.resolveFacePolygon(face.id) } catch (e) { console.warn(`[dcel-parity] ${kind} #${i}: resolve failed — ${e.message}`); mismatches++; continue }
+      const flatPoly = faces[i].polygon
+      if (dcelPoly.length !== flatPoly.length) {
+        mismatches++
+        console.warn(`[dcel-parity] ${kind} #${i}: vertex count mismatch (dcel=${dcelPoly.length}, flat=${flatPoly.length})`)
+        continue
+      }
+      for (let j = 0; j < dcelPoly.length; j++) {
+        if (Math.abs(dcelPoly[j].x - flatPoly[j].x) > 1e-9 || Math.abs(dcelPoly[j].y - flatPoly[j].y) > 1e-9) {
+          mismatches++
+          console.warn(`[dcel-parity] ${kind} #${i} vertex ${j}: dcel=(${dcelPoly[j].x.toFixed(6)},${dcelPoly[j].y.toFixed(6)}) flat=(${flatPoly[j].x.toFixed(6)},${flatPoly[j].y.toFixed(6)})`)
+          break
+        }
+      }
+    }
+    if (mismatches > 0) console.warn(`[dcel-parity] ${kind}: ${mismatches}/${faces.length} face(s) diverged from the flat-array path`)
+    return mismatches
+  }
+
+  // Same pullback, applied to the RAW world-terrain plot cells (worldTerrainData.
+  // terrainPlots) — the fine cells TerrainRenderer draws directly outside the city (and
+  // scatters features like forest trees onto, via cell.polygon). Without this, a plot's
+  // polygon reaches all the way to the river/cliff centreline the same way a district's
+  // did before _applyRiverCliffPullback existed, so trees/ground render past the bank.
+  // Point-splitting (see _applyRiverCliffPullback's doc comment) applies identically
+  // here: two neighbouring cells sharing a raw corner (a real shared registry point id
+  // since TerrainVoronoiGenerator Step 4/5.5) resolve to the literal same split id when
+  // they move together, and independently otherwise — by construction, no snapping pass
+  // needed. Terrain plots have no dependent "edges" data structure of their own to keep
+  // in sync (world-terrain River/Cliff edges are the input to this pullback, read via
+  // _riverCliffSegments() from their own untouched centreline points — they are never
+  // themselves pulled back).
+  //
+  // Shared by both the terrain-plot and district pullback: given a set of RAW (pristine)
+  // polygons and the river/cliff segments to pull back from, returns the FINAL per-vertex
+  // {dx,dy} displacement for every polygon/vertex, guaranteeing that any two polygons
+  // sharing a raw vertex converge on the identical final position.
+  //
+  // Pass 1: every polygon computes its own miter push independently (cheap — no clipping
+  // library, never throws, never produces a degenerate ring). Every non-zero per-vertex
+  // displacement becomes a "contribution" recorded at that vertex's PRISTINE coordinate.
+  //
+  // Contributions at the same coordinate are grouped by DIRECTION, not just coordinate,
+  // before averaging. Two neighbours sharing a corner on the SAME bank push in roughly
+  // the same direction (averaging smooths their disagreement — this is what an
+  // asymmetric-complexity corner between two ordinary land cells needed). Two neighbours
+  // directly ACROSS a river share a corner ON the centreline but need to move in OPPOSITE
+  // directions, each away from it into its own bank — averaging -0.25 and +0.25 gives
+  // exactly 0, silently cancelling the whole pullback (confirmed: a minimal two-square
+  // repro with a river between them moved nothing). A simple greedy dot-product split
+  // (>=0 joins the group, <0 starts a new one) keeps opposite-bank contributions separate
+  // while still averaging same-bank ones.
+  //
+  // Pass 2: every polygon's FINAL delta per vertex is looked up by POINT ID, not by
+  // whether that specific polygon's own edges independently matched — and not by
+  // coordinate proximity either (the pre-Point/Surface-refactor version of this grouped
+  // by a rounded coordinate key, which needed _snapSharedVertices run first as insurance
+  // against float noise between independently-computed copies of "the same" corner; ids
+  // are exact, by construction, so that whole apparatus is gone). This is what a
+  // vertex-only match test structurally can't do on its own: a Lake/Sea cell's shoreline
+  // edge is deliberately de-typed away from River (see assignTerrainToRegion) so it never
+  // matches on its own, but its land neighbour's edge — which still touches the river's
+  // other, still-typed segments at that same shared vertex — does, and gets pushed. Under
+  // a "only apply MY OWN match" rule the Lake cell never follows, leaving a gap where the
+  // land retreated but the water didn't. Looking up by id means a polygon with NO
+  // contribution of its own still adopts whatever its neighbours computed there — and,
+  // critically, callers materializing split registry points from this output (see
+  // GroundPointRegistry.getOrCreateSplit) can key directly off the returned {dx,dy}
+  // object's own identity as the "side", since every vertex that resolved to the same
+  // group here IS the same object, by construction. If a vertex has multiple
+  // direction-groups (rare — a genuine multi-bank junction) and this polygon has no delta
+  // of its own to disambiguate which side it's on, pick whichever group's direction
+  // points furthest into where this polygon's own centroid already is — i.e. the push
+  // that's consistent with which side of the river this polygon is on.
+  //
+  // River-mouth/Sea-Lake junction handling: a vertex with NO own contribution (a Lake/Sea
+  // cell whose own shoreline edge is deliberately de-typed, per the comment above) that
+  // sees >=2 direction-groups from its neighbours is genuinely ambiguous — the fallback
+  // below still picks ONE group (whichever push is most "in front of" this polygon's own
+  // centroid) so a caller that only reads `deltas` gets the same lossy single-position
+  // behavior as before this comment. `ambiguous` (Map<vertexId, groups[]>) is the
+  // additive escape hatch: it records every such vertex's full group list so a caller
+  // that CAN represent a topology change (see DCEL.splitVertexGeneral) can give the
+  // water Surface an extra vertex — one flush with each bank — instead of gapping
+  // against whichever bank the heuristic didn't pick.
+  // edgeSourceIds (returned, parallel to rawPolygons/deltas) is per-polygon-per-edge:
+  // edgeSourceIds[pi][i] is the sourceEdgeId (worldTerrainData.edges key) edge i of
+  // polygon pi lies along, or null. Passed straight through from _pullBackPolygon —
+  // consumed by _buildRiverCliffFaces to tag split half-edges with their physical
+  // river/cliff chain.
+  _computeRiverCliffDeltas(rawPolygons, rawPointIdArrays, riverCliffSegs, halfWidth) {
+    const zeroDeltasFor = (n) => new Array(n).fill(null).map(() => ({ dx: 0, dy: 0 }))
+    if (!riverCliffSegs.length) {
+      return { deltas: rawPolygons.map(p => zeroDeltasFor(p.length)), anyMatch: rawPolygons.map(() => false), ambiguous: new Map(), edgeSourceIds: rawPolygons.map(p => new Array(p.length).fill(null)) }
+    }
+
+    const contribsById = new Map()   // point id -> [{ dx, dy, group }]
+    const perPolyContribs = []       // parallel to rawPolygons: per-vertex contribution ref or null
+    const anyMatch = []
+    const edgeSourceIds = []         // parallel to rawPolygons: per-edge sourceEdgeId or null
+    for (let pi = 0; pi < rawPolygons.length; pi++) {
+      const poly = rawPolygons[pi]
+      const ids = rawPointIdArrays[pi]
+      const { deltas, anyMatch: matched, edgeMatched } = this._pullBackPolygon(poly, riverCliffSegs, halfWidth)
+      anyMatch.push(matched)
+      edgeSourceIds.push(edgeMatched)
+      const contribs = new Array(poly.length).fill(null)
+      perPolyContribs.push(contribs)
+      for (let i = 0; i < poly.length; i++) {
+        if (deltas[i].dx === 0 && deltas[i].dy === 0) continue
+        const contrib = { dx: deltas[i].dx, dy: deltas[i].dy, group: null }
+        contribs[i] = contrib
+        const id = ids[i]
+        if (!contribsById.has(id)) contribsById.set(id, [])
+        contribsById.get(id).push(contrib)
+      }
+    }
+
+    for (const list of contribsById.values()) {
+      const groups = []
+      for (const c of list) {
+        const g = groups.find(g => g.members[0].dx * c.dx + g.members[0].dy * c.dy >= 0)
+        if (g) g.members.push(c); else groups.push({ members: [c] })
+      }
+      for (const g of groups) {
+        let sx = 0, sy = 0
+        for (const m of g.members) { sx += m.dx; sy += m.dy }
+        g.avg = { dx: sx / g.members.length, dy: sy / g.members.length }
+        for (const m of g.members) m.group = g.avg
+      }
+    }
+
+    const ambiguous = new Map()
+    const deltas = rawPolygons.map((poly, pi) => {
+      const ids = rawPointIdArrays[pi]
+      const contribs = perPolyContribs[pi]
+      let ccx = 0, ccy = 0
+      for (const v of poly) { ccx += v.x; ccy += v.y }
+      ccx /= poly.length; ccy /= poly.length
+      return poly.map((v, i) => {
+        if (contribs[i]) return contribs[i].group
+        const list = contribsById.get(ids[i])
+        if (!list?.length) return { dx: 0, dy: 0 }
+        const groups = [...new Set(list.map(c => c.group))]
+        if (groups.length === 1) return groups[0]
+        if (!ambiguous.has(ids[i])) ambiguous.set(ids[i], groups)
+        const toCentroid = { x: ccx - v.x, y: ccy - v.y }
+        let best = groups[0], bestDot = -Infinity
+        for (const g of groups) {
+          const dot = g.dx * toCentroid.x + g.dy * toCentroid.y
+          if (dot > bestDot) { bestDot = dot; best = g }
+        }
+        return best
+      })
+    })
+    return { deltas, anyMatch, ambiguous, edgeSourceIds }
+  }
+
+  _applyRiverCliffPullbackToTerrainPlots() {
+    // Was 0.25 ("purely visual/feature-placement — no block-tracing slop to buffer
+    // against"), back when districts computed their OWN independent 0.35 pullback. Now
+    // that _applyRiverCliffPullback adopts districts' geometry directly from here (see
+    // its doc comment), this half-width is what districts get too — 0.35 keeps the same
+    // block/plot-tracing clearance margin that value was originally tuned for.
+    const RIVER_CLIFF_HALF_WIDTH = 0.35
+    const riverCliffSegs = this._riverCliffSegments()
+    const terrainPlots = this.gameStateManager.worldTerrainData?.terrainPlots || []
+    const registry = this.gameStateManager.pointRegistry
+
+    // See _applyRiverCliffPullback's matching comment — split points are ephemeral and
+    // must be wiped before this pass mints its own, or the registry leaks a full set of
+    // orphaned points every call.
+    registry.clearKind('terrain-split')
+
+    for (const cell of terrainPlots) {
+      if (!cell._rawPolygon) cell._rawPolygon = cell.polygon.map(v => ({ x: v.x, y: v.y }))
+      if (!cell._rawPointIds) cell._rawPointIds = [...cell.pointIds]
+    }
+
+    const rawPolys = terrainPlots.map(c => c._rawPolygon)
+    const rawIds = terrainPlots.map(c => c._rawPointIds)
+    const { deltas, ambiguous, edgeSourceIds } = this._computeRiverCliffDeltas(rawPolys, rawIds, riverCliffSegs, RIVER_CLIFF_HALF_WIDTH)
+
+    // Terrain plots genuinely can be Lake/Sea, where the river-mouth/multi-bank
+    // confluence case (splitVertexGeneral) would matter — but that path found a real,
+    // not-yet-fully-fixed self-intersection bug during live testing (a fan-ordering
+    // issue was found and fixed, then a second, distinct failure surfaced immediately
+    // after). Terrain-phase geometry should stay on the proven, never-crashed
+    // single-position heuristic until splitVertexGeneral is solid — deliberately
+    // disabled here (isWaterByIndex always false) rather than risking a live
+    // self-intersection for an edge-case fix that isn't ready. Re-enable by restoring
+    // the assignedType check once splitVertexGeneral's remaining bug is found and fixed.
+    const isWaterByIndex = () => false
+    const { results, matchedCount, riverCliffFaces } = this._dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, 'terrain-split', isWaterByIndex, edgeSourceIds)
+
+    for (let ci = 0; ci < terrainPlots.length; ci++) {
+      const result = results[ci]
+      if (!result) continue
+      terrainPlots[ci].pointIds = result.pointIds
+      terrainPlots[ci].polygon = result.polygon
+    }
+
+    // Real, gap-free filled Faces (see plan "typed-giggling-giraffe" addendum) for
+    // every River/Cliff stretch that isn't a confluence — the client renders these like
+    // Lake/Sea (TerrainRenderer.buildRegionMesh) instead of stroking a polyline over the
+    // gap, which is what produced the black-spike mismatch bugs. A chain that couldn't
+    // be built (confluence, or any other skip in _buildRiverCliffFaces) just isn't in
+    // this array and falls back to stroke rendering, same as before this change.
+    if (this.gameStateManager.worldTerrainData) this.gameStateManager.worldTerrainData.riverCliffFaces = riverCliffFaces
+
+    console.log(`[river-cliff-pullback] ${riverCliffSegs.length} river/cliff terrain segments, ${matchedCount}/${terrainPlots.length} terrain plot(s) pulled back (miter, junction-averaged), ${riverCliffFaces.length} river/cliff face(s) built`)
+  }
+
+  // Recompute every terrain plot's polygon (and any district's, since a district's
+  // polygon is just a copy of its originating terrain-plot cell's — see
+  // generateCityDistrictData/promoteTerrainPlotToDistrict) from scratch, straight from
+  // the seed points — which nothing ever mutates, unlike the polygon itself. A Voronoi
+  // cell's shape is fully determined by its seed relative to every other seed, so this
+  // reproduces the true original tessellation exactly, regardless of how many times
+  // (or how badly) the stored polygon has since been clipped/pushed.
+  //
+  // This exists to UNDO a real regression: an earlier version of the server's load
+  // sequence cleared _rawPolygon on every restart and re-ran the river/cliff pullback
+  // against whatever polygon happened to be currently saved — on a dev box restarting
+  // on every file save, that compounded a little more insetting each time, eventually
+  // clipping affected cells down to nothing (rendering as empty/black). Seed points were
+  // never touched by any of that, so recomputing from them is a full, clean recovery,
+  // not a patch on top of the corruption. Safe to call unconditionally on every load —
+  // it always derives the same correct answer from the same seeds, no compounding.
+  // Point/Surface note: computeVoronoiCellsHalfPlane is a DIFFERENT Voronoi
+  // implementation from TerrainVoronoiGenerator, with no vertex-object relationship to
+  // the registry's existing 'terrain' points at all — recomputing .polygon here without
+  // also re-deriving .pointIds would leave pointIds[i] and polygon[i] pointing at
+  // completely different corners (confirmed: an unrelated-vertex-order mismatch, not a
+  // small drift), so the NEXT pullback pass would compute deltas against the wrong
+  // baseline and scramble affected plots into self-intersecting garbage. Every cell's
+  // pointIds are re-derived via registry.mintDeduped(..., reuseExisting: true), which
+  // matches each recovered vertex against the EXISTING 'terrain' point nearest it (and
+  // self-heals that point's stored x/y to the freshly-recovered — known-correct —
+  // position) rather than minting an unrelated fresh set, so ids stay durable across
+  // recovery instead of being silently orphaned. Terrain plots are processed BEFORE
+  // districts specifically so a district's corners resolve against its own originating
+  // plot's just-refreshed points and land on the identical ids, not a coincidentally
+  // close new set.
+  _recoverGeometryFromSeeds() {
+    const wt = this.gameStateManager.worldTerrainData
+    const cells = wt?.terrainPlots
+    if (!cells?.length) return
+    const registry = this.gameStateManager.pointRegistry
+    const RECOVERY_TOL = 0.05
+    const W = wt.worldSize ?? 50
+    const worldRect = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: W }, { x: 0, y: W }]
+    const seeds = cells.map(c => c.seedPoint)
+    const recomputed = computeVoronoiCellsHalfPlane(seeds, worldRect)
+    const keyOf = (p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
+    const polyBySeedKey = new Map(recomputed.map(r => [keyOf(r.seedPoint), r.polygon]))
+    const signedArea = (poly) => {
+      let a = 0
+      for (let i = 0; i < poly.length; i++) { const p = poly[i], q = poly[(i + 1) % poly.length]; a += p.x * q.y - q.x * p.y }
+      return a
+    }
+    // computeVoronoiCellsHalfPlane always winds its output opposite to a fresh
+    // TerrainVoronoiGenerator polygon — confirmed: every cell from a brand-new
+    // generate() has NEGATIVE signed area (150/150, deterministic, never varies).
+    // THREE.js backface-culls by default, so a reversed-winding polygon's triangles all
+    // face away from the top-down camera: the mesh still builds without error (matching
+    // the "Rendered 150/150" log), it's just invisible. Comparing each recomputed ring
+    // against whatever was already stored in cell.polygon (an earlier attempt at this)
+    // is unreliable once a save has been through a recovery pass from BEFORE this fix
+    // existed — that earlier bad pass already flipped some cells, so "matches current
+    // storage" preserves their corruption instead of correcting it (confirmed: one real
+    // save had 142 correct + 8 still-flipped cells after that approach). Coercing to the
+    // fixed, known-correct sign directly fixes every cell regardless of history.
+    const coerceWinding = (poly) => (signedArea(poly) > 0 ? [...poly].reverse() : poly)
+
+    let fixedCells = 0
+    for (const c of cells) {
+      const poly = polyBySeedKey.get(keyOf(c.seedPoint))
+      if (!poly) continue
+      c.polygon = coerceWinding(poly)
+      c.pointIds = registry.mintDeduped(c.polygon, 'terrain', RECOVERY_TOL, { reuseExisting: true })
+      delete c._rawPolygon
+      delete c._rawPointIds
+      fixedCells++
+    }
+
+    let fixedDistricts = 0
+    const cityData = this.gameStateManager.cityDistrictData
+    for (const d of (cityData?.districts || [])) {
+      if (!d.seedPoint) continue
+      const poly = polyBySeedKey.get(keyOf(d.seedPoint))
+      if (!poly) continue
+      // Re-anchor any cityData.edgePoints that were part of this district's OLD polygon
+      // (however corrupted) to the corresponding vertex of its restored true polygon.
+      // computeVoronoiCellsHalfPlane's cell has the same vertex COUNT as the original
+      // (verified) but starts from a different vertex/winding, so index-for-index
+      // mapping isn't valid directly — find the rotation (and, defensively, reflection)
+      // of `poly` that best lines up with the OLD polygon's vertex sequence first. A
+      // per-point nearest-distance match (the previous approach) breaks once corruption
+      // exceeds its distance threshold; this only needs the overall cyclic SHAPE to
+      // still resemble the original; a uniform inward push preserves that even when the
+      // absolute drift is large.
+      const oldPoly = d._rawPolygon || d.polygon
+      if (cityData?.edgePoints && oldPoly?.length === poly.length && oldPoly.length >= 3) {
+        const n = poly.length
+        let bestRot = 0, bestFlip = 1, bestScore = Infinity
+        for (const flip of [1, -1]) {
+          for (let r = 0; r < n; r++) {
+            let score = 0
+            for (let i = 0; i < n; i++) {
+              const j = flip === 1 ? (i + r) % n : (((r - i) % n) + n) % n
+              const dx = oldPoly[i].x - poly[j].x, dy = oldPoly[i].y - poly[j].y
+              score += dx * dx + dy * dy
+            }
+            if (score < bestScore) { bestScore = score; bestRot = r; bestFlip = flip }
+          }
+        }
+        const mappedIndex = (i) => bestFlip === 1 ? (i + bestRot) % n : (((bestRot - i) % n) + n) % n
+
+        for (const ep of cityData.edgePoints) {
+          let bestI = -1, bestD2 = Infinity
+          for (let i = 0; i < oldPoly.length; i++) {
+            const dx = ep.x - oldPoly[i].x, dy = ep.y - oldPoly[i].y
+            const d2 = dx * dx + dy * dy
+            if (d2 < bestD2) { bestD2 = d2; bestI = i }
+          }
+          // Only re-anchor points that were actually near THIS district's boundary
+          // (some edgePoints belong to other districts entirely) — half the district's
+          // own shortest edge is a reasonable "could plausibly be one of my vertices,
+          // however corrupted" cutoff.
+          if (bestI < 0) continue
+          let minEdge = Infinity
+          for (let i = 0; i < oldPoly.length; i++) {
+            const a = oldPoly[i], b = oldPoly[(i + 1) % oldPoly.length]
+            minEdge = Math.min(minEdge, Math.hypot(b.x - a.x, b.y - a.y))
+          }
+          if (bestD2 > (minEdge * 2) ** 2) continue
+          const j = mappedIndex(bestI)
+          ep.x = poly[j].x; ep.y = poly[j].y
+          delete ep._rawX; delete ep._rawY
+        }
+      }
+      d.polygon = coerceWinding(poly)
+      // Terrain plot cells were already processed above, in the same registry — this
+      // resolves against their just-refreshed 'terrain' points, so a district lands on
+      // the identical ids as its originating plot, not a coincidentally close new set.
+      d.pointIds = registry.mintDeduped(d.polygon, 'terrain', RECOVERY_TOL, { reuseExisting: true })
+      delete d._rawPolygon
+      delete d._rawPointIds
+      fixedDistricts++
+    }
+    // Also drop cached edge raw-id snapshots so the next pullback re-captures fresh from
+    // the (now-reconciled) district pointIds above, instead of remapping through a
+    // pre-recovery snapshot that may reference an id mintDeduped just merged away.
+    for (const edge of Object.values(cityData?.edges || {})) delete edge._rawPointIds
+
+    // Re-resolve every .polygon from the registry AFTER every cell and district has
+    // gone through mintDeduped above — not before. mintDeduped's "snap the reused point
+    // to this call's value" self-healing (see GroundPointRegistry.js) means a shared
+    // corner's FINAL registry position is whichever cell/district happened to process it
+    // LAST in the loops above; a cell processed earlier keeps its OWN independently-
+    // computed .polygon value (computeVoronoiCellsHalfPlane's near-cocircular numerical
+    // noise, ~0.01-0.05 units — the same class of discrepancy _recoverGeometryFromSeeds'
+    // own doc comment already describes) unless re-resolved here, meaning it would
+    // structurally diverge from what its own pointIds now resolve to. Confirmed via the
+    // DCEL validation check below (which reads the registry, not this stale .polygon) —
+    // this pass is what makes .pointIds and .polygon consistent by construction rather
+    // than "close enough", matching every other Surface in this refactor.
+    for (const c of cells) if (c.pointIds) c.polygon = registry.resolve(c.pointIds).map(p => ({ x: p.x, y: p.y }))
+    for (const d of (cityData?.districts || [])) if (d.pointIds) d.polygon = registry.resolve(d.pointIds).map(p => ({ x: p.x, y: p.y }))
+
+    // DCEL Step 5 validation (see plan "typed-giggling-giraffe", migration step 5):
+    // this function is the CONFIRMED root cause of a severe corruption bug earlier this
+    // session (recovered polygons whose ids no longer matched their coordinates,
+    // scrambling affected plots into self-intersecting garbage on the next pullback
+    // pass) — build a throwaway DCEL from every just-reconciled pointIds array as an
+    // extra structural safety net beyond the existing mismatch checks: insertFace must
+    // succeed (no degenerate/self-crossing edge) and the DCEL's own resolved polygon
+    // must match .polygon exactly. Diagnostic only, never mutates real game state.
+    this._dcelValidateRecovery('terrain-plot', cells)
+    this._dcelValidateRecovery('district', cityData?.districts || [])
+
+    console.log(`[terrain-recovery] recomputed ${fixedCells}/${cells.length} terrain plot polygon(s), ${fixedDistricts} district polygon(s) from seed points`)
+  }
+
+  // See _recoverGeometryFromSeeds' call site for context. `faces` must already have
+  // fresh, mutually-consistent .polygon/.pointIds (from mintDeduped(reuseExisting:true))
+  // — this only checks that those ids form a genuinely valid, self-consistent planar
+  // structure (every insertFace succeeds, every resolved polygon matches .polygon
+  // exactly), not whether the recovery itself was geometrically correct.
+  _dcelValidateRecovery(kind, faces) {
+    const registry = this.gameStateManager.pointRegistry
+    const parityRegistry = new GroundPointRegistry(registry.toJSON().filter(p => p.kind === 'terrain'))
+    const dcel = new DCEL(parityRegistry)
+    let bad = 0
+    for (const f of faces) {
+      if (!f.pointIds || !f.polygon) continue
+      const ids = dedupeConsecutiveIds(f.pointIds)
+      if (ids.length < 3 || ids.length !== f.pointIds.length) continue   // genuinely degenerate own geometry, not a recovery bug
+      let face
+      try { face = dcel.insertFace(ids, kind, {}) }
+      catch (e) { bad++; console.warn(`[dcel-recovery-check] ${kind} ${f.id}: insertFace failed — ${e.message}`); continue }
+      let resolved
+      try { resolved = dcel.resolveFacePolygon(face.id) } catch (e) { bad++; console.warn(`[dcel-recovery-check] ${kind} ${f.id}: resolve failed — ${e.message}`); continue }
+      if (resolved.length !== f.polygon.length) { bad++; console.warn(`[dcel-recovery-check] ${kind} ${f.id}: vertex count mismatch`); continue }
+      for (let i = 0; i < resolved.length; i++) {
+        if (Math.abs(resolved[i].x - f.polygon[i].x) > 1e-6 || Math.abs(resolved[i].y - f.polygon[i].y) > 1e-6) {
+          bad++
+          console.warn(`[dcel-recovery-check] ${kind} ${f.id} vertex ${i}: pointIds resolve to (${resolved[i].x.toFixed(6)},${resolved[i].y.toFixed(6)}) but .polygon says (${f.polygon[i].x.toFixed(6)},${f.polygon[i].y.toFixed(6)})`)
+          break
+        }
+      }
+    }
+    if (bad > 0) console.warn(`[dcel-recovery-check] ${kind}: ${bad}/${faces.length} face(s) have inconsistent pointIds/polygon after recovery`)
+    return bad
   }
 
   finishTerrain() {
@@ -1134,6 +2294,11 @@ export default class SetupPhase {
     }
     this.currentStep = 'CitySubdivision'
     this.log.push('Terrain placement complete. Moving to city subdivision.')
+    // The Terrain→CitySubdivision transition, exactly when River/Cliff assignment is
+    // finalized — pull every district back now rather than leaving them at their raw
+    // (never-pulled-back) shape until some later, unrelated action happens to call
+    // generateForLocked first.
+    this.generateForLocked()
     return { ok: true, log: this.log }
   }
 
@@ -1145,6 +2310,13 @@ export default class SetupPhase {
     const t0 = performance.now()
     const cityData = this.gameStateManager.cityDistrictData
     if (!cityData?.districts?.length) return
+    // Pull back EVERY district — typed or not — from any river/cliff, unconditionally.
+    // This used to only happen for the typed subset below (via _generateStreetGraph),
+    // so an untyped district (the normal state through most of District Setup) never
+    // got pulled back at all and its cityData.edgePoints were explicitly reset to raw
+    // every call. Pure geometry, decoupled from street/block generation (which legitimately
+    // stays gated to typed districts — untyped ones shouldn't get interior streets).
+    this._applyRiverCliffPullback(cityData.districts)
     // Generate over every TYPED district (locked or in preview). `locked` governs
     // immutability (no reseed/retype), not graph membership; untyped districts are
     // absent, so their shared boundaries stay deferred until they're typed.
@@ -1356,15 +2528,23 @@ export default class SetupPhase {
       throw new Error('This terrain plot is not adjacent to the city.')
     }
 
-    // Build the new district from the terrain plot's own polygon.
+    // Build the new district from the terrain plot's own TRUE pristine geometry — its
+    // _rawPolygon/_rawPointIds if the plot has already been through a river/cliff
+    // pullback pass, not its current (possibly already-split) polygon/pointIds. Starting
+    // from an already-split id here would make the district's own future pullback pass
+    // split a split, and would leave the district's cached "raw" base stale forever if
+    // the world-level river/cliff that caused the plot's split is later cleared.
     const newId = Math.max(-1, ...districts.map(d => d.id)) + 1
-    const polygon = (plot.polygon || plot.vertices || []).map(v => ({ x: v.x, y: v.y }))
+    const rawSourcePolygon = plot._rawPolygon || plot.polygon || plot.vertices || []
+    const rawSourceIds = plot._rawPointIds || plot.pointIds || []
+    const polygon = rawSourcePolygon.map(v => ({ x: v.x, y: v.y }))
     if (polygon.length < 3) throw new Error('Terrain plot has no usable polygon')
 
     const newDistrict = {
       id: newId,
       seedPoint: plot.seedPoint ? { x: plot.seedPoint.x, y: plot.seedPoint.y } : { x: polygon[0].x, y: polygon[0].y },
       polygon,
+      pointIds: [...rawSourceIds],
       assignedType: null,
       description: '',
       promotedFromPlotId: plotId,  // record the origin for future Z-height
@@ -1373,6 +2553,10 @@ export default class SetupPhase {
 
     // Add boundary edges between the new district and its city neighbours.
     this._addPromotedDistrictEdges(newDistrict, cityData)
+
+    // Otherwise the new district's polygon sits raw/un-pulled-back until some later,
+    // unrelated action happens to call generateForLocked.
+    this.generateForLocked()
 
     this.log.push(`Promoted terrain plot ${plotId} (region ${plot.parentRegionId}) to city district ${newId}`)
     return { ok: true, newDistrictId: newId, log: this.log }
@@ -1431,25 +2615,19 @@ export default class SetupPhase {
   }
 
   // Add District Edges between the newly promoted district and any existing districts
-  // that share polygon boundary segments with it. Registers the shared vertices into
-  // cityData.edgePoints (reusing existing points within tolerance) and records their ids
-  // in pointIds order — StreetVoronoiGenerator skips any city edge with fewer than 2
-  // resolved pointIds, so a promoted district's boundary must carry real point data,
-  // not just districtA/districtB references.
+  // that share polygon boundary segments with it. newDistrict.pointIds already carries
+  // the real global registry ids (copied straight from the originating terrain plot in
+  // promoteTerrainPlotToDistrict), so edge pointIds are read off directly — no
+  // coordinate-key resolver needed (the eps=0.01 resolvePointId pass this used to run,
+  // and its private edgePoints dedup, are both deleted; see plan §2). StreetVoronoiGenerator
+  // skips any city edge with fewer than 2 resolved pointIds, so a promoted district's
+  // boundary must carry real point data, not just districtA/districtB references.
   _addPromotedDistrictEdges(newDistrict, cityData) {
     const edges = cityData.edges || (cityData.edges = {})
     const edgePoints = cityData.edgePoints || (cityData.edgePoints = [])
     let edgeIdx = Object.keys(edges).filter(k => k.startsWith('promoted-')).length
     const EPS2 = 0.01 * 0.01
     const close = (p, q) => (p.x - q.x) ** 2 + (p.y - q.y) ** 2 < EPS2
-    let nextPointId = 1 + edgePoints.reduce((max, p) => Math.max(max, p.id), -1)
-    const resolvePointId = (pt) => {
-      const existing = edgePoints.find(p => close(p, pt))
-      if (existing) return existing.id
-      const id = nextPointId++
-      edgePoints.push({ id, x: pt.x, y: pt.y })
-      return id
-    }
 
     // Classify every boundary SEGMENT of the new district (not just individual vertices):
     // does it coincide with a segment of an existing district (an inner edge), or does it
@@ -1459,10 +2637,37 @@ export default class SetupPhase {
     // walled (_applyAutoWalling only iterates existing edges) and StreetVoronoiGenerator
     // never generates a boundary street/gutter there.
     const poly = newDistrict.polygon
+    const ids = newDistrict.pointIds
     const n = poly.length
+
+    // Ensure every one of this district's own points is present in cityData.edgePoints —
+    // by id, not coordinate proximity, since these ARE the real registry ids already.
+    // (cityData.edgePoints itself is a transitional convenience copy for consumers not
+    // yet reading the point registry directly — see GroundPointRegistry.js.)
+    const edgePointIds = new Set(edgePoints.map(p => p.id))
+    for (let i = 0; i < n; i++) {
+      if (!edgePointIds.has(ids[i])) {
+        edgePoints.push({ id: ids[i], x: poly[i].x, y: poly[i].y })
+        edgePointIds.add(ids[i])
+      }
+    }
+
+    // A promoted district can be adjacent (in the raw, pre-pullback tessellation) to an
+    // existing district ACROSS a River/Cliff — the two only "touch" because neither side
+    // has been inset from the water yet. Match on the INSET copy instead of the raw one:
+    // once each side is properly pulled back off the river/cliff, their segments no
+    // longer coincide, so this correctly falls through to the "outer" branch below and
+    // each district gets its own independent edge (own Wall, if typed) rather than being
+    // merged into one shared inner edge that renders a single wall down the river's
+    // centre. Only used for the coincidence test — the actual edge/point data below still
+    // uses the raw `poly`, since _applyRiverCliffPullback (run later, once this district
+    // is typed) is what actually insets district.polygon and keeps cityData.edgePoints in
+    // sync; duplicating that here would double-pull-back this district's own boundary.
+    const matchPoly = this._pullBackPolygon(poly, this._riverCliffSegments(), 0.35).pushed
+
     const segmentNeighbor = new Array(n).fill(null)
     for (let i = 0; i < n; i++) {
-      const a1 = poly[i], a2 = poly[(i + 1) % n]
+      const a1 = matchPoly[i], a2 = matchPoly[(i + 1) % n]
       for (const d of (cityData.districts || [])) {
         if (d.id === newDistrict.id) continue
         const dPoly = d.polygon || []
@@ -1477,21 +2682,21 @@ export default class SetupPhase {
       }
     }
 
-    // Merge consecutive same-neighbor segments into single polyline edges.
+    // Merge consecutive same-neighbor segments into single polyline edges, carrying the
+    // real global point ids straight from newDistrict.pointIds — no resolver needed.
     let outerIdx = 0
     let i = 0
     while (i < n) {
       const neighbor = segmentNeighbor[i]
       const start = i
       while (i < n && segmentNeighbor[i] === neighbor) i++
-      const runPoints = poly.slice(start, i).concat([poly[i % n]])
-      const pointIds = runPoints.map(resolvePointId)
+      const runIds = ids.slice(start, i).concat([ids[i % n]])
       if (neighbor != null) {
         const key = `promoted-${edgeIdx++}`
-        edges[key] = { districtA: newDistrict.id, districtB: neighbor, pointIds, assignedType: null, description: '' }
+        edges[key] = { districtA: newDistrict.id, districtB: neighbor, pointIds: runIds, assignedType: null, description: '' }
       } else {
         const key = `promoted-outer-${newDistrict.id}-${outerIdx++}`
-        edges[key] = { districtA: newDistrict.id, districtB: null, pointIds, assignedType: null, description: '' }
+        edges[key] = { districtA: newDistrict.id, districtB: null, pointIds: runIds, assignedType: null, description: '' }
       }
     }
   }
@@ -1569,9 +2774,19 @@ export default class SetupPhase {
           district.assignedType = districtType
           district.residentialClass = null
           district.LeadershipClass = null
-          district.producedResource = `Placeholder Good ${district.id}`
+          // Register a real Recipe for the placeholder good so it derives consumption
+          // through the same path as a player-defined resource, rather than a hand-rolled
+          // consumedResources list that the Type system doesn't otherwise know about.
+          const placeholderName = `Placeholder Good ${district.id}`
+          this._registerResourceDef({
+            name: placeholderName, gpValue: 10, type: 'Resource',
+            ingredients: [`Placeholder Input ${district.id}A`, `Placeholder Input ${district.id}B`],
+            specialInput: 'Labour'
+          })
+          district.producedResource = placeholderName
           district.secondProducedResource = null
-          district.consumedResources = [`Placeholder Input ${district.id}A`, `Placeholder Input ${district.id}B`, 'Water', 'Basic Food']
+          const derived = this._deriveConsumption([placeholderName])
+          district.consumedResources = [...derived, ...['Water', 'Basic Food'].filter(r => !derived.some(e => e.toLowerCase() === r.toLowerCase()))]
           district.description = ''
           district.name = generateName('district', districtType)
           this.log.push(`Auto-assigned ${districtType} (placeholder resources) to district ${district.id}`)
@@ -1618,11 +2833,10 @@ export default class SetupPhase {
       }
     }
 
-    // Pull each district's polygon back from any River/Cliff terrain edge before street
-    // generation runs — see Edge, CONTEXT_WorldTerrain.md. Recomputed fresh from each
-    // district's pristine polygon every call (not accumulated in place), since this runs
-    // once per district-lock retry/regeneration over the course of District Setup.
-    this._applyRiverCliffPullback(districts)
+    // River/cliff pullback now runs unconditionally for every district (typed or not)
+    // in generateForLocked, this function's only caller, before the subset filtering
+    // that produces `districts` here — see Edge, CONTEXT_WorldTerrain.md. No need to
+    // repeat it on just this subset.
 
     const MAX_TOPOLOGY_RETRIES = 3
     let streetGraph = null
@@ -1707,23 +2921,30 @@ export default class SetupPhase {
     }
 
     const tPlots = performance.now()
-    // Capture any existing terrain plots BEFORE city plots are regenerated — if terrain
-    // plots are already calculated we reuse them instead of re-running the expensive
-    // polygon-clipping pipeline, and they're excluded from the plot-layer flicker.
-    const existingTerrainPlots = (cityData.plots || []).filter(p => p.type === 'terrain')
-
     const junctions = cityData.streetGraph?.junctions || []
     const { plots } = new PlotVoronoiGenerator().generate(blocks, cityData.districts, junctions, roadEdges, footprints)
     cityData.plots = plots
     console.log(`[perf]   plots: ${(performance.now()-tPlots).toFixed(1)}ms (${plots.length} plots)`)
 
-    // Terrain plots: reuse existing ones if available (avoids the expensive polygon-clipping
-    // pipeline on every street regeneration — terrain plots only change when world terrain or
-    // trade routes change, not when interior streets are shuffled).
+    // Terrain plots: ALWAYS recomputed fresh from the raw world terrain cells and
+    // re-clipped to the current city footprint — never reused from a previous pass.
+    // A district gaining its street graph for the first time, or an existing district
+    // edge becoming a Wall/Canal/Docks/MainRoad (changing the footprint's width there —
+    // see clipTerrainPlotsToCityFootprint), both change what the footprint covers, and
+    // any district (not just the one that just changed) can have terrain plots bordering
+    // it that need to react. Recomputing from scratch every time is the only way that
+    // doesn't require tracking which districts changed since the last pass.
     const tTerrain = performance.now()
-    if (existingTerrainPlots.length > 0) {
-      cityData.plots = [...cityData.plots, ...existingTerrainPlots]
-      // Outer boundary right-field still needs updating for the new street graph.
+    const wt = this.gameStateManager.worldTerrainData
+    const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
+    const rawTerrainPlots = (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId)
+    const tradeRoadWaypoints = (this.tradingDestinations || [])
+      .map(td => this._tradeRoadWaypoints(td.roadPath || []))
+      .filter(Boolean)
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [])
+    cityData.plots = [...cityData.plots, ...terrainPlots]
+    console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${terrainPlots.length} plots)`)
+    if (terrainPlots.length > 0) {
       for (const edge of (cityData.streetGraph?.edges || []))
         if (edge.right === null) edge.right = 'terrain'
       for (const junction of (cityData.streetGraph?.junctions || [])) {
@@ -1731,28 +2952,8 @@ export default class SetupPhase {
         for (const conn of (junction.connections || []))
           if (conn.right === null) conn.right = 'terrain'
       }
-      console.log(`[perf]   terrain plots: reused ${existingTerrainPlots.length} existing (${(performance.now()-tTerrain).toFixed(1)}ms)`)
-    } else {
-      const wt = this.gameStateManager.worldTerrainData
-      const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
-      const rawTerrainPlots = (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId)
-      const tradeRoadWaypoints = (this.tradingDestinations || [])
-        .map(td => this._tradeRoadWaypoints(td.roadPath || []))
-        .filter(Boolean)
-      const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [])
-      cityData.plots = [...cityData.plots, ...terrainPlots]
-      console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${terrainPlots.length} plots)`)
-      if (terrainPlots.length > 0) {
-        for (const edge of (cityData.streetGraph?.edges || []))
-          if (edge.right === null) edge.right = 'terrain'
-        for (const junction of (cityData.streetGraph?.junctions || [])) {
-          if (junction.right === null) junction.right = 'terrain'
-          for (const conn of (junction.connections || []))
-            if (conn.right === null) conn.right = 'terrain'
-        }
-        computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
-        clipTerrainPlotsToCityFootprint(terrainPlots, cityData)
-      }
+      computeTerrainPlotStreetAdjacency(cityData.streetGraph, terrainPlots)
+      clipTerrainPlotsToCityFootprint(terrainPlots, cityData)
     }
 
     buildPointRegistry(cityData)   // additive shared-vertex store + seam diagnostic (ADR-0018)
@@ -1774,7 +2975,7 @@ export default class SetupPhase {
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [])
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [])
     cityData.plots = [...(cityData.plots || []).filter(p => p.type !== 'terrain'), ...terrainPlots]
     if (terrainPlots.length > 0) {
       const junctions = cityData.streetGraph?.junctions || []
@@ -1808,7 +3009,7 @@ export default class SetupPhase {
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [])
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [])
 
     cityData.plots = [...plots, ...terrainPlots]
 
@@ -1829,7 +3030,7 @@ export default class SetupPhase {
     return cityData.plots.length
   }
 
-  assignTerrainDistrict(regionId, plotId, districtType, description = '', producedResource = '', consumedResources = [], name = '', resourceDefs = []) {
+  assignTerrainDistrict(regionId, plotId, districtType, description = '', producedResource = '', name = '', resourceDefs = []) {
     const regions = this.gameStateManager.worldTerrainData.regions
     const region = regions.find(r => r.id === regionId)
     if (!region) throw new Error(`Region ${regionId} not found`)
@@ -1849,18 +3050,29 @@ export default class SetupPhase {
       throw new Error(`${region.assignedType} regions only support ${VALID[region.assignedType]} districts`)
     }
 
-    const explicitConsumed = (consumedResources || []).map(r => r.trim()).filter(Boolean)
     if (!producedResource?.trim()) throw new Error('A district must produce at least one resource')
-    if (explicitConsumed.length < 2) throw new Error('A district must consume at least 2 resources (in addition to Water and Basic Food)')
-
-    const IMPLICIT_CONSUMED = ['Water', 'Basic Food']
-    const allConsumed = [
-      ...explicitConsumed,
-      ...IMPLICIT_CONSUMED.filter(r => !explicitConsumed.some(e => e.toLowerCase() === r.toLowerCase()))
-    ]
 
     const districtName = name?.trim() || ''
     const producedTrimmed = producedResource.trim()
+
+    // Store new resource definitions first so consumption can be derived from them below.
+    for (const def of resourceDefs) {
+      if (def?.name) this._registerResourceDef(def)
+    }
+
+    const PREDEFINED_LOWER = ['gold', 'water', 'labour', 'basic food']
+    if (!PREDEFINED_LOWER.includes(producedTrimmed.toLowerCase())) {
+      this._registerResource(producedTrimmed)
+    }
+
+    // Consumption is fully derived from the Recipe of what's produced, plus the
+    // always-implicit Water + Basic Food upkeep (see assignDistrictType for the same rule).
+    const derivedConsumed = this._deriveConsumption([producedTrimmed])
+    const IMPLICIT_CONSUMED = ['Water', 'Basic Food']
+    const allConsumed = [
+      ...derivedConsumed,
+      ...IMPLICIT_CONSUMED.filter(r => !derivedConsumed.some(e => e.toLowerCase() === r.toLowerCase()))
+    ]
 
     this.terrainDistrictPlots.push({
       plotId,
@@ -1872,21 +3084,10 @@ export default class SetupPhase {
       consumedResources: allConsumed
     })
 
-    const PREDEFINED_LOWER = ['gold', 'water', 'labour', 'basic food']
-    if (!PREDEFINED_LOWER.includes(producedTrimmed.toLowerCase())) {
-      this._registerResource(producedTrimmed)
-    }
-    for (const r of explicitConsumed) {
-      if (!PREDEFINED_LOWER.includes(r.toLowerCase())) this._registerResource(r)
-    }
-    for (const def of resourceDefs) {
-      if (def?.name) this._registerResourceDef(def)
-    }
-
     this.factions.push({ id: this.factions.length, health: 70, type:'terrain', typeName: districtType, name: districtName, subclass: null, plotId, regionId, producedResource: producedTrimmed })
 
     this.log.push(`Assigned ${districtType} district to plot ${plotId} in ${region.assignedType} region ${regionId}`)
-    return { ok: true, resourceRegistry: this.resourceRegistry, factions: this.factions, log: this.log }
+    return { ok: true, resourceRegistry: this.resourceRegistry, resourceDefinitions: this.resourceDefinitions, factions: this.factions, log: this.log }
   }
 
   assignDistrictClass(districtId, districtClass) {
@@ -2047,6 +3248,7 @@ export default class SetupPhase {
       districtEdgePlacements: this.districtEdgePlacements,
       districtClassAssignments: Array.from(this.districtClassAssignments.entries()),
       resourceRegistry: this.resourceRegistry,
+      resourceDefinitions: this.resourceDefinitions,
       threats: this.threats,
       tradingDestinations: this.tradingDestinations,
       factions: this.factions,
@@ -2076,6 +3278,7 @@ export default class SetupPhase {
     this.foreignPowers = data.foreignPowers ?? []
     this.worldDomains = data.worldDomains ?? null
     this.terrainDistrictPlots = data.terrainDistrictPlots ?? []
+    this.resourceDefinitions = data.resourceDefinitions ?? {}
     // Rebuild derived lists from source-of-truth data so older saves are reconciled on load.
     this._rebuildFactions()
     this._rebuildRegistry()
@@ -2128,7 +3331,7 @@ export default class SetupPhase {
     this.tradingDestinations.push(dest)
     this.factions.push({ id: this.factions.length, health: 100, type: 'trade', typeName: 'Foreign Trade', name: label, subclass: null, foreignPowerId: fpId, standing: {} })
     this.log.push(`Defined trade route with ${fp.name}: "${label}"`)
-    return { ok: true, tradingDestinations: this.tradingDestinations, factions: this.factions, resourceRegistry: this.resourceRegistry, log: this.log }
+    return { ok: true, tradingDestinations: this.tradingDestinations, factions: this.factions, resourceRegistry: this.resourceRegistry, resourceDefinitions: this.resourceDefinitions, log: this.log }
   }
 
   addForeignPower({ direction, name, colour, description, seatId }) {
@@ -2153,11 +3356,18 @@ export default class SetupPhase {
     const districts = this.gameStateManager.cityDistrictData?.districts || []
     for (const d of districts) {
       if (d.producedResource) reg(d.producedResource)
+      if (d.secondProducedResource) reg(d.secondProducedResource)
       for (const r of (d.consumedResources || [])) reg(r)
     }
     for (const tDP of (this.terrainDistrictPlots || [])) {
       if (tDP.producedResource) reg(tDP.producedResource)
       for (const r of (tDP.consumedResources || [])) reg(r)
+    }
+    // Every god's Worship service is selectable/consumable even before any Religious
+    // district actually produces it (see addGod) — not derivable from district scans
+    // alone, so re-register it here too or it silently drops on every reload.
+    for (const god of (this.gods || [])) {
+      if (god.name) reg(`Worship of ${god.name}`)
     }
     // Backwards compat: old saves stored on region objects
     const regions = this.gameStateManager.worldTerrainData?.regions || []
@@ -2196,7 +3406,7 @@ export default class SetupPhase {
     }
     for (const district of districts) {
       if (district.assignedType && district.assignedType !== 'Leadership') {
-        this.factions.push({ id: this.factions.length, health: 70, type:'district', typeName: district.assignedType, name: district.name || '', subclass: district.residentialClass || null, districtId: district.id, standing: {} })
+        this.factions.push({ id: this.factions.length, health: 70, type:'district', typeName: district.assignedType, name: district.name || '', subclass: district.residentialClass || null, districtId: district.id, producedResource: district.producedResource || '', secondProducedResource: district.secondProducedResource || '', standing: {} })
       }
     }
     for (const trade of this.tradingDestinations) {
