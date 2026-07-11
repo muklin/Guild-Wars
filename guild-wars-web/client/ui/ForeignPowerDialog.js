@@ -1,4 +1,5 @@
 import nameLibrary from '../../shared/nameLibrary.js'
+import CompassRing from './CompassRing.js'
 
 const COLOUR_SWATCHES = [
   { label: 'Red',    value: '#c0392b' },
@@ -125,59 +126,14 @@ export default class ForeignPowerDialog {
     const R    = 110    // compass ring radius (SVG units)
     const SIZE = 260    // SVG element size (square, before CSS squish)
 
-    // ── SVG ──────────────────────────────────────────────────────────────────
-    const svg = document.createElementNS(svgNS, 'svg')
-    svg.setAttribute('width',   SIZE)
-    svg.setAttribute('height',  SIZE)
-    svg.setAttribute('viewBox', `${-SIZE/2} ${-SIZE/2} ${SIZE} ${SIZE}`)
-    svg.style.cssText = 'display:block;cursor:crosshair;transform-origin:top center'
-
-    const svgWrapper = document.createElement('div')
-    svgWrapper.style.cssText = `width:${SIZE}px;overflow:hidden;margin:0 auto 10px`
-    svgWrapper.appendChild(svg)
-
-    // Compass ring group (rotates with camera azimuth)
-    const compassRing = document.createElementNS(svgNS, 'g')
-    svg.appendChild(compassRing)
-
-    const bg = document.createElementNS(svgNS, 'circle')
-    bg.setAttribute('cx', '0'); bg.setAttribute('cy', '0'); bg.setAttribute('r', R)
-    bg.setAttribute('fill', '#0e0e0e'); bg.setAttribute('stroke', '#444'); bg.setAttribute('stroke-width', '1.5')
-    compassRing.appendChild(bg)
-
-    const tickRing = document.createElementNS(svgNS, 'circle')
-    tickRing.setAttribute('cx', '0'); tickRing.setAttribute('cy', '0'); tickRing.setAttribute('r', R - 16)
-    tickRing.setAttribute('fill', 'none'); tickRing.setAttribute('stroke', '#2a2a2a'); tickRing.setAttribute('stroke-width', '1')
-    compassRing.appendChild(tickRing)
-
-    // Direction ticks + labels
-    const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-    const dirTextEls = [], dirTextPos = []
-    for (let i = 0; i < 8; i++) {
-      const isCardinal = i % 2 === 0
-      const rad = (i * 45 - 90) * Math.PI / 180
-      const x2 = Math.cos(rad) * R, y2 = Math.sin(rad) * R
-      const lx = Math.cos(rad) * (R - 8), ly = Math.sin(rad) * (R - 8)
-
-      const line = document.createElementNS(svgNS, 'line')
-      line.setAttribute('x1', '0'); line.setAttribute('y1', '0')
-      line.setAttribute('x2', x2);  line.setAttribute('y2', y2)
-      line.setAttribute('stroke', isCardinal ? '#444' : '#2a2a2a')
-      line.setAttribute('stroke-width', isCardinal ? '0.75' : '0.5')
-      compassRing.appendChild(line)
-
-      const txt = document.createElementNS(svgNS, 'text')
-      txt.setAttribute('x', '0'); txt.setAttribute('y', '0')
-      txt.setAttribute('text-anchor', 'middle'); txt.setAttribute('dominant-baseline', 'middle')
-      txt.setAttribute('fill', isCardinal ? '#aaa' : '#666')
-      txt.setAttribute('font-size', isCardinal ? '13' : '9')
-      txt.setAttribute('font-weight', isCardinal ? 'bold' : 'normal')
-      txt.setAttribute('font-family', 'Arial')
-      txt.setAttribute('transform', `translate(${lx},${ly})`)
-      txt.textContent = DIRS[i]
-      compassRing.appendChild(txt)
-      dirTextEls.push(txt); dirTextPos.push([lx, ly])
-    }
+    // ── Shared compass ring (see CompassRing.js — same visual as the persistent
+    // Top-down/Iso HUD compass, WorldRenderer/rendering/Compass.js) ─────────────
+    const cr = new CompassRing({ size: SIZE, radius: R })
+    const svg = cr.svg
+    const svgWrapper = cr.svgWrapper
+    svg.style.cursor = 'crosshair'
+    svgWrapper.style.margin = '0 auto 10px'
+    const compassRing = cr.ring   // rotating <g> — FP-specific arcs/preview append below
 
     // ── Existing FP arcs (drawn in their own colour, span ±22.5°) ────────────
     const existingArcEls = []
@@ -330,19 +286,18 @@ export default class ForeignPowerDialog {
     nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') applyBtn.click() })
     box.appendChild(applyBtn)
 
-    // ── Live state for mouse events ───────────────────────────────────────────
-    let ringRot = 0, squish = 0.5
+    // ── Live state for mouse events (ringRot/squish now owned by cr — see CompassRing.update) ──
 
     const getWorldBearing = (e) => {
       const rect = svg.getBoundingClientRect()
       const cx2   = rect.left + rect.width / 2
-      const compassCY = rect.top + SIZE * squish / 2
+      const compassCY = rect.top + SIZE * cr.squish / 2
       const vdx  = e.clientX - cx2
       const vdy  = e.clientY - compassCY
       const sdx  = vdx
-      const sdy  = squish > 0 ? vdy / squish : vdy
+      const sdy  = cr.squish > 0 ? vdy / cr.squish : vdy
       const screenAngle = (Math.atan2(sdy, sdx) * 180 / Math.PI + 90 + 360) % 360
-      return (screenAngle - ringRot + 720) % 360
+      return (screenAngle - cr.ringRot + 720) % 360
     }
 
     const showPreview = (bearing) => {
@@ -403,23 +358,10 @@ export default class ForeignPowerDialog {
     // ── rAF: sync compass ring with camera ────────────────────────────────────
     const tick = () => {
       const cc = this._renderer?.cameraController
-      if (cc) {
-        squish  = cc._topDown ? 1.0 : 0.5
-        // azimuth = π/2 is the standard N-at-top view, so subtract π/2 so that
-        // ringRot = 0 (N at top) when the camera is in its default orientation.
-        ringRot = 90 - (cc.azimuth * 180 / Math.PI)
-      }
-      svg.style.transform         = `scaleY(${squish})`
-      svgWrapper.style.height     = `${Math.round(SIZE * squish)}px`
-      compassRing.setAttribute('transform', `rotate(${ringRot})`)
+      if (cc) cr.update(cc.azimuth, cc._topDown)
       if (this._chosenDirection !== null) {
         previewGroup.setAttribute('transform', `rotate(${this._chosenDirection})`)
       }
-      const invSquish = squish > 0 ? 1 / squish : 1
-      dirTextEls.forEach((el, i) => {
-        const [lx, ly] = dirTextPos[i]
-        el.setAttribute('transform', `translate(${lx},${ly}) rotate(${-ringRot}) scale(1,${invSquish})`)
-      })
       this._rafId = requestAnimationFrame(tick)
     }
     this._rafId = requestAnimationFrame(tick)

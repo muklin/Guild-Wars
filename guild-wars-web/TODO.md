@@ -1,119 +1,14 @@
 # Bugs:
-
-- Map movement at full zoom out is broken.  The map goes to the top of the screen and can't move the map down.  zoom in fixes it, but we want to be able to zoom out to the point that the whole map is visible and we can still pan around.  
-- Terrain plots still showing after Conversion to district. 
-- No Docks visible. 
-- Claude was verifying against current code: your plot_underfill_bug memory implies a shared computeVoronoiCells exists for world/city scales — it doesn't. TerrainVoronoiGenerator and StreetVoronoiGenerator each keep their own local circumcenter code; only the half-plane variant is actually shared. 
 - Foreign Powers going around corners produces artifacts.  I still don't like the FP indication.  FP names are often not rendered.
-
 - Archways are not appearing in game.  I've not yet found one.  
-
-- Mines, Forestry, when defined, seem to apply to their whole terrain, not just the terrain plot
-- For Factions producing resources, the ingredients should still be specified, on existing resources.  
-
-- Only Gold is showing across the top in the resources section, in Guild setup.  
-
-- http://localhost:5173/buildingparts.html doesn't render any buildings.
-
-
-# Baby Features:
-## Names 
-- Don't name Threats and Trade Routes.  Allow the option to rename it, but mainly we're looking for the description.
-- Cliff Names are optional.  
-- Add a "regenerate names" option.  
-- Triple the number of random Names in all district, etc, naming categories.  (not character names)
-
-- we may consider changing away from a forced square World area to a circular-ish set of terrains.  
-
-- Add Concept of City Gate.
-- Trade routes should establish a road in the direction of the Foreign Power, back to the nearest city gate.  
-- Forestry, mines, etc, regional improvements should add a small number of roads and buildings, AND a road back to the nearest city gate. 
-
-- Hovering ie Mines, Fishing Factions, doesn't highlight their position onthe map.  it should. 
-- Hovering Foreign Powers (Trade routes or Threats) doesn't highlight their position onthe map.  it should. 
-
-Changes to Rivers.  
-1. Rivers can begin and end at Mountains.
-2. Rivers and Canals should be the same colour as Lakes.
-2. River endpoints should appear to flow out of/into seas and lakes.   
- - To achieve this alter the polyline Junctions ONLY At river endpoints to be 4 side fan generation, rather than 3 sided tris.  P
-
-Replace the Resource graph with a proper connected resource/service value stream 
-Also show this during Resource Creation in District setup Phase. 
-
-
-
-need to do more to help, suggest, guide Resources and Services
-Resources and Services are manufactured out of 1-2 inputs, and then either Labour, Gold or Worship. Recipes are public knowledge. 
-Items are declared as Raw, Resource, Service
-Raw resources can only be harvested from Terrain plots, and their recipe is always Labour and Security, they can be identified as Basic Food.  
-Districts consumed resources and services are completely defined by the resources they create, recipe. 
-Services can be marked as Entertainment, or be regularly traded Services, just like resources. 
-Services can never be sold to a foreign Power. 
-
-
-A use case might be: 
-1. User 1 defines Iron as a produced resource in an industry district.  
- - They define the resource as a Resource, not a service.  
- - They decide the recipe is Coal, Iron Ore and Labour. 
- - Industry can produce 2 Resources, so they also add Coal as a produced resource in the same industry district.  
- - They define the resource as a Resource, not a service.  
- - They decide the recipe is Wood, <undefined> and Labour. 
-2. User 2 defines magic Items as a produced resource in an industry district.
-
-
-The Market Phase is a Live trading game, where users buy from the market in real-time.  They buy at a price based on their own relationship with the seller, but the purchase decreases supply, and increases the price of the next purchase made of that item, and fractionally reduces the price of all other items, in the market at the time, as attention in that product wanes. 
-
-Trade routes can supply all items, but again, the users relationship with the trade route affects price, AND the Trade route sells more expensively, AND buys for less, to begin with.  
-
-
-
 
 
 # Features:
-## Districts
-- Ensure exactly one Leadership District is selected by the end of District Setup.  
-  - If one isn't, randomly select one unapplied city plot, OR terrain plot adjacent to the existing city to become a random LEadership district.
-- Add Tutorial text around Leadership districts. 
-- Allow non city plots to be made into District plots, when they're adjacent to the existing city. 
-- Monarchy + Tyrant Leadership Districts MUST be a castle.  
-- Add a "% walled" and "% external walled feature to District specs, default 0% & 0%.  That percentage of the district is walled.  
- - Monarchy, Tyrant are 100% & 100%
- - Noble and Military are 50% & 100%
- - Market is 0% & 100%
- - Religious is 10% & 80%
+## Terrain Mode
+- change the terrain generation away from a forced square World, to a circular-ish set of terrains.  still need to detect edge terrains.  Change City selection away from the largest non-edge terrain, to be the terrain that is in the centre of the map (find terrain that contains the center point./)
 
 
-## Buildings 
-### Special Junctions
-Junctions that are "wall" should have a chance of being a gate.  use the t1.glb model for now.
-Junctions that are "Canal" should have a chance of being a bridge.  
-
-The chance, when the right district is null, is very low, maybe 1%
-The chance, when districts are the same type, is high, 80%
-The chance, when districts are a different type, is lower, 30%. 
-
-
-I am considering how best to create models that fit in well with the game look and feel.  But I do plan to explore adding a "customize building" toolset in the future, so that may be what we use to add castles too.  
-
-
-### Walls as buildings. 
-change wall generation to use building generation, to allow for turrets, gates, walls to have internal rooms.  Need to add some standard capabilities: wall pieces.  Crenelations, etc.  
-
-- Fix rooves. Make sure they Gable correctly on the ends of wings.  
-
-
-
-
-### LandMark buildings
-- Add the Castle, and allow it to spawn in Noble Districts, Note this will be some work as the castle needs to consume a large "block" area and be walled and grassed and etc.
-- Market place stalls
-- Better Mages towers
-- Better and more varied churches
-- Better Industrial buildings 
-- Warehouses.
- 
-## Groundplane Z-height implementation.  HUGE
+### Groundplane Z-height implementation.  HUGE
 - the ground plane is currently a single plane at z=0.
 
 - Terrain centres, and edgepoints then District centres and boundaries, then Junctions, Gutter points, plotcorners will all render a z-height.  
@@ -140,10 +35,110 @@ change wall generation to use building generation, to allow for turrets, gates, 
 
 
 
-## per round Actions
+
+## District Mode
+### Names 
+- Don't name Threats and Trade Routes.  Allow the option to rename it, but mainly we're looking for the description.
+- Cliff Names are optional.  
+- Add a "regenerate names" option everwhere prepopulated names are used. 
+- Triple the number of random Names in all district, etc, naming categories.  (But not character names.)
+- don't use Guild names (Weavers, Illusionists, etc.) for Terrain names.  We need to make a new way to make good terrain names.
+
+### Outside city Plot improvements. 
+- Hovering ie Mines, Fishing Factions, doesn't highlight their position on the map.  it should. 
+- Hovering Foreign Powers (Trade routes or Threats) doesn't highlight their FP indicators on the map. it should. 
+- Add a new outside City type, which is "Village" this is a new District.  
+- all new outside city improvements should add a road connecting the new improvement to the nearesty City Gate.  Also detect other Roads within 2 plots distance, that are not in the direction of the city, and build roads to those as well.  
+
+- Mines, Forestry type additions are applied to whole terrain, not just the terrain plot.  
+Use case:
+1. User selects a terrain surface.  
+ - User selects mine, 
+ - configures it to produce Iron Ore.
+ - User applies the disrict. 
+2. User selects an adjacent terrain surface, in the same Terrain region. 
+ - User selects mine, 
+ - the existing configuration of the sibling, (mine that creates Iron Ore) is prepopulated.  User CAN remove the preset and define a new one, but they shouldn't see this prepopulated.
+  I think the issue is that we're just reshowing the same UI.  It needs to either have a memory connected to the surface, OR, just fully reset on each render.
+
+
+
+### City Gates
+- Add Concept of City Gate.
+- Trade routes should establish a road in the direction of the Foreign Power, back to the nearest city gate.  
+- Forestry, mines, etc, regional improvements should add a small number of roads and buildings, AND a road back to the nearest city gate. 
+
+
+- Add Tutorial text around Leadership districts. 
+
+### Buildings 
+
+#### Library of parametric, dynamic Materials/textures. 
+- We have stone and brick.  
+- Alter brick to allow for ragged edges. 
+- Add Bump/Normal Maps.
+- Add Wood, tiles, 
+- Add a "Stylized" amount, that pushes the contrast of images.  
+
+
+
+#### buildings and Landmark buildings
+ - analyze the images in K:\UnityProjects\Guild-Wars\guild-wars-web\resources\images to identify how to generate buildings that have these features.  .. Parametrically.
+
+
+- Noble Note this will be some work as the castle needs to consume a large "block" area and be walled and grassed and etc.
+- Market place stalls
+- Better Mages towers
+- Better and more varied churches
+- Better Industrial buildings 
+- Warehouses.
+
+
+I am considering how best to create models that fit in well with the game look and feel.  But I do plan to explore adding a "customize building" toolset in the future, so that may be what we use to add castles too.  
+
+ Walls as buildings. 
+change wall generation to use building generation, to allow for turrets, gates, walls to have internal rooms.  Need to add some standard capabilities: wall pieces.  Crenelations, etc.  
+
+- Fix rooves. Make sure they Gable correctly on the ends of wings.  
+
+
+#### Special Junctions
+Junctions that are "wall" should have a chance of being a gate.  use the t1.glb model for now.
+Junctions that are "Canal" should have a chance of being a bridge.  
+
+The chance, when the right district is null, is very low, maybe 1%
+The chance, when districts are the same type, is high, 80%
+The chance, when districts are a different type, is lower, 30%. 
+
+
+## Gameplay
+### Trade Phase
+The Market Phase is a Live trading mini-game, where users buy from the market in real-time. 
+Each Market District, and Trade route is its own market. 
+Market Districts have a list of Resources they can trade.  Multiple markets can trade the same resources.  Not all resources must be tradable.
+Guilds and Factions buy at a price based on their own relationship with the market selling the item. Purchases of an item decreases supply and hence increases the market price of the item, and fractionally reduces the price of all other items in the market, as attention on that product wanes.
+
+Special trades can be arranged between districts.  These don't happen during the trade Phase. 
+
+Trade routes will buy all items but their starting prices are 10% under the cheapest price for that resource, in all other markets. 
+Trade routes have a set of resources they will sell.  These follow the normal rules for a market.  
+
+
+### per round Actions
 
 - Need to disambiguate between D&D rounds, (6s) and what I have been also calling rounds (game rounds: ~1 month) Need a new term for that. 
 - Derive a list of per turn Character Actions from the list of Upgrades, Traits, combat, resource and Service systems. 
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -204,3 +199,43 @@ This should store exatly and only:
 
 
 
+need to do more to help, suggest, guide Resources and Services
+Resources and Services are manufactured out of 1-2 inputs, and then either Labour, Gold or Worship. Recipes are public knowledge. 
+Items are declared as Raw, Resource, Service
+Raw resources can only be harvested from Terrain plots, and their recipe is always Labour and Security, they can be identified as Basic Food.  
+Districts consumed resources and services are completely defined by the resources they create, recipe. 
+Services can be marked as Entertainment, or be regularly traded Services, just like resources. 
+Services can never be sold to a foreign Power. 
+
+
+A use case might be: 
+1. User 1 defines Iron as a produced resource in an industry district.  
+ - They define the resource as a Resource, not a service.  
+ - They decide the recipe is Coal, Iron Ore and Labour. 
+ - Industry can produce 2 Resources, so they also add Coal as a produced resource in the same industry district.  
+ - They define the resource as a Resource, not a service.  
+ - They decide the recipe is Wood, <undefined> and Labour. 
+2. User 2 defines magic Items as a produced resource in an industry district.
+
+Changes to Rivers.  
+1. Rivers can begin and end at Mountains.
+2. Rivers and Canals should be the same colour as Lakes.
+
+
+## Districts
+- Ensure exactly one Leadership District is selected by the end of District Setup.  
+  - If one isn't, randomly select one unapplied city plot, OR terrain plot adjacent to the existing city to become a random LEadership district.
+  - Allow non city plots to be made into District plots, when they're adjacent to the existing city. 
+- Monarchy + Tyrant Leadership Districts MUST be a castle.  
+- Add a "% walled" and "% external walled feature to District specs, default 0% & 0%.  That percentage of the district is walled.  
+ - Monarchy, Tyrant are 100% & 100%
+ - Noble and Military are 50% & 100%
+ - Market is 0% & 100%
+ - Religious is 10% & 80%
+
+
+
+## Compass and minimap
+- show the Compass in the Top down and iso modes, in the same space that the minimap is, in Walk mode. 
+- Add NSEW indictors around the outside of the minimap.
+- When loading a new game, (or when a game loads and a previous view position isn't found) we're currently loading with N to the right.  Change this to be North at the top.

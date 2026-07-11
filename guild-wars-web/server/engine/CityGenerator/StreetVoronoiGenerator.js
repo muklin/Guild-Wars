@@ -59,6 +59,28 @@ function reconcileParallelStreetTypes(nodes, edges) {
   if (changed) console.log(`reconcileParallelStreetTypes: unified ${changed} parallel boundary street(s) to the higher-priority surface`)
 }
 
+// ADR-0020 Stage C (streets registry-backing) — NOT YET IMPLEMENTED, stub only.
+// Contract (see StreetVoronoiGenerator.registryIds.test.mjs for the full spec):
+// resolve each FINAL (post-repair, post-union-find-merge) street-graph node's real
+// GroundPointRegistry id, instead of its local per-pass sequential id. A node that
+// originated directly at a known Edge point (tracked via `nodeSourceEdgePointId`, only
+// set for boundary nodes minted straight from a cityEdge's own pointIds) must reuse
+// that EXACT id, so the street graph's boundary vertices are the SAME registry points
+// as the district polygon's own boundary — not a coordinate-close approximation that
+// could drift, the exact failure mode this session's river/cliff work fixed for
+// terrain edges. Every other node (interior Voronoi junctions, interpolated boundary
+// points, trade-road waypoints) mints fresh into the registry.
+//
+// nodes: [{id, x, y}] — the FINAL node list (after all repair + merge passes).
+// nodeSourceEdgePointId: Map<localNodeId, edgePointId> — set only for nodes minted
+//   directly at a known edgePoint.
+// registry: a GroundPointRegistry (or anything exposing .get(id) and .create(x,y,z,kind)).
+// kind: the ephemeral Point kind for freshly-minted (non-reused) nodes.
+// Returns Map<localNodeId, registryId>.
+export function resolveNodeRegistryIds(nodes, nodeSourceEdgePointId, registry, kind = 'street') {
+  throw new Error('resolveNodeRegistryIds: not implemented yet (ADR-0020 Stage C, awaiting go-ahead after red tests)')
+}
+
 // Per-district street/block/plot generation tuning now lives in
 // shared/districtConfig.js, alongside every other per-district-type table (building
 // styles, townhouse probability, landmarks, UI colour) — all fields are now top-level

@@ -11,10 +11,10 @@ The typed landscape of a region — one of a fixed set of types (Plains, Forest,
 _Avoid_: biome, tile type, land type
 
 **Edge**:
-The boundary line between two adjacent Terrains, which can be assigned a type (River, Cliff, etc.).
+The boundary line between two adjacent Terrains, which can be assigned a type (River, Cliff, etc.). An undefined Edge is a zero-width boundary chain in the Groundplane; assigning a type converts it into a Region of face Surfaces (see the Groundplane section).
 _Avoid_: border, boundary
 
-River and Cliff edges render as a fixed-thickness polyline centred **on** the edge (not a filled region like Sea/Lake), so they extend into both neighbouring terrain plots' nominal area. A District (a typed terrain plot) must inset its usable polygon inward by half that thickness along any River/Cliff edge before street/block generation, so its real boundary is the river bank/cliff face rather than the raw Voronoi cell edge. Sea/Lake need no such pullback — their polygon already is the water's boundary.
+A River/Cliff occupies a fixed width centred on the assigned Edge, extending into both neighbouring terrain plots' nominal area — the plots pull their boundary back to the bank/face, and the strip between the banks is filled by the feature's own face Surfaces (like Sea/Lake, which never need pullback because their polygon already is the water's boundary). The legacy stroked-polyline rendering of this strip is being retired (see plan "typed-giggling-giraffe", Addendum 2 Stage D).
 
 **River** (edge type):
 An edge marked as a river channel. A valid River selection must satisfy all four rules:
@@ -147,13 +147,19 @@ _Avoid_: wall, barrier, rampart
 ### Groundplane
 
 **Groundplane**:
-The single contiguous tessellation of the city ground — streets, gutters, blocks, ==plot==s, and terrain ==plot==s — where every (X, Z) is covered by exactly one Surface.
+The single contiguous tessellation of the world ground — streets, gutters, blocks, ==plot==s, terrain ==plot==s, and linear-feature Surfaces — where every (X, Z) is covered by exactly one Surface. The unified structure holding exactly: the point registry, Surfaces, Regions, and Edges.
 _Avoid_: ground mesh, terrain mesh
 
 **Point**:
-A shared Groundplane vertex `{id, x, y[, z]}` held in the persistent point registry. Multiple Surfaces referencing the same id move together — the basis for the future per-point z-height.
+A shared Groundplane vertex `{id, x, y[, z]}` held in the single persistent point registry — the only place positional data is stored. Points carry no semantic type. Skeleton points (pristine base vertices retained while any split point references them via `baseId`) may be referenced by no current Surface, by design — they are the reversal anchor when a typed Edge is cleared.
 _Avoid_: vertex, corner
 
 **Surface**:
-A typed Groundplane polygon defined by an ordered list of Point ids (street, gutter, block, ==plot==, or terrain ==plot==).
-_Avoid_: face, poly
+A typed Groundplane polygon defined by an ordered list of Point ids — a single cell of the groundplane tessellation. Kinds include: street segment, junction disk, gutter, block, ==plot==, terrain ==plot==, and River/Cliff/Wall/MainRoad/Canal/Docks segments.
+_Avoid_: face, poly, cell
+
+**Region**:
+A typed group of Surfaces. Terrain regions, the City, streets, Rivers, Cliffs, Walls, Canals are all Regions. Records a list of Surface ids and a type; gameplay payload (e.g. a District's type and class) lives on the Region.
+_Avoid_: zone, group, area
+
+When a typed linear feature (River, Cliff, Wall, MainRoad, Canal, Docks) is assigned to an **Edge**, the Edge converts into a Region of face Surfaces occupying the feature's width; the Region stores the original centreline Point ids so clearing the feature can reconstruct the undefined Edge (see River rule 1b).

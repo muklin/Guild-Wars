@@ -24,8 +24,9 @@ function inferTerrainType(cell, regionTypeById, worldRegions) {
 }
 
 // Convert raw terrain plots (Voronoi cells from TerrainVoronoiGenerator) into
-// renderable plot objects. Boundary-adjacent plots are clipped to actual outer gutter
-// edges by clipTerrainPlotsToGutters() in SetupPhase.js after streetEdges are computed.
+// renderable plot objects. Terrain plots belonging to the city footprint are excluded by
+// the caller (parentRegionId filter) rather than clipped after the fact — no boolean
+// polygon clipping (see plan "typed-giggling-giraffe" ADR-0020 decision 2).
 // tradeRoadWaypoints: array of waypoint arrays [[{x,y}, ...], ...] — consecutive pairs
 // form road centreline segments. Plots crossed by a road are flagged `hasRoad: true`.
 // worldRegions: coarse terrain region array for assignedType lookup.

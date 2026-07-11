@@ -22,6 +22,7 @@ export const FLOOR_SCROLL_DEFAULT_ISO = FLOOR_SCROLL_MAX
 // building's footprint (~0.2-0.4 world units across, at MODEL_SCALE/2.3) to fill the
 // frustum (frustumHeight 80 / zoom ≈ visible world height).
 const TOP_DOWN_MAX_ZOOM = 250.0
+const NORMAL_MAX_ZOOM = 150.0
 
 // View mode + camera location, persisted across a page reload — see _saveState/
 // restoreSavedState below.
@@ -44,7 +45,7 @@ export default class CameraController {
     // individual buildings clearly in the angled iso view, short of top-down's even
     // deeper TOP_DOWN_MAX_ZOOM).
     this.minZoom = 1.0   // low enough to see the full map; enforced dynamically via world bounds
-    this.maxZoom = 150.0
+    this.maxZoom = NORMAL_MAX_ZOOM
     this.camera.zoom = 4.5
     this.camera.updateProjectionMatrix()
 
@@ -375,13 +376,27 @@ export default class CameraController {
     return this._topDown
   }
 
+  // Reset to the default new-game view: iso mode, North at the top of the screen,
+  // city centred, whole map visible. "North at the top" means the world direction the
+  // screen's top edge shows must be world -Z (see SetupPhase.touchesNorthBoundary's
+  // "North = low Z" convention) — with updateCameraPosition's
+  // camera = target + hDist*(cos(az),0,sin(az)), the screen-up world direction works out
+  // to (-cos(az),-sin(az)); solving that against (0,-1) (world -Z) gives az = PI/2,
+  // not the PI/4 diagonal this used before (confirmed live: PI/4 puts North at screen-
+  // right, not top).
   centerOnMap() {
     this.targetPosition.set(this.homeX, 0, this.homeZ)
-    this.azimuth = Math.PI / 4
+    this.azimuth = Math.PI / 2
     this.elevation = Math.PI / 6
     this.camera.zoom = 3.0
     this.camera.updateProjectionMatrix()
+    // Reset every other view setting too, in case this is called with stale state from
+    // a prior game (Top-down's maxZoom override, floor-scroll level).
+    this._topDown = false
+    this.maxZoom = NORMAL_MAX_ZOOM
+    this.floorScrollUnits = FLOOR_SCROLL_DEFAULT_ISO
     this.updateCameraPosition()
+    this._onDirty()
   }
 
   update() {

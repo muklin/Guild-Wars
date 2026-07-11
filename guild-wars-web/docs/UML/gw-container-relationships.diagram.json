@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "name": "GW Container relationships",
+  "direction": "h",
+  "sources": [
+    {
+      "sourceKey": "local:UML",
+      "layoutFile": "gw-container-relationships.layout.json",
+      "offset": {
+        "x": 0,
+        "y": 0
+      }
+    }
+  ],
+  "filters": {
+    "relationshipHide": [
+      "Requires"
+    ]
+  },
+  "relationshipWaypoints": {
+    "electron→serverCB→Requires": [
+      {
+        "x": 1071.6851428637974,
+        "y": 56.799168702063966
+      },
+      {
+        "x": 1071.3634675535618,
+        "y": 56.63833104694617
+      },
+      {
+        "x": 1072.006818174033,
+        "y": 56.47749339182838
+      },
+      {
+        "x": 1072.0042063358053,
+        "y": 56.71084657869691
+      },
+      {
+        "x": 298.9075389453893,
+        "y": 50.560001575631
+      }
+    ],
+    "uiManager→eventBus→Sends Data To": [
+      {
+        "x": 75.94128565726926,
+        "y": 212.6528241995472
+      }
+    ]
+  }
+}

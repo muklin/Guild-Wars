@@ -25,11 +25,6 @@ const STAGES = [
 ]
 const STEP_ORDER = ['Terrain', 'CitySubdivision', 'GuildCreation', 'Complete']
 
-// Resources that cannot be stockpiled — hidden from the resource bar.
-const HIDDEN_RESOURCES = new Set(['Basic Food', 'Labour'])
-// Always shown even before districts produce them.
-const DEFAULT_RESOURCES = ['Gold', 'Security']
-
 // Help text shown in the bottom-right window per phase.
 const PHASE_HELP_TEXT = {
   Terrain:         'Take turns to create the landscape, religions, history and larger world that the city exists in',
@@ -79,7 +74,6 @@ export default class UIManager {
     uiContainer.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10'
     document.body.appendChild(uiContainer)
 
-    this.createResourceBar(uiContainer)
     this.createRightPanel(uiContainer)
     this.createCenterPanels(uiContainer)
     this.createErrorPopup(uiContainer)
@@ -95,17 +89,30 @@ export default class UIManager {
   setWalkMode(on) {
     const el = document.getElementById('ui-container')
     if (el) el.style.display = on ? 'none' : ''
-  }
 
-  createResourceBar(container) {
-    const bar = document.createElement('div')
-    bar.id = 'resource-bar'
-    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:32px;background:#111;border-bottom:1px solid #333;color:#fff;font-family:Arial;z-index:20;pointer-events:auto;display:flex;align-items:center;padding:0 12px;gap:0;overflow-x:auto'
-    bar.addEventListener('click',     (e) => e.stopPropagation())
-    bar.addEventListener('mousedown', (e) => e.stopPropagation())
-    container.appendChild(bar)
-    this._resourceBar = bar
-    this._renderResourceBar()
+    // Every other UI surface — action panel (Add God/Magic/Foreign Power buttons +
+    // Advance Phase "Done" button), Factions toggle, Help window, Guild/Factions panels
+    // — is appended straight to document.body (so it can float independently of
+    // #ui-container), so toggling #ui-container alone left all of these visible,
+    // including right on top of the Walk Mode minimap/compass (confirmed live: the
+    // "Done" button sitting over the minimap). Remember each one's own display value
+    // from just before hiding it, so re-showing on exit doesn't force something back
+    // open that the normal phase/visibility logic had deliberately hidden.
+    const bodyPanels = [
+      document.getElementById('action-panel'),
+      document.getElementById('factions-btn-panel'),
+      this._helpWindow,
+      this.guildPanel?.el,
+      this.factionsPanel?._root,
+    ].filter(Boolean)
+
+    if (on) {
+      this._preWalkDisplay = bodyPanels.map(p => p.style.display)
+      bodyPanels.forEach(p => { p.style.display = 'none' })
+    } else if (this._preWalkDisplay) {
+      bodyPanels.forEach((p, i) => { p.style.display = this._preWalkDisplay[i] ?? '' })
+      this._preWalkDisplay = null
+    }
   }
 
   createLeftPanels(container) {
@@ -130,7 +137,7 @@ export default class UIManager {
   createCenterPanels(container) {
     const centerPanel = document.createElement('div')
     centerPanel.id = 'center-panel'
-    centerPanel.style.cssText = 'position:fixed;left:200px;right:0;top:32px;z-index:10'
+    centerPanel.style.cssText = 'position:fixed;left:200px;right:0;top:0;z-index:10'
     container.appendChild(centerPanel)
     this.panels.set('center', centerPanel)
   }
@@ -447,7 +454,6 @@ export default class UIManager {
     this.currentStep = step
 
     if (step === 'Terrain') {
-      this._resourceBar.style.display = 'none'
       this.guildPanel.hide()
       this.factionsPanel.hide()
       this._setFactionsButtonVisible(false)
@@ -458,7 +464,6 @@ export default class UIManager {
       }
     } else if (step === 'CitySubdivision') {
 
-      this._resourceBar.style.display = ''
       this.guildPanel.hide()
       this._setFactionsButtonVisible(true)
       this._updateAdvancePhaseButton(step)
@@ -469,7 +474,6 @@ export default class UIManager {
       }
     } else if (step === 'GuildCreation' || step === 'Complete') {
 
-      this._resourceBar.style.display = ''
       this._setFactionsButtonVisible(true)
       this._updateAdvancePhaseButton(step)
       if (step === 'GuildCreation') {
@@ -485,43 +489,18 @@ export default class UIManager {
         this._hideHelpWindow()
       }
     }
-    // Re-render the bar after currentStep changes so quantity display (qty visible
-    // only in Guild phase) matches the new phase even if updateResources ran first.
-    this._renderResourceBar()
   }
 
-  // ── Resource bar ──────────────────────────────────────────────────────────
-
-  _renderResourceBar() {
-    const bar = this._resourceBar
-    if (!bar) return
-    bar.innerHTML = ''
-
-    const combined = [
-      ...DEFAULT_RESOURCES,
-      ...this._resourceRegistry.filter(r => !HIDDEN_RESOURCES.has(r) && !DEFAULT_RESOURCES.includes(r)),
-    ]
-
-    const showQty = this.currentStep === 'GuildCreation' || this.currentStep === 'Complete'
-    for (const name of combined) {
-      const qty = this._guildResources[name] ?? 0
-      const chip = document.createElement('div')
-      chip.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 10px;height:100%;border-right:1px solid #222;white-space:nowrap;font-size:11px'
-      chip.innerHTML = `<span style="color:#aaa">${name}</span>`
-        + (showQty ? `<span style="color:#fc8;font-weight:bold">${qty}</span>` : '')
-      bar.appendChild(chip)
-    }
-  }
+  // ── Resources (data only — the top resource bar was removed; a dedicated
+  // Resource UI will read this same data feed later) ─────────────────────────
 
   updateResources(resources) {
     this._resourceRegistry = resources || []
-    this._renderResourceBar()
   }
 
   updateGuild(guild) {
     if (guild) {
       this._guildResources = guild.resources || {}
-      this._renderResourceBar()
       this.guildPanel.setData({ guild })
       this.factionsPanel.setGuild(guild)
     }

@@ -117,7 +117,7 @@ export default class ResourceDialog {
   }
 
   _isServiceName(lowerName) {
-    if (lowerName === 'labour' || lowerName === 'security') return true
+    if (lowerName === 'labour' || lowerName === 'security' || lowerName === 'entertainment' ) return true
     return this._defs?.[lowerName]?.type === 'Service'
   }
 

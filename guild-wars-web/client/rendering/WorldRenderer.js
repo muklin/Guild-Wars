@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import CameraController, { FLOOR_SCROLL_MAX } from '../input/CameraController.js'
 import WalkMode from './WalkMode.js'
 import Minimap from './Minimap.js'
+import Compass from './Compass.js'
 
 import TerrainRenderer from './TerrainRenderer.js'
 import DistrictRenderer from './DistrictRenderer.js'
@@ -165,6 +166,10 @@ export default class WorldRenderer {
     this.groundRenderer   = new GroundRenderer(this.scene, this.originalMaterials)
     this.groundRenderer.buildingRenderer.setDirtyCallback(() => this.markDirty())
     this.minimap          = new Minimap()
+    this.compass          = new Compass()
+    // Compass shows in Top-down/Iso (the two non-walk view modes); Minimap shows in
+    // Walk Mode. Walk mode is never active on load, so the compass starts visible.
+    this.compass.show()
 
     window.addEventListener('resize', () => this.onWindowResize())
 
@@ -192,6 +197,7 @@ export default class WorldRenderer {
 
     this.cameraController.update()
     this._applyFloorScrollClip()
+    this.compass.update(this.cameraController.azimuth, this.cameraController._topDown)
     const p = this.camera.position
     const lp = this._lastCamPos
     const camMoved = !lp || lp.x !== p.x || lp.y !== p.y || lp.z !== p.z
@@ -228,6 +234,12 @@ export default class WorldRenderer {
 
   focusCameraOn(x, z) {
     this.cameraController?.focusOn(x, z)
+  }
+
+  // New-game default view: iso mode, North at the top, city centred, whole map visible
+  // (see CameraController.centerOnMap's doc comment for the azimuth math).
+  centerOnMap() {
+    this.cameraController?.centerOnMap()
   }
 
   // Pan + zoom to an HQ location. No-op in walk mode.
@@ -891,8 +903,15 @@ export default class WorldRenderer {
       // Capture the minimap snapshot before WalkMode exists — its Avatar mesh hasn't
       // been added to the scene yet (so it can't get baked into the bitmap), and the
       // main renderer hasn't switched to WalkMode's camera yet (so the player never
-      // sees this frame).
+      // sees this frame). Briefly apply Top-down mode's own wall treatment (interbuilding/
+      // plot-boundary walls shown — see toggleTopDownMode) for JUST this one capture:
+      // seen from directly above, those boundaries read clearly on a minimap the same
+      // way they do in the real Top-down view; restored immediately after (we've
+      // already forced _topDown false above, so false is always the correct restore
+      // value here, never a guess).
+      this.groundRenderer.buildingRenderer.setInterbuildingWallsVisible(true)
       this.minimap.captureSnapshot(this.renderer, this.scene, targetPos.x, targetPos.z)
+      this.groundRenderer.buildingRenderer.setInterbuildingWallsVisible(false)
       this._walkMode = new WalkMode(
         this.scene, this.renderer, streetGraph, targetPos, initialYaw,
         () => this._exitWalkMode(), this.groundRenderer.buildingRenderer, this.groundRenderer._fenceSegments,
@@ -900,6 +919,7 @@ export default class WorldRenderer {
       this.cameraController.setEnabled(false)
       this.terrainRenderer.setFPBandsVisible(false)
       this.minimap.show()
+      this.compass.hide()
       return true
     } else {
       this._exitWalkMode()
@@ -913,6 +933,7 @@ export default class WorldRenderer {
     this._walkMode.destroy()
     this._walkMode = null
     this.minimap.hide()
+    this.compass.show()
     this.terrainRenderer.setFPBandsVisible(true)
     this._clearFloorScrollClip()   // back to iso — always unclipped, never inherits walk/top-down state
     // Re-centre the iso camera on the character's last position at max zoom

@@ -2,17 +2,18 @@
 // with a real example value from the current save shown alongside every field. Fully
 // static — no client-side JS required, just nested <details> elements — so it works
 // equally well opened directly (file://) or served.
-//   node tools/generateSchemaViewer.mjs
+//   node tools/generateSchemaViewer.mjs [path/to/save.json]
 // Re-run any time the schema is regenerated (see tools/generateSaveSchema.mjs) so the
 // two stay in sync — the viewer walks both files in lockstep by key, so a stale pairing
-// would show the wrong example for a renamed/moved field.
+// would show the wrong example for a renamed/moved field. The optional save-path
+// argument must be the SAME file the schema was generated from.
 import { readFileSync, writeFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
 const _dir = dirname(fileURLToPath(import.meta.url))
 const schemaPath = join(_dir, '../docs/schemas/json-schema-autosave.json')
-const savePath = join(_dir, '../server/saves/autosave.json')
+const savePath = process.argv[2] || join(_dir, '../server/saves/autosave.json')
 const outPath = join(_dir, '../docs/schemas/autosave-schema-viewer.html')
 
 const schema = JSON.parse(readFileSync(schemaPath, 'utf8'))

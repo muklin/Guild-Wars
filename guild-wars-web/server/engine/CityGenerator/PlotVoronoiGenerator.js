@@ -21,11 +21,21 @@ export default class PlotVoronoiGenerator {
   // Subdivides non-square blocks into plots using boundary-seeded Voronoi.
   // Squares are expected to be pre-marked by markSquareBlocks. Mutates each block to add
   // `blockType` and `seeds`. Plots overlapping a Landmark footprint are dropped.
+  // registry (optional, ADR-0020 Stage C): the SHARED GroundPointRegistry, threaded
+  // into _mergeSmallPlots for subdivided plots' newly-cut corners. A plot that keeps
+  // its block's own unchanged corners (square/single/no-subdivision cases) reuses
+  // block.pointIds directly — already registry-backed by CityBlockGenerator when the
+  // SAME registry was passed there, so no re-minting needed for those.
   // Returns { plots }.
-  generate(blocks, districts, junctions, roadEdges, landmarkFootprints = []) {
+  generate(blocks, districts, junctions, roadEdges, landmarkFootprints = [], registry = null) {
     const districtById = new Map((districts || []).map(d => [d.id, d]))
     const plots = []
     let plotId = 0
+    // Clear ONCE here, not inside _mergeSmallPlots — that method runs once PER BLOCK
+    // in the loop below, and clearing there would wipe out an earlier block's
+    // already-minted 'plot' points on every subsequent block's call within this same
+    // generate() invocation.
+    if (registry) registry.clearKind('plot')
 
     // Road centrelines (junction→junction) used to keep plots from spanning a road.
     const jById = new Map((junctions || []).map(j => [j.id, j]))
@@ -50,7 +60,7 @@ export default class PlotVoronoiGenerator {
       // paved square plot and move on.
       if (block.blockType === 'square') {
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, blockType: 'square', type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, pointIds: block.pointIds ?? null, streetEdges: block.streetEdges, blockType: 'square', type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
         continue
       }
 
@@ -67,7 +77,7 @@ export default class PlotVoronoiGenerator {
       // other "can't subdivide safely" case below.
       if (block.blockType === 'single') {
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, pointIds: block.pointIds ?? null, streetEdges: block.streetEdges, type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
         continue
       }
 
@@ -75,7 +85,7 @@ export default class PlotVoronoiGenerator {
       if (blockCorners.length > MAX_BLOCK_VERTS) {
         block.blockType = 'single'
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, pointIds: block.pointIds ?? null, streetEdges: block.streetEdges, type: 'block', assignedType: districtById.get(districtId)?.assignedType ?? null })
         continue
       }
 
@@ -87,7 +97,7 @@ export default class PlotVoronoiGenerator {
       if (minPlotSize > 0 && area < minPlotSize) {
         block.blockType = 'single'
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, pointIds: block.pointIds ?? null, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
         continue
       }
 
@@ -96,7 +106,7 @@ export default class PlotVoronoiGenerator {
       if (seeds.length === 0) {
         block.blockType = 'single'
         block.seeds = []
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, pointIds: block.pointIds ?? null, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
         continue
       }
 
@@ -138,17 +148,18 @@ export default class PlotVoronoiGenerator {
       if (plotCells.length === 0) {
         block.blockType = 'single'
         block.seeds = seeds
-        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
+        plots.push({ id: plotId++, blockId: block.id, districtId, blockCorners, pointIds: block.pointIds ?? null, streetEdges: block.streetEdges, type: 'block', assignedType: district?.assignedType ?? null })
       } else {
         block.blockType = 'subdivided'
         block.seeds = seeds
-        const mergedCells = this._mergeSmallPlots(plotCells, minPlotSize)
+        const mergedCells = this._mergeSmallPlots(plotCells, minPlotSize, registry)
         for (const cell of mergedCells) {
           plots.push({
             id: plotId++,
             blockId: block.id,
             districtId,
             blockCorners: cell.polygon,
+            pointIds: cell.pointIds ?? null,
             // _clipPolygonToSide may clip cell polygons to road CENTRELINES (not
             // gutters), producing edges that sit STREET_HALF_WIDTH away from any
             // gutter roadEdge — outside findStreetFacingEdges' normal tolerance.
@@ -284,7 +295,15 @@ export default class PlotVoronoiGenerator {
   // by re-canceling directed edge strings — and dcel.mergeFaces does the actual splice.
   // This is the same operation CityBlockGenerator._mergeSquareClusters needs and used to
   // reimplement independently as _unionPolygons; both now go through DCEL.mergeFaces.
-  _mergeSmallPlots(cells, minPlotSize) {
+  // sharedRegistry (optional, ADR-0020 Stage C): mint plot corners into the SHARED
+  // GroundPointRegistry instead of a call-scoped throwaway one — 'plot' is an
+  // ephemeral kind (same discipline as 'gutter'/'terrain-split'). NOTE: this method is
+  // called once PER BLOCK by generate()'s loop — the 'plot' kind is cleared ONCE by
+  // the caller before that loop starts, not here (clearing per-call would wipe out an
+  // earlier block's already-minted points within the same generate() invocation).
+  // Falls back to a fresh local registry when omitted (this method's own unit tests,
+  // and any pre-Stage-C caller).
+  _mergeSmallPlots(cells, minPlotSize, sharedRegistry = null) {
     if (!minPlotSize || minPlotSize <= 0 || cells.length <= 1) return cells
 
     const signedArea = (poly) => {
@@ -293,7 +312,7 @@ export default class PlotVoronoiGenerator {
       return a / 2
     }
 
-    const registry = new GroundPointRegistry()
+    const registry = sharedRegistry || new GroundPointRegistry()
     const dcel = new DCEL(registry)
     const groups = cells.map((c) => {
       let poly = c.polygon
@@ -339,7 +358,10 @@ export default class PlotVoronoiGenerator {
     for (const g of groups) {
       if (!g.alive) continue
       const poly = dcel.resolveFacePolygon(g.faceId)
-      if (poly && poly.length >= 3) out.push({ polygon: poly })
+      if (!poly || poly.length < 3) continue
+      let pointIds = null
+      try { pointIds = dcel.walkFacePolygon(g.faceId) } catch { /* leave unset — polygon is still authoritative */ }
+      out.push({ polygon: poly, pointIds })
     }
     return out.length ? out : cells
   }

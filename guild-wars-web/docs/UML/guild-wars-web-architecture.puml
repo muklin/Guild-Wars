@@ -1,0 +1,181 @@
+' chartroom:source=UML
+@startuml guild-wars-web-architecture
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+Person(player, "Player", "Hosts or joins a Guild Wars game; issues intent through the client UI")
+System(guildWars, "Guild Wars Web", "")
+Container_Boundary(clientCB, "Web Client") {
+  Component(app, "App", "JavaScript", "Top-level orchestrator; wires renderer, input, UI and network together, holds transient UI-selection state")
+  Component(worldRenderer, "WorldRenderer", "Three.js", "Scene/camera root; composes Terrain/District/Ground renderers, buildings, walk mode and minimap")
+  Component(uiManager, "UIManager", "DOM/CSS", "Owns every Panel/Dialog (Guild, District, Faction, Character, Resource, God, Magic, Foreign Power, ...) and dispatches their events")
+  Component(gameAPI, "GameAPI", "fetch/REST", "Typed client for every /api/* endpoint; attaches the X-Seat-Key header")
+  Component(liveSync, "LiveSync", "WebSocket", "Auto-reconnecting sync channel; a content-free server broadcast triggers a state refetch")
+  Component(eventBus, "EventBus", "Pub/Sub", "Decoupled event dispatch shared by renderer, input and UI")
+  Component(inputHandler, "InputHandler", "JavaScript", "Mouse/keyboard input and camera control (CameraController)")
+}
+Container_Boundary(serverCB, "Game Server") {
+  Component(apiRoutes, "API Routes", "Express + ws", "HTTP/WebSocket entrypoint (server/index.js): routes requests into the engine, autosaves after every mutation, broadcasts sync nudges")
+  ' chartroom:boundaryLevel=component
+  Container_Boundary(gameStateManagerCB, "GameStateManager") {
+    ' chartroom:field=f_gId|id|string|Unique guild id, e.g. "guild-1"
+    ' chartroom:field=f_gSeatId|seatId|number\|null|Owning seat's id
+    ' chartroom:field=f_gName|name|string|Guild display name (empty until set)
+    ' chartroom:field=f_gNameLocked|nameLocked|boolean|True once a name has been set; blocks further renames
+    ' chartroom:field=f_gColor|color|string|Guild's assigned map colour
+    ' chartroom:field=f_gHeadquarters|headquarters|Object{kind,refId,districtId}|Building serving as HQ; districtId references a District
+    ' chartroom:field=f_gTokens|tokens|Object{guild,character,round}|Per-guild action token counts
+    ' chartroom:field=f_gResources|resources|Object<string,number>|Resource stockpile by name (starts {Gold:200})
+    ' chartroom:field=f_gStanding|standing|Object<factionId,number>|Standing (0-100) held with each Faction
+    ' chartroom:field=f_gTraits|traits|string[]|Purchased guild trait ids
+    Code(guild, "Guild", "Plain Object", "A player's guild: HQ, tokens, resources, standing, traits and character roster")
+  }
+  ' chartroom:boundaryLevel=component
+  Container_Boundary(setupPhaseCB, "SetupPhase", $descr="Orchestrates the Terrain -> CitySubdivision -> GuildCreation setup pipeline") {
+    ' chartroom:field=f_dId|id|number|District id
+    ' chartroom:field=f_dAssignedType|assignedType|string\|null|District type (Residential, Leadership, Market, ...)
+    ' chartroom:field=f_dResidentialClass|residentialClass|string\|null|Sub-class when assignedType is Residential
+    ' chartroom:field=f_dLeadershipClass|LeadershipClass|string\|null|Sub-class when assignedType is Leadership (e.g. Monarchy)
+    ' chartroom:field=f_dProducedResource|producedResource|string\|null|Primary resource this district produces
+    ' chartroom:field=f_dConsumedResources|consumedResources|string[]|Resources this district consumes
+    ' chartroom:field=f_dStreetSeed|streetSeed|number\|null|RNG seed used for this district's street generation
+    ' chartroom:field=f_dLocked|locked|boolean|True once Applied - final, no further edits
+    ' chartroom:field=f_dPromotedFromPlotId|promotedFromPlotId|number\|null|Source terrain plot id if created via City Expansion
+    Code(district, "District", "Plain Object", "One city district: type, class, resources, lock state and generated-street seed")
+  }
+  ' chartroom:boundaryLevel=component
+  Container_Boundary(multiplayerManagerCB, "MultiplayerManager", $descr="Authoritative seats, d20 initiative order, turn gating, token ledger, per-seat secrets. Holds no world state.") {
+    ' chartroom:field=f_sId|id|number|Auto-incrementing seat id
+    ' chartroom:field=f_sName|name|string|Player's chosen display name
+    ' chartroom:field=f_sSeatKey|seatKey|string|Secret bearer token identifying this seat's requests
+    ' chartroom:field=f_sGuildId|guildId|string\|null|The Guild this seat owns, once created
+    ' chartroom:field=f_sConnected|connected|boolean|Live WebSocket connection status
+    ' chartroom:field=f_sInitiativeRoll|initiativeRoll|number\|null|d20 roll used to fix initiative order
+    ' chartroom:field=f_sPassed|passed|boolean|Whether this seat has passed its current-step turn
+    ' chartroom:field=f_sTokens|tokens|Object{veto}|Seat-level veto token count
+    Code(seat, "Seat", "Plain Object", "One player's identity, connection and turn state")
+  }
+  ' chartroom:boundaryLevel=component
+  Container_Boundary(cityGeneratorCB, "CityGenerator", $descr="Procedural terrain -> district -> street -> block -> plot pipeline built on DCEL + Voronoi") {
+    ' chartroom:field=f_pId|id|number|Monotonically increasing point id (never reused within a session)
+    ' chartroom:field=f_pX|x|number|World-space X coordinate
+    ' chartroom:field=f_pY|y|number|World-space Y coordinate
+    ' chartroom:field=f_pZ|z|number|World-space Z / elevation
+    ' chartroom:field=f_pKind|kind|string|Lifetime tag: terrain (durable) or street/gutter/block/plot/*-split (ephemeral)
+    Code(groundPointRegistry, "GroundPointRegistry", "JS Class", "The single shared vertex store; every Surface references corners by Point id, never by embedded {x,y}")
+    ' chartroom:field=f_fId|id|number|Face id
+    ' chartroom:field=f_fOuterEdge|outerEdge|number (HalfEdge id)|The half-edge that begins this face's boundary loop
+    ' chartroom:field=f_fKind|kind|string|Face category: terrain/district/street/gutter/block/plot
+    ' chartroom:field=f_fDomainPayload|(assignedType, seedPoint, ...)|Object|Domain data passed through untouched - DCEL owns topology only
+    Code(dcelFace, "DCEL Face", "Half-edge topology", "A bounded loop of half-edges over the shared vertex store; DCEL's domain-facing output")
+  }
+  ' chartroom:boundaryLevel=component
+  Container_Boundary(persistenceCB, "Persistence", $descr="Save/load/list/delete named game slots as JSON") {
+    ' chartroom:field=f_spName|name|string|Save slot name (e.g. "autosave")
+    ' chartroom:field=f_spSavedAt|savedAt|string (ISO datetime)|Timestamp the save was written
+    ' chartroom:field=f_spVersion|version|number|Save-format version (currently 1)
+    ' chartroom:field=f_spGameState|gameState|Object|GameStateManager.serialize() output - see GameState Snapshot
+    ' chartroom:field=f_spSetupPhase|setupPhase|Object|SetupPhase.serialize() output - see SetupPhase Snapshot
+    ' chartroom:field=f_spMultiplayer|multiplayer|Object|MultiplayerManager.serialize() output - see Multiplayer Snapshot
+    Code(savePayload, "Save Payload", "JSON", "The on-disk shape of one save slot file (server/saves/autosave.json)")
+    ' chartroom:field=f_gsGuilds|guilds|Object[]|Guild records (see Guild Code element); item shape not constrained by the schema generator
+    ' chartroom:field=f_gsDistricts|districts|Object[]|District records (see District Code element); item shape not constrained by the schema generator
+    ' chartroom:field=f_gsFactions|factions|Object[]|NPC faction records; empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_gsThreats|threats|Object[]|Active threat records; item shape unconstrained
+    ' chartroom:field=f_gsTradingDestinations|tradingDestinations|Object[]|Trading-destination records; item shape unconstrained
+    ' chartroom:field=f_gsCurrentRound|currentRound|number|Current round number
+    ' chartroom:field=f_gsCurrentPhase|currentPhase|string|Current game phase name
+    ' chartroom:field=f_gsCityLeader|cityLeader|any|Unconstrained by schema - current city leader reference
+    ' chartroom:field=f_gsSuccessionMethod|successionMethod|any|Unconstrained by schema - leadership succession rule in effect
+    ' chartroom:field=f_gsGroundplane|groundplane|Object|Unified terrain+city spatial model - see Groundplane Snapshot
+    ' chartroom:field=f_gsBuildingData|buildingData|Object|Unconstrained by schema (empty at generation time)
+    ' chartroom:field=f_gsNextFactionAutoId|nextFactionAutoId|number|Auto-increment counter for faction ids
+    Code(gameStateSnapshot, "GameState Snapshot", "JSON", "gameState field of the autosave file - GameStateManager.serialize() output")
+    ' chartroom:field=f_gpPoints|points|Object[]|Shared vertex store entries {id,x,y,z,kind,halfEdge} - see GroundPointRegistry Code element
+    ' chartroom:field=f_gpTerrain|terrain|Object|Terrain half of the groundplane - see Terrain Snapshot
+    ' chartroom:field=f_gpCity|city|Object|City half of the groundplane - see City Snapshot
+    Code(groundplaneSnapshot, "Groundplane Snapshot", "JSON", "groundplane field of GameState Snapshot - the unified terrain+city spatial model (ADR-0020)")
+    ' chartroom:field=f_tsWorldSize|worldSize|number|Terrain world extent
+    ' chartroom:field=f_tsRegions|regions|Object[]|Terrain regions {id,seedPoint,polygon,assignedType,description,isEdge,isNorthEdge}
+    ' chartroom:field=f_tsTerrainPlots|terrainPlots|Object[]|Terrain plots {id,seedPoint,polygon,assignedType,gridX,gridZ,description,parentRegionId,pointIds,_rawPolygon,_rawPointIds}
+    ' chartroom:field=f_tsEdges|edges|Object<"regionA-regionB",Object>|Region-adjacency edges, each {regionA,regionB,pointIds,assignedType}
+    ' chartroom:field=f_tsEdgePoints|edgePoints|Object[]|Boundary points {id,x,y}
+    ' chartroom:field=f_tsRiverCliffFaces|riverCliffFaces|Object[]|River/cliff face records; empty at generation time so item shape is unconstrained
+    Code(terrainSnapshot, "Terrain Snapshot", "JSON", "terrain field of Groundplane Snapshot")
+    ' chartroom:field=f_csDistricts|districts|Object[]|Spatial city districts {id,seedPoint,polygon,pointIds,originPlotId,assignedType,description}
+    ' chartroom:field=f_csEdges|edges|Object<"districtA-districtB"\|"outer-N",Object>|District-adjacency edges, each {districtA,districtB,pointIds,assignedType,description}
+    ' chartroom:field=f_csEdgePoints|edgePoints|Object[]|Boundary points {id,x,y}
+    ' chartroom:field=f_csEligiblePromotionPlotIds|eligiblePromotionPlotIds|number[]|Terrain plot ids eligible for City Expansion promotion
+    ' chartroom:field=f_csStreetGraph|streetGraph|any|Unconstrained by schema (empty at generation time)
+    ' chartroom:field=f_csBlocks|blocks|Object[]|City block records; empty at generation time so item shape is unconstrained
+    Code(citySnapshot, "City Snapshot", "JSON", "city field of Groundplane Snapshot")
+    ' chartroom:field=f_sspCurrentStep|currentStep|string|Current Setup sub-phase step name
+    ' chartroom:field=f_sspTerrainPlacements|terrainPlacements|Object[]|{regionId,terrainType,description} - per-region terrain type choices
+    ' chartroom:field=f_sspEdgePlacements|edgePlacements|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspDistrictTypePlacements|districtTypePlacements|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspDistrictEdgePlacements|districtEdgePlacements|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspDistrictClassAssignments|districtClassAssignments|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspResourceRegistry|resourceRegistry|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspResourceDefinitions|resourceDefinitions|Object|Unconstrained by schema (empty at generation time)
+    ' chartroom:field=f_sspThreats|threats|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspTradingDestinations|tradingDestinations|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspFactions|factions|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspGods|gods|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspMagicSystem|magicSystem|any|Unconstrained by schema (empty at generation time)
+    ' chartroom:field=f_sspForeignPowers|foreignPowers|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspWorldDomains|worldDomains|any|Unconstrained by schema (empty at generation time)
+    ' chartroom:field=f_sspTerrainDistrictPlots|terrainDistrictPlots|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_sspTerrainFeaturePlots|terrainFeaturePlots|Object[]|Empty at generation time so item shape is unconstrained
+    Code(setupPhaseSnapshot, "SetupPhase Snapshot", "JSON", "setupPhase field of the autosave file - SetupPhase.serialize() output")
+    ' chartroom:field=f_mpSeats|seats|Object[]|Seat records - see Seat Code element
+    ' chartroom:field=f_mpInitiativeOrder|initiativeOrder|Object[]|Empty at generation time so item shape is unconstrained
+    ' chartroom:field=f_mpActiveIndex|activeIndex|number|Index of the seat whose turn is active
+    ' chartroom:field=f_mpStarted|started|boolean|Whether the game has left the Lobby
+    ' chartroom:field=f_mpNextSeatId|nextSeatId|number|Auto-increment counter for seat ids
+    ' chartroom:field=f_mpSecrets|secrets|Object[]|Per-seat secrets (e.g. seat keys); empty at generation time so item shape is unconstrained
+    Code(multiplayerSnapshot, "Multiplayer Snapshot", "JSON", "multiplayer field of the autosave file - MultiplayerManager.serialize() output")
+  }
+}
+ContainerDb(saveStore, "Save Store", "JSON files on disk", "server/saves/*.json - autosave plus named slots")
+Container(shared, "Shared Rule Data", "ES Modules", "Game-rule constants/catalogues imported unmodified by both Client and Server: building catalogue, district config, guild traits, HQ upgrades, name generation")
+Container(electron, "Desktop Shell", "Electron", "Thin desktop wrapper (ADR-0004): bundles the Web Client + assets, points at a remote Game Server chosen on a connect screen")
+
+Rel(player, clientCB, "Uses", "Browser (Vite dev server or built SPA)")
+Rel(player, electron, "Uses", "Desktop app")
+Rel_D(electron, serverCB, "Requires", "HTTPS REST + WebSocket to a player-chosen remote host")
+Rel_D(clientCB, serverCB, "Sends Data To", "HTTPS REST /api/*")
+Rel(clientCB, serverCB, "Sends Data To", "WebSocket /ws (sync nudges)")
+Rel(clientCB, shared, "Requires", "ES Module import")
+Rel(serverCB, shared, "Requires", "ES Module import")
+Rel(serverCB, saveStore, "Owns", "Reads/writes JSON save files")
+Rel(app, worldRenderer, "Requires")
+Rel(app, uiManager, "Requires")
+Rel(app, gameAPI, "Requires")
+Rel(app, liveSync, "Requires")
+Rel(app, eventBus, "Requires")
+Rel(app, inputHandler, "Requires")
+Rel(uiManager, eventBus, "Sends Data To", "DOM event -> EventBus.emit")
+Rel(inputHandler, eventBus, "Sends Data To", "Input event -> EventBus.emit")
+Rel(worldRenderer, eventBus, "Sends Data To", "Click/hover -> EventBus.emit")
+Rel_D(gameAPI, apiRoutes, "Sends Data To", "HTTPS REST /api/*")
+Rel(liveSync, apiRoutes, "Sends Data To", "WebSocket /ws")
+Rel(apiRoutes, gameStateManagerCB, "Requires")
+Rel(apiRoutes, setupPhaseCB, "Requires")
+Rel(apiRoutes, multiplayerManagerCB, "Requires")
+Rel(apiRoutes, persistenceCB, "Requires")
+Rel(setupPhaseCB, gameStateManagerCB, "Requires")
+Rel(setupPhaseCB, cityGeneratorCB, "Requires")
+Rel(persistenceCB, saveStore, "Owns")
+Rel(dcelFace, groundPointRegistry, "References", "Face vertex ids resolve through GroundPointRegistry (DCEL Vertex == Point)")
+Rel(f_gHeadquarters, district, "References", "headquarters.districtId")
+Rel(f_gSeatId, seat, "References")
+Rel(f_sGuildId, guild, "References")
+Rel(f_spGameState, gameStateSnapshot, "References")
+Rel(f_spSetupPhase, setupPhaseSnapshot, "References")
+Rel(f_spMultiplayer, multiplayerSnapshot, "References")
+Rel(f_gsGroundplane, groundplaneSnapshot, "References")
+Rel(f_gpTerrain, terrainSnapshot, "References")
+Rel(f_gpCity, citySnapshot, "References")
+Rel(f_mpSeats, seat, "References")
+Rel(electron, clientCB, "Hosts")
+
+@enduml

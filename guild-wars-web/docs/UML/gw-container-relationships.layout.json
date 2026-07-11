@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "sourceKey": "local:UML",
+  "elements": {
+    "citySnapshot": {
+      "x": 0,
+      "y": 0
+    },
+    "clientCB": {
+      "x": -137.85511943392063,
+      "y": 62.62639539071576,
+      "childOrder": [
+        "app",
+        "worldRenderer",
+        "uiManager",
+        "gameAPI",
+        "liveSync",
+        "eventBus",
+        "inputHandler"
+      ]
+    },
+    "dcelFace": {
+      "x": 0,
+      "y": 0
+    },
+    "district": {
+      "x": 0,
+      "y": 0
+    },
+    "electron": {
+      "x": -459.80645434718497,
+      "y": 90.5520784262088
+    },
+    "gameStateSnapshot": {
+      "x": 0,
+      "y": 0
+    },
+    "groundplaneSnapshot": {
+      "x": 0,
+      "y": 0
+    },
+    "groundPointRegistry": {
+      "x": 0,
+      "y": 0
+    },
+    "guild": {
+      "x": 0,
+      "y": 0
+    },
+    "guildWars": {
+      "x": 108.80254035436135,
+      "y": -92.41790368780201
+    },
+    "multiplayerSnapshot": {
+      "x": 0,
+      "y": 0
+    },
+    "player": {
+      "x": -756.8089665126015,
+      "y": -77.12081382785276
+    },
+    "savePayload": {
+      "x": 0,
+      "y": 0
+    },
+    "saveStore": {
+      "x": 878.3923160194694,
+      "y": 224.18675894561918
+    },
+    "seat": {
+      "x": 0,
+      "y": 0
+    },
+    "serverCB": {
+      "x": 304.08997910110816,
+      "y": 63.06376650518041
+    },
+    "setupPhaseSnapshot": {
+      "x": 0,
+      "y": 0
+    },
+    "shared": {
+      "x": 16.12905689378971,
+      "y": -181.42058296993866
+    },
+    "terrainSnapshot": {
+      "x": 0,
+      "y": 0
+    }
+  },
+  "hiddenAliases": []
+}

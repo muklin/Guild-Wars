@@ -1,6 +1,5 @@
 import { distToSegSq, pip, segIntersect } from '../voronoi/VoronoiUtils.js'
 import { STREET_HALF_WIDTH, getDistrictParams, halfWidthForDistrict } from './StreetVoronoiGenerator.js'
-import polygonClipping from 'polygon-clipping'
 import GroundPointRegistry from './GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './DCEL.js'
 
@@ -91,7 +90,14 @@ export default class CityBlockGenerator {
   // Returns { blocks, roadEdges }.
   // blocks: [{id, districtId, vertices, area, streetEdges}]
   // roadEdges: raw gutter road-edge segments, needed by CityPlotGenerator.
-  generate(districts, streetGraph) {
+  // registry (optional, ADR-0020 Stage C): the SHARED GroundPointRegistry — when
+  // provided, _traceFaces mints gutter/block corners into it (kind 'gutter', cleared
+  // and re-minted fresh every call, same ephemeral-layer discipline as
+  // 'terrain-split'/'district-split') instead of a call-scoped throwaway registry, so
+  // block corners are real, persistent groundplane Points rather than a local id space
+  // that happens to get thrown away after this call. Omit for the pre-Stage-C
+  // behavior (a fresh local registry every call — still correct, just not shared).
+  generate(districts, streetGraph, registry = null) {
     const junctions = streetGraph?.junctions || []
 
     const { gutterNodes, gutterEdges, roadEdges } = this._gutterGraphFromJunctions(junctions)
@@ -130,22 +136,33 @@ export default class CityBlockGenerator {
     let blockId = 0
     const districtById = new Map(districts.map(d => [d.id, d]))
 
-    const allFaces = this._traceFaces(planarNodes, planarEdges)
+    const traced = this._traceFaces(planarNodes, planarEdges, registry)
+    const allFaces = traced.polys.map((poly, i) => ({ poly, faceId: traced.faceIds[i] }))
     const roadFacePolys = []
+    const roadFaceIds = []
     let rejectedRoad = 0, rejectedArea = 0, rejectedNotch = 0
     // bug-4 diagnostics: collect centroids of every dropped face by cause.
     const dbgRoad1 = [], dbgRoad2 = [], dbgArea = []
 
+    const markRoad = (entry) => {
+      roadFacePolys.push(entry.poly)
+      if (entry.faceId != null) {
+        roadFaceIds.push(entry.faceId)
+        const f = traced.dcel.getFace(entry.faceId)
+        if (f) f.kind = 'road'
+      }
+      rejectedRoad++
+    }
+
     // Pass 1: reject road strips + junction fills (interior point close to centreline).
     const faceCandidates = []
-    for (const rawVertices of allFaces) {
-      if (rawVertices.length < 3) continue
-      if (this._isRoadFace(rawVertices, streetNodes, streetEdges)) {
-        roadFacePolys.push(rawVertices)
-        rejectedRoad++
-        dbgRoad1.push(faceCentroidArea(rawVertices))
+    for (const entry of allFaces) {
+      if (entry.poly.length < 3) continue
+      if (this._isRoadFace(entry.poly, streetNodes, streetEdges)) {
+        markRoad(entry)
+        dbgRoad1.push(faceCentroidArea(entry.poly))
       } else {
-        faceCandidates.push(rawVertices)
+        faceCandidates.push(entry)
       }
     }
 
@@ -162,21 +179,22 @@ export default class CityBlockGenerator {
       for (let i = 0; i < n; i++) roadEdgeSet.add(`${pk(poly[i])}_${pk(poly[(i + 1) % n])}`)
     }
     const blockFaces = []
-    for (const rawVertices of faceCandidates) {
+    for (const entry of faceCandidates) {
+      const rawVertices = entry.poly
       const n = rawVertices.length
       const surroundedByRoad = rawVertices.every((_, i) =>
         roadEdgeSet.has(`${pk(rawVertices[(i + 1) % n])}_${pk(rawVertices[i])}`)
       )
       if (surroundedByRoad) {
-        roadFacePolys.push(rawVertices)
-        rejectedRoad++
+        markRoad(entry)
         dbgRoad2.push(faceCentroidArea(rawVertices))
       } else {
-        blockFaces.push(rawVertices)
+        blockFaces.push(entry)
       }
     }
 
-    for (const rawVertices of blockFaces) {
+    const blockFaceId = new Map()   // blockId -> traced dcel face id
+    for (const { poly: rawVertices, faceId } of blockFaces) {
 
       // High-valence junctions (4+ roads meeting at a sharp angle) sometimes bevel a
       // miter instead of spiking it (StreetVoronoiGenerator.buildJunctions, MITER_LIMIT)
@@ -214,6 +232,15 @@ export default class CityBlockGenerator {
       // B3: quarantine self-intersecting blocks so the plotter never subdivides garbage geometry.
       if (!this._isSimplePolygon(vertices)) block.blockType = 'single'
       blocks.push(block)
+      if (faceId != null) {
+        const f = traced.dcel.getFace(faceId)
+        if (f) { f.kind = 'block'; f.blockId = block.id }
+        blockFaceId.set(block.id, faceId)
+        // Registry-backed corners (ADR-0020) — parallel to blockCorners, resolved from
+        // the traced DCEL face rather than re-derived, so they stay exactly in sync
+        // with whatever winding/ordering the trace itself produced.
+        try { block.pointIds = traced.dcel.walkFacePolygon(faceId) } catch { /* leave unset — blockCorners is still authoritative */ }
+      }
     }
 
     // Mark squares before merging so _mergeSquareClusters can identify them.
@@ -224,7 +251,11 @@ export default class CityBlockGenerator {
       if (block.area < params.square_threshhold) block.blockType = 'square'
     }
 
-    this._mergeSquareClusters(blocks, roadFacePolys, roadEdges)
+    // Stage C slice 1: the merge consumes the ALREADY-TWINNED dcel _traceFaces built —
+    // no re-minting through mintDeduped, no re-insertion; adjacency is the trace's own
+    // half-edge structure. (The throwaway rebuild remains as _mergeSquareClusters'
+    // fallback path for callers without a traced dcel, e.g. its own test.)
+    this._mergeSquareClusters(blocks, roadFacePolys, roadEdges, { dcel: traced.dcel, blockFaceId, roadFaceIds })
 
     // Overlapping/duplicate block faces: near-dup gutter nodes (see the topology repair's
     // "near-dup node(s)" count) let _traceFaces walk two overlapping faces over the same
@@ -266,79 +297,6 @@ export default class CityBlockGenerator {
     return { blocks, roadEdges }
   }
 
-
-  // Fill sparse-interior-street voids. A district whose interior streets are too sparse
-  // leaves large areas covered by neither a block nor a road — the tracer produces nothing
-  // there, so it renders as a void. Compute each district's uncovered region,
-  // districtPolygon − union(blocks ∪ road faces), via robust polygon difference and add each
-  // piece as a block; the normal plot pipeline then subdivides it into building plots. The
-  // pieces are, by construction, disjoint from every existing block, so no overlap is
-  // introduced. Mutates `blocks`. Returns the number of void-fill blocks added.
-  _fillDistrictVoids(blocks, roadFacePolys, districts, roadEdges) {
-    if (!districts?.length || !blocks.length) return 0
-    const MIN_VOID_AREA = 0.05   // ignore thin boundary slivers
-    const MP = (pts) => [[pts.map(p => [p.x, p.y])]]
-    const ringArea = (r) => { let a = 0; for (let k = 0; k < r.length; k++) { const p = r[k], q = r[(k + 1) % r.length]; a += p[0] * q[1] - q[0] * p[1] } return Math.abs(a / 2) }
-
-    const cover = []
-    for (const b of blocks) if (b.blockCorners?.length >= 3) cover.push(MP(b.blockCorners))
-    for (const rf of roadFacePolys) if (rf?.length >= 3) cover.push(MP(rf))
-    if (!cover.length) return 0
-
-    let coverage
-    try { coverage = polygonClipping.union(...cover) } catch (e) { console.warn('  [void-fill] coverage union failed —', e.message); return 0 }
-
-    let nextId = blocks.reduce((m, b) => Math.max(m, b.id), -1) + 1
-    let added = 0, holed = 0
-    for (const d of districts) {
-      if (!d.polygon || d.polygon.length < 3) continue
-      let voids
-      try { voids = polygonClipping.difference(MP(d.polygon), coverage) } catch { continue }
-      for (const poly of voids) {
-        const ext = poly[0]
-        if (ringArea(ext) < MIN_VOID_AREA) continue
-
-        // Annular void (wraps an island block/plaza): stitch the hole(s) into one ring with
-        // zero-width slits and PAVE it as a square, so it fills cleanly without an annular
-        // building. Solid voids become normal blocks and subdivide into plots.
-        let ringPts, blockType
-        if (poly.length > 1) { ringPts = this._stitchHoles(poly); blockType = 'square'; holed++ }
-        else ringPts = poly[0].map(p => [p[0], p[1]])
-
-        const corners = ringPts.map(([x, y]) => ({ x, y }))
-        // polygon-clipping closes rings (last vertex == first) — drop the duplicate.
-        if (corners.length > 1) { const f = corners[0], l = corners[corners.length - 1]; if (Math.abs(f.x - l.x) < 1e-9 && Math.abs(f.y - l.y) < 1e-9) corners.pop() }
-        if (corners.length < 3) continue
-
-        const block = { id: nextId++, districtId: d.id, blockCorners: corners, area: ringArea(ext), streetEdges: findStreetFacingEdges(corners, roadEdges) }
-        if (blockType) block.blockType = blockType
-        blocks.push(block)
-        added++
-      }
-    }
-    if (added) console.log(`  [void-fill] added ${added} block(s) filling sparse-street voids${holed ? ` (${holed} annular → paved squares)` : ''}`)
-    return added
-  }
-
-  // Merge a polygon-with-holes (polygon-clipping ring list [exterior, hole1, …]) into one
-  // simple ring by bridging each hole to the nearest outer vertex with a zero-width slit.
-  _stitchHoles(rings) {
-    const strip = (r) => { const a = r.map(p => [p[0], p[1]]); if (a.length > 1) { const f = a[0], l = a[a.length - 1]; if (Math.abs(f[0] - l[0]) < 1e-9 && Math.abs(f[1] - l[1]) < 1e-9) a.pop() } return a }
-    let outer = strip(rings[0])
-    for (let h = 1; h < rings.length; h++) {
-      const hole = strip(rings[h])
-      if (hole.length < 3) continue
-      let bi = 0, bj = 0, bd = Infinity
-      for (let i = 0; i < outer.length; i++) for (let j = 0; j < hole.length; j++) {
-        const dx = outer[i][0] - hole[j][0], dy = outer[i][1] - hole[j][1], d = dx * dx + dy * dy
-        if (d < bd) { bd = d; bi = i; bj = j }
-      }
-      const hseq = []
-      for (let k = 0; k <= hole.length; k++) hseq.push(hole[(bj + k) % hole.length])
-      outer = [...outer.slice(0, bi + 1), ...hseq, outer[bi], ...outer.slice(bi + 1)]
-    }
-    return outer
-  }
 
   // Returns true if the face is road surface (junction fill or road strip).
   _isRoadFace(vertices, streetNodes, streetEdges) {
@@ -596,9 +554,23 @@ export default class CityBlockGenerator {
 
   // Trace all interior faces of the planar gutter graph.
   // Interior faces have clockwise winding (negative signed area).
-  _traceFaces(nodes, edges) {
+  //
+  // DCEL-native (Stage C slice 1, plan Addendum 2): alongside the coordinate polygons
+  // (the walk itself is byte-for-byte the proven rotation-system traversal), every
+  // accepted face is ALSO inserted into a pass-scoped DCEL over a fresh point registry
+  // (one point per planar node — reference-exact, no coordinate dedup needed since
+  // node identity is already exact here). All interior faces share clockwise winding,
+  // so each undirected gutter segment is traversed once in each direction across its
+  // two adjacent faces — exactly what insertFace's placeholder-then-reclaim twinning
+  // needs. Downstream, _mergeSquareClusters consumes THIS dcel directly instead of
+  // re-minting every polygon through mintDeduped and re-inserting (one reconciliation
+  // site retired). Returns { polys, faceIds, dcel, registry } — faceIds parallel to
+  // polys, null where an individual insert failed (overlapping duplicate faces from
+  // near-dup gutter nodes are a known, diagnosed input state — such a face keeps
+  // working as a plain polygon and is simply excluded from topological merging).
+  _traceFaces(nodes, edges, sharedRegistry = null) {
     this._dbgEnclosedRejects = []   // bug-4: clockwise faces dropped for enclosing a node
-    if (!nodes.length || !edges.length) return []
+    if (!nodes.length || !edges.length) return { polys: [], faceIds: [], dcel: null, registry: null }
 
     const nodeById = new Map(nodes.map(n => [n.id, n]))
 
@@ -647,14 +619,36 @@ export default class CityBlockGenerator {
       return best
     }
 
+    // ADR-0020 Stage C: mint gutter/block corners into the SHARED registry when one is
+    // provided, instead of a call-scoped throwaway one — 'gutter' is an ephemeral kind
+    // (same discipline as 'terrain-split'/'district-split'), fully recomputed every
+    // call, so it's cleared first here rather than accumulating across passes. Falls
+    // back to a fresh local registry when no shared one is given (this method's own
+    // unit-test callers, and any pre-Stage-C caller).
+    const registry = sharedRegistry || new GroundPointRegistry()
+    if (sharedRegistry) sharedRegistry.clearKind('gutter')
+    const dcel = new DCEL(registry)
+    const pointIdByNode = new Map()
+    const pointIdFor = (nodeId) => {
+      let pid = pointIdByNode.get(nodeId)
+      if (pid === undefined) {
+        const n = nodeById.get(nodeId)
+        pid = registry.create(n.x, n.y, 0, 'gutter').id
+        pointIdByNode.set(nodeId, pid)
+      }
+      return pid
+    }
+
     const visited = new Set()
-    const faces   = []
+    const polys   = []
+    const faceIds = []
 
     for (const edge of edges) {
       for (const [u, v] of [[edge.nodeA, edge.nodeB], [edge.nodeB, edge.nodeA]]) {
         if (visited.has(`${u},${v}`)) continue
 
         const faceVerts = []
+        const faceNodeIds = []
         const faceEdges = new Set()  // per-face: detect sub-cycles in getNext
         let cu = u, cv = v
 
@@ -664,7 +658,7 @@ export default class CityBlockGenerator {
           faceEdges.add(key)
           visited.add(key)
           const node = nodeById.get(cu)
-          if (node) faceVerts.push({ x: node.x, y: node.y })
+          if (node) { faceVerts.push({ x: node.x, y: node.y }); faceNodeIds.push(cu) }
           const next = getNext(cu, cv)
           if (next == null) break
           cu = cv; cv = next
@@ -682,12 +676,20 @@ export default class CityBlockGenerator {
         // blocks. A true block face is empty of interior nodes.
         if (area < 0) {
           if (this._enclosesNode(faceVerts, nodes)) this._dbgEnclosedRejects.push(faceCentroidArea(faceVerts))
-          else faces.push(faceVerts)
+          else {
+            polys.push(faceVerts)
+            let fid = null
+            try {
+              const ids = dedupeConsecutiveIds(faceNodeIds.map(pointIdFor))
+              if (ids.length >= 3) fid = dcel.insertFace(ids, 'traced', {}).id
+            } catch { /* overlapping duplicate face (near-dup gutter nodes) — polygon still usable, just not topologically merged */ }
+            faceIds.push(fid)
+          }
         }
       }
     }
 
-    return faces
+    return { polys, faceIds, dcel, registry }
   }
 
   // Gutter nodes lying strictly inside `poly` (further than a small margin from every
@@ -745,30 +747,39 @@ export default class CityBlockGenerator {
   //   5. Replace original cluster blocks with the merged square; drop clusters
   //      whose merged boundary has no street-facing edge (rule 2: no street access).
   //
-  // Mutates `blocks` in place.
-  _mergeSquareClusters(blocks, roadFacePolys, roadEdges) {
+  // Mutates `blocks` in place. `shared` (optional): { dcel, blockFaceId, roadFaceIds }
+  // from a DCEL-native _traceFaces pass — when provided, the merge operates directly on
+  // that already-twinned topology (Stage C slice 1); otherwise it builds the original
+  // throwaway coordinate-deduped DCEL from the polygons (kept for callers without a
+  // traced dcel, e.g. this method's own standalone test).
+  _mergeSquareClusters(blocks, roadFacePolys, roadEdges, shared = null) {
     const squareSet = new Set(blocks.filter(b => b.blockType === 'square').map(b => b.id))
     if (squareSet.size < 2 || !roadFacePolys.length) return
 
     const blockById = new Map(blocks.map(b => [b.id, b]))
 
-    const registry = new GroundPointRegistry()
-    const dcel = new DCEL(registry)
-    const blockFaceId = new Map()   // blockId -> dcel face id
-    for (const block of blocks) {
-      const ids = dedupeConsecutiveIds(registry.mintDeduped(block.blockCorners, 'block', 1e-4, { reuseExisting: true }))
-      if (ids.length < 3) continue   // degenerate corners collapsed under tolerance — excluded from merging, not crashed
-      try {
-        const face = dcel.insertFace(ids, 'block', { blockId: block.id })
-        blockFaceId.set(block.id, face.id)
-      } catch { /* malformed/duplicate-winding block — skip, don't abort the whole pass */ }
-    }
-    const roadFaceIds = []
-    for (const rfPoly of roadFacePolys) {
-      const ids = dedupeConsecutiveIds(registry.mintDeduped(rfPoly, 'block', 1e-4, { reuseExisting: true }))
-      if (ids.length < 3) continue
-      try { roadFaceIds.push(dcel.insertFace(ids, 'road', {}).id) }
-      catch { /* malformed/duplicate-winding road face — skip, don't abort the whole pass */ }
+    let dcel, blockFaceId, roadFaceIds
+    if (shared?.dcel) {
+      ({ dcel, blockFaceId, roadFaceIds } = shared)
+    } else {
+      const registry = new GroundPointRegistry()
+      dcel = new DCEL(registry)
+      blockFaceId = new Map()   // blockId -> dcel face id
+      for (const block of blocks) {
+        const ids = dedupeConsecutiveIds(registry.mintDeduped(block.blockCorners, 'block', 1e-4, { reuseExisting: true }))
+        if (ids.length < 3) continue   // degenerate corners collapsed under tolerance — excluded from merging, not crashed
+        try {
+          const face = dcel.insertFace(ids, 'block', { blockId: block.id })
+          blockFaceId.set(block.id, face.id)
+        } catch { /* malformed/duplicate-winding block — skip, don't abort the whole pass */ }
+      }
+      roadFaceIds = []
+      for (const rfPoly of roadFacePolys) {
+        const ids = dedupeConsecutiveIds(registry.mintDeduped(rfPoly, 'block', 1e-4, { reuseExisting: true }))
+        if (ids.length < 3) continue
+        try { roadFaceIds.push(dcel.insertFace(ids, 'road', {}).id) }
+        catch { /* malformed/duplicate-winding road face — skip, don't abort the whole pass */ }
+      }
     }
 
     // For each road face, find adjacent blocks via real twin lookups. Only proceed
@@ -856,10 +867,13 @@ export default class CityBlockGenerator {
       const se = findStreetFacingEdges(merged, roadEdges)
       if (!se.length) continue   // rule 2: merged area has no street — drop it
 
+      let mergedPointIds = null
+      try { mergedPointIds = dcel.walkFacePolygon(survivor) } catch { /* leave unset — blockCorners is still authoritative */ }
       toAdd.push({
         id: nextId++,
         districtId: blockById.get(cluster[0]).districtId,
         blockCorners: merged,
+        pointIds: mergedPointIds,
         area: Math.abs(this._signedArea(merged)),
         blockType: 'square',
         streetEdges: se,

@@ -92,7 +92,15 @@ export default class DCEL {
   // true outer boundary. This placeholder-then-reclaim scheme is what lets faces be
   // inserted in any order and still end up correctly twinned, without a two-pass
   // "insert everything, then link" step.
-  insertFace(vertexIds, kind, payload = {}) {
+  // options.detached: mint every half-edge fresh, neither reading nor writing
+  // _heByDirectedPair — the face gets valid internal next/prev/twin structure but is
+  // NOT stitched into the surrounding topology (no placeholder reclaim, no conflict
+  // checks). Last-resort escape hatch for a face whose boundary legitimately traverses
+  // directed pairs owned in BOTH directions (e.g. a river face between two confluence
+  // splices of opposite local winding — see SetupPhase._buildRiverCliffFaces): the
+  // rendered polygon is exactly right even though the pointer graph around it isn't
+  // manifold. Stage C's topology-native generation removes the need for this.
+  insertFace(vertexIds, kind, payload = {}, { detached = false } = {}) {
     const n = vertexIds.length
     if (n < 3) throw new Error(`DCEL.insertFace: need >=3 vertices, got ${n}`)
     const faceId = this._nextFaceId++
@@ -105,12 +113,17 @@ export default class DCEL {
     for (let i = 0; i < n; i++) {
       const u = vertexIds[i], v = vertexIds[(i + 1) % n]
       const key = `${u},${v}`
-      let he = this._halfEdgesById.get(this._heByDirectedPair.get(key))
+      let he = detached ? null : this._halfEdgesById.get(this._heByDirectedPair.get(key))
       if (he) {
         if (he.face !== null) {
           throw new Error(`DCEL.insertFace: directed edge ${key} already owned by face ${he.face} — overlapping faces or inconsistent winding`)
         }
         he.face = faceId
+      } else if (detached) {
+        he = this._mintHalfEdge(u, faceId)
+        const twin = this._mintHalfEdge(v, null)
+        he.twin = twin.id
+        twin.twin = he.id
       } else {
         he = this._mintHalfEdge(u, faceId)
         this._heByDirectedPair.set(key, he.id)

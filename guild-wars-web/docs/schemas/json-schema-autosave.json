@@ -61,47 +61,2261 @@
         },
         "cityLeader": {},
         "successionMethod": {},
-        "pointRegistry": {
-          "type": "array",
-          "uniqueItems": true,
-          "minItems": 1,
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "number"
-              },
-              "x": {
-                "type": "number"
-              },
-              "y": {
-                "type": "number"
-              },
-              "z": {
-                "type": "number"
-              },
-              "kind": {
-                "type": "string",
-                "minLength": 1
-              },
-              "halfEdge": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "id",
-              "x",
-              "y",
-              "z",
-              "kind"
-            ]
-          }
-        },
-        "worldTerrainData": {
+        "groundplane": {
           "type": "object",
           "properties": {
-            "worldSize": {
-              "type": "number"
+            "points": {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "number"
+                  },
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "z": {
+                    "type": "number"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "halfEdge": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "id",
+                  "x",
+                  "y",
+                  "z",
+                  "kind"
+                ]
+              }
+            },
+            "terrain": {
+              "type": "object",
+              "properties": {
+                "worldSize": {
+                  "type": "number"
+                },
+                "regions": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "number"
+                      },
+                      "seedPoint": {
+                        "type": "object",
+                        "properties": {
+                          "x": {
+                            "type": "number"
+                          },
+                          "y": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "x",
+                          "y"
+                        ]
+                      },
+                      "polygon": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            },
+                            "id": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "x",
+                            "y"
+                          ]
+                        }
+                      },
+                      "assignedType": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "isEdge": {
+                        "type": "boolean"
+                      },
+                      "isNorthEdge": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "seedPoint",
+                      "polygon",
+                      "assignedType",
+                      "description",
+                      "isEdge",
+                      "isNorthEdge"
+                    ]
+                  }
+                },
+                "terrainPlots": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "number"
+                      },
+                      "seedPoint": {
+                        "type": "object",
+                        "properties": {
+                          "x": {
+                            "type": "number"
+                          },
+                          "y": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "x",
+                          "y"
+                        ]
+                      },
+                      "polygon": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "x",
+                            "y"
+                          ]
+                        }
+                      },
+                      "assignedType": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "gridX": {
+                        "type": "number"
+                      },
+                      "gridZ": {
+                        "type": "number"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "parentRegionId": {
+                        "type": "number"
+                      },
+                      "pointIds": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "number"
+                        }
+                      },
+                      "_rawPolygon": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "x",
+                            "y"
+                          ]
+                        }
+                      },
+                      "_rawPointIds": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "number"
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "seedPoint",
+                      "polygon",
+                      "assignedType",
+                      "gridX",
+                      "gridZ",
+                      "description",
+                      "parentRegionId",
+                      "pointIds",
+                      "_rawPolygon",
+                      "_rawPointIds"
+                    ]
+                  }
+                },
+                "edges": {
+                  "type": "object",
+                  "properties": {
+                    "2-11": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "4-8": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "6-11": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "7-10": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "1-7": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "1-5": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "4-12": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "3-5": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "3-9": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "3-14": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "7-12": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "2-6": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "0-13": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "0-11": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "0-14": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "2-8": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "8-11": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "0-9": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "0-10": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "11-13": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "1-10": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "12-13": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "3-6": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "2-3": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "6-14": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "5-10": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "5-9": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "0-7": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "9-14": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "11-14": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "regionId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType",
+                        "description",
+                        "name",
+                        "regionId"
+                      ]
+                    },
+                    "9-10": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "0-12": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "8-13": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    },
+                    "4-13": {
+                      "type": "object",
+                      "properties": {
+                        "regionA": {
+                          "type": "number"
+                        },
+                        "regionB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {}
+                      },
+                      "required": [
+                        "regionA",
+                        "regionB",
+                        "pointIds",
+                        "assignedType"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "2-11",
+                    "4-8",
+                    "6-11",
+                    "7-10",
+                    "1-7",
+                    "1-5",
+                    "4-12",
+                    "3-5",
+                    "3-9",
+                    "3-14",
+                    "7-12",
+                    "2-6",
+                    "0-13",
+                    "0-11",
+                    "0-14",
+                    "2-8",
+                    "8-11",
+                    "0-9",
+                    "0-10",
+                    "11-13",
+                    "1-10",
+                    "12-13",
+                    "3-6",
+                    "2-3",
+                    "6-14",
+                    "5-10",
+                    "5-9",
+                    "0-7",
+                    "9-14",
+                    "11-14",
+                    "9-10",
+                    "0-12",
+                    "8-13",
+                    "4-13"
+                  ]
+                },
+                "edgePoints": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "number"
+                      },
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "x",
+                      "y"
+                    ]
+                  }
+                },
+                "riverCliffFaces": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "number"
+                      },
+                      "sourceEdgeId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "assignedType": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "pointIds": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "number"
+                        }
+                      },
+                      "polygon": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "x",
+                            "y"
+                          ]
+                        }
+                      },
+                      "regionId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "sourceEdgeId",
+                      "assignedType",
+                      "pointIds",
+                      "polygon",
+                      "regionId"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "worldSize",
+                "regions",
+                "terrainPlots",
+                "edges",
+                "edgePoints",
+                "riverCliffFaces"
+              ]
+            },
+            "city": {
+              "type": "object",
+              "properties": {
+                "districts": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "number"
+                      },
+                      "seedPoint": {
+                        "type": "object",
+                        "properties": {
+                          "x": {
+                            "type": "number"
+                          },
+                          "y": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "x",
+                          "y"
+                        ]
+                      },
+                      "polygon": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "x",
+                            "y"
+                          ]
+                        }
+                      },
+                      "pointIds": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "minItems": 1,
+                        "items": {
+                          "type": "number"
+                        }
+                      },
+                      "originPlotId": {
+                        "type": "number"
+                      },
+                      "assignedType": {},
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "seedPoint",
+                      "polygon",
+                      "pointIds",
+                      "originPlotId",
+                      "assignedType",
+                      "description"
+                    ]
+                  }
+                },
+                "edges": {
+                  "type": "object",
+                  "properties": {
+                    "outer-0": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {},
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "0-2": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "0-3": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "0-1": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "1-3": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "1-6": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "outer-1": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {},
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "outer-2": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {},
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "2-5": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "2-4": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "2-7": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "2-3": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "3-7": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "3-6": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "4-5": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "outer-3": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {},
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "4-7": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "outer-4": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {},
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "6-7": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {
+                          "type": "number"
+                        },
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "outer-5": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {},
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    },
+                    "outer-6": {
+                      "type": "object",
+                      "properties": {
+                        "districtA": {
+                          "type": "number"
+                        },
+                        "districtB": {},
+                        "pointIds": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "minItems": 1,
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "assignedType": {},
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "districtA",
+                        "districtB",
+                        "pointIds",
+                        "assignedType",
+                        "description"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "outer-0",
+                    "0-2",
+                    "0-3",
+                    "0-1",
+                    "1-3",
+                    "1-6",
+                    "outer-1",
+                    "outer-2",
+                    "2-5",
+                    "2-4",
+                    "2-7",
+                    "2-3",
+                    "3-7",
+                    "3-6",
+                    "4-5",
+                    "outer-3",
+                    "4-7",
+                    "outer-4",
+                    "6-7",
+                    "outer-5",
+                    "outer-6"
+                  ]
+                },
+                "edgePoints": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "number"
+                      },
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "x",
+                      "y"
+                    ]
+                  }
+                },
+                "eligiblePromotionPlotIds": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "minItems": 1,
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              },
+              "required": [
+                "districts",
+                "edges",
+                "edgePoints",
+                "eligiblePromotionPlotIds"
+              ]
             },
             "regions": {
               "type": "array",
@@ -111,2110 +2325,53 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "type": "number"
+                    "type": "string",
+                    "minLength": 1
                   },
-                  "seedPoint": {
-                    "type": "object",
-                    "properties": {
-                      "x": {
-                        "type": "number"
-                      },
-                      "y": {
-                        "type": "number"
-                      }
-                    },
-                    "required": [
-                      "x",
-                      "y"
-                    ]
+                  "type": {
+                    "type": "string",
+                    "minLength": 1
                   },
-                  "polygon": {
+                  "surfaceIds": {
                     "type": "array",
                     "uniqueItems": true,
                     "minItems": 1,
                     "items": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        },
-                        "id": {
-                          "type": "number"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y"
-                      ]
+                      "required": [],
+                      "properties": {}
                     }
                   },
-                  "assignedType": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "description": {
-                    "type": "string"
-                  },
-                  "isEdge": {
-                    "type": "boolean"
-                  },
-                  "isNorthEdge": {
-                    "type": "boolean"
+                  "centrelinePointIds": {
+                    "type": "array",
+                    "uniqueItems": true,
+                    "minItems": 1,
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "name": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "required": [
-                  "id",
-                  "seedPoint",
-                  "polygon",
-                  "assignedType",
-                  "description",
-                  "isEdge",
-                  "isNorthEdge"
-                ]
-              }
-            },
-            "terrainPlots": {
-              "type": "array",
-              "uniqueItems": true,
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "number"
-                  },
-                  "seedPoint": {
-                    "type": "object",
-                    "properties": {
-                      "x": {
-                        "type": "number"
-                      },
-                      "y": {
-                        "type": "number"
-                      }
-                    },
-                    "required": [
-                      "x",
-                      "y"
-                    ]
-                  },
-                  "polygon": {
-                    "type": "array",
-                    "uniqueItems": true,
-                    "minItems": 1,
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y"
-                      ]
-                    }
-                  },
-                  "assignedType": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "gridX": {
-                    "type": "number"
-                  },
-                  "gridZ": {
-                    "type": "number"
-                  },
-                  "description": {
                     "type": "string"
                   },
-                  "parentRegionId": {
-                    "type": "number"
-                  },
-                  "pointIds": {
-                    "type": "array",
-                    "uniqueItems": true,
-                    "minItems": 1,
-                    "items": {
-                      "type": "number"
-                    }
-                  },
-                  "_rawPolygon": {
-                    "type": "array",
-                    "uniqueItems": true,
-                    "minItems": 1,
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y"
-                      ]
-                    }
-                  },
-                  "_rawPointIds": {
-                    "type": "array",
-                    "uniqueItems": true,
-                    "minItems": 1,
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "required": [
-                  "id",
-                  "seedPoint",
-                  "polygon",
-                  "assignedType",
-                  "gridX",
-                  "gridZ",
-                  "description",
-                  "parentRegionId",
-                  "pointIds",
-                  "_rawPolygon",
-                  "_rawPointIds"
-                ]
-              }
-            },
-            "edges": {
-              "type": "object",
-              "properties": {
-                "1-6": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "6-14": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "1-14": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "8-14": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "11-14": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "3-8": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "description": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType",
-                    "description",
-                    "name"
-                  ]
-                },
-                "0-11": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "11-13": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "6-11": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "7-13": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "2-13": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "6-13": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "2-6": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "5-9": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "4-10": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "7-10": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "2-7": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "5-12": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "1-8": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "8-12": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "4-9": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "0-13": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "0-9": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "1-3": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "description": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType",
-                    "description",
-                    "name"
-                  ]
-                },
-                "9-10": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "3-5": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "description": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType",
-                    "description",
-                    "name"
-                  ]
-                },
-                "3-12": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "description": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType",
-                    "description",
-                    "name"
-                  ]
-                },
-                "0-7": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "0-10": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "0-12": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "11-12": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "2-10": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "0-5": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                },
-                "8-11": {
-                  "type": "object",
-                  "properties": {
-                    "regionA": {
-                      "type": "number"
-                    },
-                    "regionB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {}
-                  },
-                  "required": [
-                    "regionA",
-                    "regionB",
-                    "pointIds",
-                    "assignedType"
-                  ]
-                }
-              },
-              "required": [
-                "1-6",
-                "6-14",
-                "1-14",
-                "8-14",
-                "11-14",
-                "3-8",
-                "0-11",
-                "11-13",
-                "6-11",
-                "7-13",
-                "2-13",
-                "6-13",
-                "2-6",
-                "5-9",
-                "4-10",
-                "7-10",
-                "2-7",
-                "5-12",
-                "1-8",
-                "8-12",
-                "4-9",
-                "0-13",
-                "0-9",
-                "1-3",
-                "9-10",
-                "3-5",
-                "3-12",
-                "0-7",
-                "0-10",
-                "0-12",
-                "11-12",
-                "2-10",
-                "0-5",
-                "8-11"
-              ]
-            },
-            "edgePoints": {
-              "type": "array",
-              "uniqueItems": true,
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "number"
-                  },
-                  "x": {
-                    "type": "number"
-                  },
-                  "y": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "id",
-                  "x",
-                  "y"
-                ]
-              }
-            },
-            "riverCliffFaces": {
-              "type": "array",
-              "uniqueItems": true,
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "number"
-                  },
-                  "sourceEdgeId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "assignedType": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "pointIds": {
-                    "type": "array",
-                    "uniqueItems": true,
-                    "minItems": 1,
-                    "items": {
-                      "type": "number"
-                    }
-                  },
-                  "polygon": {
-                    "type": "array",
-                    "uniqueItems": true,
-                    "minItems": 1,
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y"
-                      ]
-                    }
-                  }
-                },
-                "required": [
-                  "id",
-                  "sourceEdgeId",
-                  "assignedType",
-                  "pointIds",
-                  "polygon"
-                ]
-              }
-            }
-          },
-          "required": [
-            "worldSize",
-            "regions",
-            "terrainPlots",
-            "edges",
-            "edgePoints",
-            "riverCliffFaces"
-          ]
-        },
-        "cityDistrictData": {
-          "type": "object",
-          "properties": {
-            "districts": {
-              "type": "array",
-              "uniqueItems": true,
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "number"
-                  },
-                  "seedPoint": {
-                    "type": "object",
-                    "properties": {
-                      "x": {
-                        "type": "number"
-                      },
-                      "y": {
-                        "type": "number"
-                      }
-                    },
-                    "required": [
-                      "x",
-                      "y"
-                    ]
-                  },
-                  "polygon": {
-                    "type": "array",
-                    "uniqueItems": true,
-                    "minItems": 1,
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "x": {
-                          "type": "number"
-                        },
-                        "y": {
-                          "type": "number"
-                        }
-                      },
-                      "required": [
-                        "x",
-                        "y"
-                      ]
-                    }
-                  },
-                  "pointIds": {
-                    "type": "array",
-                    "uniqueItems": true,
-                    "minItems": 1,
-                    "items": {
-                      "type": "number"
-                    }
-                  },
-                  "originPlotId": {
-                    "type": "number"
-                  },
-                  "assignedType": {},
                   "description": {
                     "type": "string"
                   }
                 },
                 "required": [
                   "id",
-                  "seedPoint",
-                  "polygon",
-                  "pointIds",
-                  "originPlotId",
-                  "assignedType",
+                  "type",
+                  "surfaceIds",
+                  "centrelinePointIds",
+                  "name",
                   "description"
                 ]
               }
-            },
-            "edges": {
-              "type": "object",
-              "properties": {
-                "0-1": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "0-3": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "0-2": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "description": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description",
-                    "name"
-                  ]
-                },
-                "0-8": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "0-5": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "1-6": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "1-3": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "1-5": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-0": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "2-3": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "2-7": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-1": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "2-8": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "3-6": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-2": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "3-7": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "4-8": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-3": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "5-8": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {
-                      "type": "number"
-                    },
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-4": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-5": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-6": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-7": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                },
-                "outer-8": {
-                  "type": "object",
-                  "properties": {
-                    "districtA": {
-                      "type": "number"
-                    },
-                    "districtB": {},
-                    "pointIds": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "minItems": 1,
-                      "items": {
-                        "type": "number"
-                      }
-                    },
-                    "assignedType": {},
-                    "description": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "districtA",
-                    "districtB",
-                    "pointIds",
-                    "assignedType",
-                    "description"
-                  ]
-                }
-              },
-              "required": [
-                "0-1",
-                "0-3",
-                "0-2",
-                "0-8",
-                "0-5",
-                "1-6",
-                "1-3",
-                "1-5",
-                "outer-0",
-                "2-3",
-                "2-7",
-                "outer-1",
-                "2-8",
-                "3-6",
-                "outer-2",
-                "3-7",
-                "4-8",
-                "outer-3",
-                "5-8",
-                "outer-4",
-                "outer-5",
-                "outer-6",
-                "outer-7",
-                "outer-8"
-              ]
-            },
-            "edgePoints": {
-              "type": "array",
-              "uniqueItems": true,
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "number"
-                  },
-                  "x": {
-                    "type": "number"
-                  },
-                  "y": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "id",
-                  "x",
-                  "y"
-                ]
-              }
-            },
-            "eligiblePromotionPlotIds": {
-              "type": "array",
-              "uniqueItems": true,
-              "minItems": 1,
-              "items": {
-                "type": "number"
-              }
-            },
-            "streetGraph": {},
-            "blocks": {
-              "type": "array",
-              "items": {
-                "required": [],
-                "properties": {}
-              }
             }
           },
           "required": [
-            "districts",
-            "edges",
-            "edgePoints",
-            "eligiblePromotionPlotIds",
-            "streetGraph",
-            "blocks"
+            "points",
+            "terrain",
+            "city",
+            "regions"
           ]
         },
         "buildingData": {
@@ -2236,9 +2393,7 @@
         "currentPhase",
         "cityLeader",
         "successionMethod",
-        "pointRegistry",
-        "worldTerrainData",
-        "cityDistrictData",
+        "groundplane",
         "buildingData",
         "nextFactionAutoId"
       ]
@@ -2275,7 +2430,8 @@
             "required": [
               "regionId",
               "terrainType",
-              "description"
+              "description",
+              "name"
             ]
           }
         },
@@ -2318,32 +2474,9 @@
         },
         "districtEdgePlacements": {
           "type": "array",
-          "uniqueItems": true,
-          "minItems": 1,
           "items": {
-            "type": "object",
-            "properties": {
-              "edgeId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "edgeType": {
-                "type": "string",
-                "minLength": 1
-              },
-              "description": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "edgeId",
-              "edgeType",
-              "description",
-              "name"
-            ]
+            "required": [],
+            "properties": {}
           }
         },
         "districtClassAssignments": {

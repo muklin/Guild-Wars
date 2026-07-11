@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import PolylineRenderer from './utils/PolylineRenderer.js'
+import EdgeLineRenderer from './utils/EdgeLineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, centroid, triangulatePolygon, resolvePolygon } from './utils/renderUtils.js'
 import { DISTRICTS, DEFAULTS } from '../../shared/districtConfig.js'
@@ -337,7 +337,7 @@ export default class DistrictRenderer {
       }
     }
 
-    this.cityPolylines = new PolylineRenderer(this.scene, { thickness: 0.0875, stripY: 0.002, fillY: 0.003 })
+    this.cityPolylines = new EdgeLineRenderer(this.scene, { y: 0.002 })
     this.cityPolylines.render(nonWallEdges, this.cityEdgePointsById,
       (edge) => edge.assignedType ? DISTRICT_COLORS.get(edge.assignedType) : DISTRICT_COLORS.unassigned
     )

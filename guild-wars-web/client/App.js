@@ -328,8 +328,18 @@ export default class App {
       } catch { this.uiManager.showError('Guild creation failed') }
     })
     this.eventBus.on('WALK_MODE_TOGGLED', () => {
-      const entered = this.renderer.toggleWalkMode(() => this.uiManager.setWalkMode(false))
-      if (entered) this.uiManager.setWalkMode(true)
+      const entered = this.renderer.toggleWalkMode(() => {
+        this.uiManager.setWalkMode(false)
+        this._updateFPLabels(this.gameState?.foreignPowers || [], this.currentPhase)
+      })
+      if (entered) {
+        this.uiManager.setWalkMode(true)
+        // _updateFPLabels' own isWalkMode check hides them — but only takes effect once
+        // called; nothing else re-renders labels while walk mode owns the frame loop, so
+        // without this the labels from just before entering stay stuck on screen
+        // (confirmed live).
+        this._updateFPLabels(this.gameState?.foreignPowers || [], this.currentPhase)
+      }
     })
 
     // ── Terrain Setup worldbuilding ──
@@ -1733,7 +1743,7 @@ export default class App {
       // the default city-centre framing if there's no saved state from a previous
       // session to restore instead.
       this.renderer.setHomePosition(sp.x, sp.y)
-      if (!this.renderer.restoreCameraState()) this.renderer.focusCameraOn(sp.x, sp.y)
+      if (!this.renderer.restoreCameraState()) this.renderer.centerOnMap()
     }
   }
 

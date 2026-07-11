@@ -13,22 +13,38 @@ export default class GameStateManager {
     this.cityLeader = null
     this.successionMethod = null
 
-    // The authoritative shared Groundplane vertex store — see GroundPointRegistry.js.
-    // A peer of worldTerrainData/cityDistrictData, not nested in either, since districts
-    // reuse their originating terrain plot's point ids directly.
-    this.pointRegistry = new GroundPointRegistry()
-
-    // Hierarchical terrain data
-    this.worldTerrainData = {
-      worldSize: 50,
+    // The unified Groundplane — the single container for all ground geometry (see
+    // ADR-0020, plan "typed-giggling-giraffe" Addendum 2). `points` is the ONE point
+    // registry (the only positional store); `terrain` and `city` are the current
+    // terrain-scale and city-scale collections, converging toward the target
+    // {points, surfaces, regions, edges} shape across migration Stages A–D.
+    // worldTerrainData/cityDistrictData/pointRegistry remain as accessor aliases below
+    // so the hundreds of existing call sites (server + client snapshot consumers) keep
+    // working unchanged during the migration.
+    this.groundplane = {
+      points: new GroundPointRegistry(),
+      terrain: {
+        worldSize: 50,
+        regions: [],
+        edges: []
+      },
+      city: {
+        districts: [],
+        blocks: [],
+        plots: []
+      },
+      // Canonical Surface records (ADR-0020: a Surface is a single typed groundplane
+      // cell, an ordered Point-id list). Assembled by
+      // SetupPhase._syncGroundplaneSurfaces as a synced view over the current
+      // terrain-plot and river/cliff-face collections; Stage C makes generators
+      // produce these natively.
+      surfaces: [],
+      // Canonical Region records (ADR-0020: a Region is a typed group of Surfaces).
+      // Occupants: linear features (River/Cliff — Edge→Region conversion, storing
+      // centrelinePointIds as the reversal anchor per decision 5), terrain regions,
+      // and districts (gameplay payload lives here). Rebuilt wholesale on every
+      // pullback pass, so cleared features vanish naturally.
       regions: [],
-      edges: []
-    }
-
-    this.cityDistrictData = {
-      districts: [],
-      blocks: [],
-      plots: []
     }
 
     // Per-building persistent data keyed by `${kind}:${refId}` (e.g. "plot:plot-5").
@@ -38,6 +54,18 @@ export default class GameStateManager {
     // Track next auto-IDs
     this.nextFactionAutoId = 100
   }
+
+  // ── Groundplane accessor aliases (migration-period compatibility, ADR-0020) ──
+  // Getter/setter pairs rather than plain fields so wholesale reassignment at any
+  // call site (e.g. SetupPhase's `worldTerrainData = worldData`, clear(), load)
+  // updates the ONE canonical groundplane container instead of silently detaching
+  // an alias from it.
+  get pointRegistry() { return this.groundplane.points }
+  set pointRegistry(v) { this.groundplane.points = v }
+  get worldTerrainData() { return this.groundplane.terrain }
+  set worldTerrainData(v) { this.groundplane.terrain = v }
+  get cityDistrictData() { return this.groundplane.city }
+  set cityDistrictData(v) { this.groundplane.city = v }
 
   // Guild management
   addGuild(guild) {
@@ -124,20 +152,30 @@ export default class GameStateManager {
       currentPhase: this.currentPhase,
       cityLeader: this.cityLeader,
       successionMethod: this.successionMethod,
-      pointRegistry: this.pointRegistry.toJSON(),
-      worldTerrainData: this.worldTerrainData,
-      cityDistrictData: this.cityDistrictData ? {
-        ...this.cityDistrictData,
-        plots: undefined   // re-derived on load via regeneratePlots(); not saved
-      } : this.cityDistrictData,
+      // The unified Groundplane container (ADR-0020) — replaces the former top-level
+      // pointRegistry/worldTerrainData/cityDistrictData keys. deserialize() still
+      // reads the old keys for pre-migration saves.
+      groundplane: {
+        points: this.groundplane.points.toJSON(),
+        terrain: this.groundplane.terrain,
+        city: this.groundplane.city ? {
+          ...this.groundplane.city,
+          plots: undefined   // re-derived on load via regeneratePlots(); not saved
+        } : this.groundplane.city,
+        surfaces: this.groundplane.surfaces,
+        regions: this.groundplane.regions,
+      },
       buildingData: this.buildingData,
       nextFactionAutoId: this.nextFactionAutoId
     }
   }
 
   deserialize(data) {
+    // New saves nest all ground geometry under `groundplane` (ADR-0020); older saves
+    // carry the three legacy top-level keys. Accept both.
+    const gp = data.groundplane
     // Reconstruct the point registry before anything that references it by id.
-    this.pointRegistry = new GroundPointRegistry(data.pointRegistry || [])
+    this.pointRegistry = new GroundPointRegistry((gp ? gp.points : data.pointRegistry) || [])
     if (data.guilds) {
       data.guilds.forEach(g => this.addGuild(g))
     }
@@ -157,8 +195,10 @@ export default class GameStateManager {
     this.currentPhase = data.currentPhase || 'Setup'
     this.cityLeader = data.cityLeader
     this.successionMethod = data.successionMethod
-    this.worldTerrainData = data.worldTerrainData || this.worldTerrainData
-    this.cityDistrictData = data.cityDistrictData || this.cityDistrictData
+    this.worldTerrainData = (gp ? gp.terrain : data.worldTerrainData) || this.worldTerrainData
+    this.cityDistrictData = (gp ? gp.city : data.cityDistrictData) || this.cityDistrictData
+    this.groundplane.surfaces = gp?.surfaces || []
+    this.groundplane.regions = gp?.regions || []
     if (data.buildingData) this.buildingData = data.buildingData
     if (data.nextFactionAutoId) {
       this.nextFactionAutoId = data.nextFactionAutoId
@@ -190,6 +230,8 @@ export default class GameStateManager {
       blocks: [],
       plots: []
     }
+    this.groundplane.surfaces = []
+    this.groundplane.regions = []
     this.nextFactionAutoId = 100
   }
 }

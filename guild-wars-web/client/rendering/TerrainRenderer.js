@@ -229,7 +229,16 @@ export default class TerrainRenderer {
     }
     this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces }
     this.renderTerrain(regions, terrainPlots || [])
-    this.renderRiverCliffFaces(riverCliffFaces)
+    // Reverted (2026-07-11): Terrain Setup mode goes back to stroke rendering for every
+    // River/Cliff edge, not the filled DCEL faces — the face pipeline still has
+    // unresolved visual artifacts at bends/confluences (see plan "typed-giggling-
+    // giraffe" Addendum 2 Stage B notes) that the fixed-width stroke has always simply
+    // painted over. District mode keeps consuming riverCliffFaces via GroundRenderer/
+    // TerrainPlotConverter (confirmed working there) — this only changes Terrain mode's
+    // OWN rendering choice; the server still computes and sends riverCliffFaces
+    // unchanged. Endpoints/confluences are just whatever the underlying land-plot
+    // pullback triangles already look like — no special-casing needed, exactly as
+    // before the face-rendering work started.
     this.drawVoronoiCenters(regions)
     if (edges && Object.keys(edges).length > 0) {
       this.renderEdges(edges)
@@ -377,17 +386,23 @@ export default class TerrainRenderer {
     if (!this.terrainPolylines) {
       this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.5, stripY: 0.01, priorityColor: TERRAIN_COLORS.River })
     }
-    // River/Cliff edges that already got a filled DCEL face (see renderRiverCliffFaces)
-    // are dropped from the stroke pass — otherwise they'd double-render (a filled mesh
-    // AND a stroke on top of it). An edge whose face-construction was skipped this pass
-    // (confluence, etc — see _buildRiverCliffFaces) simply has no matching face and
-    // keeps stroke-rendering exactly as before this change; unassigned edges never have
-    // a face and are always unaffected.
-    const facedEdgeIds = new Set((this.terrainData?.riverCliffFaces || []).map(f => f.sourceEdgeId))
-    const strokedEdges = Object.fromEntries(Object.entries(edges).filter(([id]) => !facedEdgeIds.has(id)))
-    console.log(`Rendering ${Object.keys(strokedEdges).length} edges (${facedEdgeIds.size} covered by river/cliff faces instead)`)
+    // Reverted (2026-07-11): every edge strokes, including River/Cliff — see
+    // setTerrainData's matching comment for why the filled-face pass was dropped for
+    // Terrain mode specifically.
+    // Sea/Lake <-> Sea/Lake edges are never worth showing: River and Cliff (the only
+    // assignable types) don't make sense between two water regions, and the raw region
+    // boundary just cuts an ugly, meaningless line across what reads as one continuous
+    // body of water.
+    const WATER_TYPES = new Set(['Sea', 'Lake'])
+    const regionsById = new Map((this.terrainData?.regions || []).map(r => [r.id, r]))
+    const isWaterWaterEdge = (edge) => {
+      const a = regionsById.get(edge.regionA), b = regionsById.get(edge.regionB)
+      return !!a && !!b && WATER_TYPES.has(a.assignedType) && WATER_TYPES.has(b.assignedType)
+    }
+    const visibleEdges = Object.fromEntries(Object.entries(edges).filter(([, edge]) => !isWaterWaterEdge(edge)))
+    console.log(`Rendering ${Object.keys(visibleEdges).length} edges (${Object.keys(edges).length - Object.keys(visibleEdges).length} Sea/Lake<->Sea/Lake edges hidden)`)
     this.terrainPolylines.render(
-      strokedEdges,
+      visibleEdges,
       this.edgePointsById,
       (edge) => edge.assignedType ? TERRAIN_COLORS.get(edge.assignedType) : TERRAIN_COLORS.unassigned
     )
