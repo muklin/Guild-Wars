@@ -9,6 +9,7 @@ import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
 import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
+import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
 import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane } from './voronoi/VoronoiUtils.js'
 import { getDistrictConfig } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
@@ -1169,49 +1170,6 @@ export default class SetupPhase {
     return Math.sqrt((px - x1 - t * dx) ** 2 + (py - y1 - t * dy) ** 2)
   }
 
-  // Is cell edge (a,b) genuinely alongside the river/cliff polyline — not just touching
-  // it at one shared vertex? A single "is any point on this edge within MATCH_TOL of the
-  // river" check (segment-to-segment distance) is true for a cell edge that merely shares
-  // its start vertex with the river (a common Voronoi-vertex-of-3-regions situation at a
-  // river's endpoint) even when that edge runs off toward an unrelated distant corner for
-  // the rest of its length — confirmed on a real save: a 6-unit-long edge matched this
-  // way, because ONE endpoint sat exactly on the river while the other was 3.7 units
-  // away. The resulting buffer quad clipped a long, thin, spurious notch along that
-  // unrelated edge — the "antenna" gaps radiating away from river bends. Requiring BOTH
-  // endpoints to be near the river (checked against the whole polyline, not one segment,
-  // so a long edge running alongside a curving river still matches correctly along its
-  // full length) rejects that case while keeping every genuine river-adjacent edge.
-  _edgeNearRiverCliff(ax, ay, bx, by, riverCliffSegs) {
-    return this._matchedRiverCliffEdgeId(ax, ay, bx, by, riverCliffSegs) != null
-  }
-
-  // Same "both endpoints near a single segment" matching rule as _edgeNearRiverCliff,
-  // but returns WHICH source terrain edge (worldTerrainData.edges key) matched, or null.
-  // Picks the segment minimizing max(distA,distB) among segments where both endpoints
-  // are within tolerance, so a plot edge running alongside two different river/cliff
-  // chains (near a confluence) still resolves to exactly one chain, not an arbitrary one.
-  _matchedRiverCliffEdgeId(ax, ay, bx, by, riverCliffSegs) {
-    const tol = SetupPhase.RIVER_CLIFF_MATCH_TOL
-    let best = null, bestMax = Infinity
-    for (const { seg: [p, q], sourceEdgeId } of riverCliffSegs) {
-      const distA = this._segDist(ax, ay, p.x, p.y, q.x, q.y)
-      const distB = this._segDist(bx, by, p.x, p.y, q.x, q.y)
-      // Tried rescuing the rare genuine edge whose far endpoint lands just outside tol
-      // with an "or the midpoint is close" fallback — but a long unrelated edge's
-      // midpoint can coincidentally land near a DIFFERENT segment of the same (multi-
-      // segment, winding) river purely by chance, reopening the exact false-positive
-      // hole this exists to close (confirmed: reintroduced 12 of the original multi-unit
-      // spurious matches on a real save). Strict "both endpoints near" occasionally
-      // under-matches by a little (a cell ends up with slightly less than the nominal
-      // half-width clearance instead of none) — a far smaller problem than a long
-      // spurious clip, so left as the plain AND.
-      if (distA >= tol || distB >= tol) continue
-      const m = Math.max(distA, distB)
-      if (m < bestMax) { bestMax = m; best = sourceEdgeId }
-    }
-    return best
-  }
-
   // River and Cliff terrain Edges render as a fixed-thickness polyline CENTRED on the
   // edge (TerrainRenderer: thickness 0.5), extending RIVER_CLIFF_HALF_WIDTH into both
   // neighbouring plots' nominal area — so a district's raw Voronoi-cell polygon
@@ -1232,69 +1190,139 @@ export default class SetupPhase {
   // (un-pulled-back) boundary regardless of how far district.polygon itself moved. So
   // every vertex displacement computed below is mirrored onto any cityData.edgePoints
   // entry sitting at that same (pristine) coordinate.
-  // Matching tolerance for "does this polygon edge lie along a River/Cliff terrain
-  // edge" — deliberately generous (matches the THRESHOLD already used for the same kind
-  // of proximity test in _cityEdgeIsNearWater above) rather than requiring near-exact
-  // coincidence: independently-generated polygons don't share a bit-for-bit identical
-  // boundary line.
+  // Tolerance for chain-adjacent geometry checks downstream of the pullback (bridging a
+  // small T-junction tagging gap in _mergeNearbyPathFragments, and the confluence
+  // termini-closing check in _buildRiverCliffFaces) — NOT used for polygon-to-river
+  // matching anymore (see _riverCliffBoundaryById's doc comment: that now matches by
+  // exact registry id, not coordinate tolerance).
   static RIVER_CLIFF_MATCH_TOL = 1.0
 
-  // Collect every River/Cliff terrain edge as a flat list of {seg:[p,q], sourceEdgeId}
-  // entries, in the world-terrain coordinate space shared by district polygons and
-  // terrain plot cells. sourceEdgeId is the worldTerrainData.edges key ("${rA}-${rB}")
-  // — carried through matching (_matchedRiverCliffEdgeId) and pullback (edgeMatched) so
-  // a land face's split half-edges can later be tagged with which physical river/cliff
-  // chain they belong to (see DCEL.tagChain / _buildRiverCliffFaces).
-  _riverCliffSegments() {
-    const terrainData = this.gameStateManager.worldTerrainData
-    const terrPtMap = new Map((terrainData?.edgePoints || []).map(p => [p.id, p]))
-    const segs = []
-    for (const [edgeKey, te] of Object.entries(terrainData?.edges || {})) {
-      if (te.assignedType !== 'River' && te.assignedType !== 'Cliff') continue
-      const pts = (te.pointIds || []).map(id => terrPtMap.get(id)).filter(Boolean)
-      for (let i = 0; i < pts.length - 1; i++) segs.push({ seg: [pts[i], pts[i + 1]], sourceEdgeId: edgeKey })
-    }
-    return segs
-  }
-
   // Inset a single (pristine) polygon by halfWidth along any edge that lies on a
-  // River/Cliff terrain segment, using a proper bisector miter at corners where two
-  // matched edges meet (same formula as DistrictRenderer._getMiteredCorners — scale the
-  // unit bisector by 1/cos(halfAngle), clamped to 0.15 against miter blowout at sharp
-  // reflex corners) rather than an unweighted average, which shrinks toward zero the
-  // more the two edges diverge. Returns the pushed polygon plus, per vertex index, the
-  // (dx,dy) it moved by (0,0 if untouched) — callers that need to keep OTHER shared
-  // structures (e.g. cityData.edgePoints) in sync with specific vertices use those.
+  // River/Cliff terrain segment. Snaps each matched vertex directly to the shared,
+  // junction-aware boundary position computed by riverCliffBoundary.js (the SAME
+  // computation the on-screen stroke uses, via shared/polylineGeometry.js — see plan
+  // "typed-giggling-giraffe") — chosen as LEFT or RIGHT of the chain by whichever is
+  // closer to THIS polygon's own centroid (the same "which side is this polygon
+  // actually on" test the old _inwardNormal used, just applied to pick between two
+  // precomputed canonical positions instead of computing an independent bisector).
+  // This guarantees width consistency and correct multi-chain-junction handling BY
+  // CONSTRUCTION — every polygon on the same bank of the same chain looks up the exact
+  // SAME position, not an independently-computed near-value that then needs
+  // reconciling (the old per-vertex group-and-rescale pass this replaces).
+  //
+  // pointIds: this polygon's own point ids, parallel to poly (exact registry ids — see
+  // _riverCliffBoundaryById's doc comment for why exact-id matching replaces the old
+  // coordinate-tolerance _matchedRiverCliffEdgeId, which was a confirmed source of
+  // T-junction tagging bugs). boundaryById: the Map _riverCliffBoundaryById returns
+  // (pointId -> array of {left,right,sourceEdgeId}, one entry per chain incident on
+  // that point — a plain interior point has exactly one entry, a junction point has
+  // one per incident chain).
+  //
+  // Falls back to the OLD independent bisector-miter computation (halved on retry) for
+  // the rare polygon whose canonical snap would self-intersect ITS OWN local shape (a
+  // very small/sliver cell) — same "never ship a broken polygon" guarantee as before
+  // this change, just no longer the primary path.
+  //
   // edgeMatched[i] (returned) is the sourceEdgeId (worldTerrainData.edges key) of the
   // river/cliff segment edge i (poly[i]->poly[i+1]) lies along, or null — this is what
   // lets a land face's split half-edges later be tagged with which physical river/cliff
   // chain they belong to (see _buildRiverCliffFaces).
-  _pullBackPolygon(poly, riverCliffSegs, halfWidth) {
+  _pullBackPolygon(poly, pointIds, boundaryById, halfWidth, regionId = null) {
     const n = poly.length
     const zeroDeltas = () => new Array(n).fill(null).map(() => ({ dx: 0, dy: 0 }))
-    if (n < 3 || !riverCliffSegs.length) return { pushed: poly.map(v => ({ x: v.x, y: v.y })), deltas: zeroDeltas(), anyMatch: false, edgeMatched: new Array(n).fill(null) }
+    if (n < 3 || boundaryById.size === 0) return { pushed: poly.map(v => ({ x: v.x, y: v.y })), deltas: zeroDeltas(), anyMatch: false, edgeMatched: new Array(n).fill(null) }
 
-    let cx = 0, cy = 0
-    for (const v of poly) { cx += v.x; cy += v.y }
-    cx /= n; cy /= n
-
+    // A land EDGE (not vertex) belongs to whichever chain is common to BOTH its
+    // endpoints' candidate lists — determining this per-edge, rather than trusting a
+    // single value stored per-vertex, is what correctly disambiguates a junction vertex
+    // shared by 2+ chains: each of this polygon's own two edges at that vertex can
+    // legitimately belong to a DIFFERENT chain.
+    const candidatesAt = pointIds.map(id => boundaryById.get(id) || [])
     const edgeMatched = new Array(n)
     let anyMatch = false
     for (let i = 0; i < n; i++) {
-      const a = poly[i], b = poly[(i + 1) % n]
-      edgeMatched[i] = this._matchedRiverCliffEdgeId(a.x, a.y, b.x, b.y, riverCliffSegs)
-      if (edgeMatched[i] != null) anyMatch = true
+      const aList = candidatesAt[i], bList = candidatesAt[(i + 1) % n]
+      let matchId = null
+      for (const a of aList) { if (bList.some(b => b.sourceEdgeId === a.sourceEdgeId)) { matchId = a.sourceEdgeId; break } }
+      edgeMatched[i] = matchId
+      if (matchId != null) anyMatch = true
     }
     if (!anyMatch) return { pushed: poly.map(v => ({ x: v.x, y: v.y })), deltas: zeroDeltas(), anyMatch: false, edgeMatched }
 
+    // The whole-polygon centroid is a poor "which side" reference for a plot that runs
+    // alongside a BENDING river for multiple consecutive edges (confirmed live: a
+    // 6-vertex plot with 3 consecutive river-matched edges — its centroid gets pulled
+    // toward the river-hugging stretch, so some of its own vertices pick the WRONG side
+    // inconsistently with its OTHER vertices, producing a self-crossing/looping
+    // pullback instead of a clean uniform retreat). Prefer the centroid of vertices
+    // whose BOTH adjacent edges are unmatched — the plot's true "bulk", away from any
+    // river/cliff run — falling back to vertices with AT LEAST one unmatched edge, then
+    // the whole polygon, if that set is empty (a plot fully surrounded by river/cliff
+    // edges has no unambiguous "bulk" side to anchor to).
+    let refPts = poly.filter((_, i) => edgeMatched[i] == null && edgeMatched[(i - 1 + n) % n] == null)
+    if (refPts.length === 0) refPts = poly.filter((_, i) => edgeMatched[i] == null || edgeMatched[(i - 1 + n) % n] == null)
+    if (refPts.length === 0) refPts = poly
+    let cx = 0, cy = 0
+    for (const v of refPts) { cx += v.x; cy += v.y }
+    cx /= refPts.length; cy /= refPts.length
+
+    const pushed = poly.map(v => ({ x: v.x, y: v.y }))
+    const deltas = zeroDeltas()
+    // Per-vertex region-consistent target, where resolved — the fallback below (which
+    // only ever triggers for a THIS-polygon-local self-intersection) reads this to keep
+    // orienting its own, independently-computed direction toward the SAME side, instead
+    // of falling back to a per-polygon centroid heuristic that a neighbouring polygon
+    // (which didn't need the fallback) has no reason to agree with.
+    const knownChosen = new Array(n).fill(null)
+    for (let i = 0; i < n; i++) {
+      // A vertex is on the boundary if EITHER adjacent edge matched a chain; use
+      // whichever matched (both agreeing, at an interior point of a single chain, is
+      // the common case — a genuine 2-different-chains-at-one-vertex corner just picks
+      // whichever edge resolved a match first, same as before this fix's scope).
+      const chainHere = edgeMatched[i] ?? edgeMatched[(i - 1 + n) % n]
+      if (chainHere == null) continue
+      const b = candidatesAt[i].find(c => c.sourceEdgeId === chainHere)
+      if (!b) continue
+      // Prefer the chain-wide, region-anchored side assignment (see
+      // _chainSideByRegion's doc comment) over the per-polygon centroid heuristic when
+      // available — it's what actually GUARANTEES every plot on the same bank agrees,
+      // rather than each plot independently guessing and hoping its neighbours guess
+      // the same way. Falls back to the centroid heuristic for any polygon whose own
+      // regionId wasn't supplied, doesn't match either of the chain's two regions, or
+      // whose chain had a degenerate/unresolvable side assignment.
+      const knownSide = (regionId != null && b.sideByRegion) ? b.sideByRegion[regionId] : null
+      let chosen
+      if (knownSide) {
+        chosen = b[knownSide]
+        knownChosen[i] = chosen
+      } else {
+        const dL = (b.left.x - cx) ** 2 + (b.left.y - cy) ** 2
+        const dR = (b.right.x - cx) ** 2 + (b.right.y - cy) ** 2
+        chosen = dL < dR ? b.left : b.right
+      }
+      pushed[i].x = chosen.x; pushed[i].y = chosen.y
+      deltas[i] = { dx: chosen.x - poly[i].x, dy: chosen.y - poly[i].y }
+    }
+
+    if (!this._polygonSelfIntersects(pushed)) return { pushed, deltas, anyMatch, edgeMatched }
+
+    // Fallback: the canonical snap self-intersected THIS polygon's own local shape.
+    // Same bisector-miter-with-retry computation the old code always used, kept only as
+    // a safety net now.
     const computeAt = (hw) => {
-      const pushed = poly.map(v => ({ x: v.x, y: v.y }))
-      const deltas = zeroDeltas()
+      const p2 = poly.map(v => ({ x: v.x, y: v.y }))
+      const d2 = zeroDeltas()
       for (let i = 0; i < n; i++) {
         const prevMatched = edgeMatched[(i - 1 + n) % n], nextMatched = edgeMatched[i]
         if (!prevMatched && !nextMatched) continue
-        const n1 = prevMatched ? this._inwardNormal(poly[(i - 1 + n) % n], poly[i], cx, cy) : null
-        const n2 = nextMatched ? this._inwardNormal(poly[i], poly[(i + 1) % n], cx, cy) : null
+        // Orient toward this vertex's own region-consistent target (see knownChosen's
+        // doc comment above) when one was resolved, instead of the bulk centroid — a
+        // neighbouring polygon that DIDN'T need this fallback already committed to that
+        // exact side, and only THIS polygon's own local shape is what's forcing a
+        // reduced magnitude here, not a disagreement about which side is correct.
+        const refX = knownChosen[i] ? knownChosen[i].x : cx, refY = knownChosen[i] ? knownChosen[i].y : cy
+        const n1 = prevMatched ? this._inwardNormal(poly[(i - 1 + n) % n], poly[i], refX, refY) : null
+        const n2 = nextMatched ? this._inwardNormal(poly[i], poly[(i + 1) % n], refX, refY) : null
         let mx, my
         if (n1 && n2) {
           const bx = n1.nx + n2.nx, by = n1.ny + n2.ny
@@ -1308,31 +1336,15 @@ export default class SetupPhase {
           const only = n1 ?? n2
           mx = only.nx; my = only.ny
         }
-        // Clamp the push to a fraction of this vertex's own adjacent edges — a
-        // "transition" vertex (only one side matched) gets pushed the full hw
-        // regardless of how short its OWN edges are, so on a small/sliver polygon the
-        // pushed point can end up far outside its tiny neighbouring edges: a visible
-        // spike jutting off the vertex rather than a clean inset. Bounding the push to
-        // half the shorter adjacent edge keeps it proportionate to the local geometry —
-        // less clearance right at that one corner beats a spike that reads as broken.
         const prevLen = Math.hypot(poly[i].x - poly[(i - 1 + n) % n].x, poly[i].y - poly[(i - 1 + n) % n].y)
         const nextLen = Math.hypot(poly[(i + 1) % n].x - poly[i].x, poly[(i + 1) % n].y - poly[i].y)
         const effHw = Math.min(hw, 0.5 * Math.min(prevLen, nextLen))
         const dx = mx * effHw, dy = my * effHw
-        pushed[i].x += dx
-        pushed[i].y += dy
-        deltas[i] = { dx, dy }
+        p2[i].x += dx; p2[i].y += dy
+        d2[i] = { dx, dy }
       }
-      return { pushed, deltas }
+      return { pushed: p2, deltas: d2 }
     }
-
-    // The miter bisector's 1/cos(halfAngle) scale can overshoot far enough at a sharp or
-    // reflex corner to push a vertex past another edge of the SAME polygon, self-
-    // intersecting it — confirmed happening (~15% of stress-tested cases): the resulting
-    // bowtie shape's fan triangulation renders broken/inverted, which is what "removing
-    // whole districts" looked like. Halve halfWidth and retry until the result is a
-    // simple (non-self-intersecting) polygon rather than ever shipping a broken one —
-    // less clearance at that one corner beats a corrupted district.
     let hw = halfWidth
     let result = computeAt(hw)
     let attempts = 0
@@ -1342,6 +1354,94 @@ export default class SetupPhase {
       attempts++
     }
     return { pushed: result.pushed, deltas: result.deltas, anyMatch, edgeMatched }
+  }
+
+  // Same ratio PolylineRenderer.js uses by default (miterLimitDist = thickness * 1.5 =
+  // (2*halfWidth) * 1.5 = halfWidth * 3) — keeps the pullback's narrow-angle bevel
+  // threshold visually consistent with the stroke renderer's own, even though the two
+  // currently use different halfWidth values (0.35 for pullback vs 0.25 for the Terrain
+  // Setup stroke — a pre-existing mismatch, not something this change addresses).
+  static MITER_LIMIT_RATIO = 3
+
+  // Precompute the shared, junction-aware LEFT/RIGHT boundary position for every point
+  // that's part of ANY River/Cliff terrain edge, keyed by exact point id (see
+  // riverCliffBoundary.js/shared/polylineGeometry.js). Exact-id lookup replaces the old
+  // coordinate-tolerance matching (_matchedRiverCliffEdgeId/RIVER_CLIFF_MATCH_TOL) for
+  // this purpose — confirmed live that terrain plot corners share EXACT registry ids
+  // with worldTerrainData.edges[key].pointIds (the fine per-corner chain, not a coarse
+  // simplification), so tolerance-based matching was solving a problem that doesn't
+  // exist here and was itself a source of bugs (a real-save chain's bank-path
+  // extraction silently merging two banks into one, traced to this exact mismatch).
+  //
+  // Returns Map<pointId, Array<{left,right,sourceEdgeId}>> — an ARRAY per point, not a
+  // single object: a junction point (where 2+ River/Cliff chains meet) is a real,
+  // common case, and each incident chain has its OWN left/right pair there. A single
+  // overwritten entry per point (the original design) silently discarded every chain
+  // but whichever was processed last, so a land polygon whose own edge ran along the
+  // discarded chain either failed to match at all or snapped to the wrong chain's
+  // position entirely — confirmed live as the exact cause of thin spike/fold artifacts
+  // clustered at multi-chain junction regions (2026-07-11). _pullBackPolygon picks the
+  // right array entry per land-edge by matching sourceEdgeId, not by vertex alone.
+  _riverCliffBoundaryById(halfWidth) {
+    const terrainData = this.gameStateManager.worldTerrainData
+    const registry = this.gameStateManager.pointRegistry
+    const edges = {}
+    for (const [key, e] of Object.entries(terrainData?.edges || {})) {
+      if (e.assignedType === 'River' || e.assignedType === 'Cliff') edges[key] = e
+    }
+    const byId = new Map()
+    if (Object.keys(edges).length === 0) return byId
+    const boundaries = computeRiverCliffBoundaries(edges, registry, halfWidth, halfWidth * SetupPhase.MITER_LIMIT_RATIO)
+    for (const [chainId, corners] of boundaries) {
+      const pts = edges[chainId].pointIds || []
+      // Determine, ONCE per chain, which coarse region sits on which canonical side —
+      // eliminates the risk of two DIFFERENT plots on the SAME bank (sharing a vertex)
+      // independently picking OPPOSITE sides via their own local centroid heuristic,
+      // which a per-polygon heuristic can never fully guarantee (confirmed live: an
+      // elongated plot hugging a bend disagreeing with its own straight-edged neighbour
+      // at their shared corner, producing a self-crossing/looping pullback graph
+      // instead of one clean bank — see _chainSideByRegion's doc comment).
+      const sideByRegion = this._chainSideByRegion(chainId, corners)
+      for (let i = 0; i < pts.length; i++) {
+        if (!corners?.[i]) continue
+        if (!byId.has(pts[i])) byId.set(pts[i], [])
+        byId.get(pts[i]).push({ left: corners[i].left, right: corners[i].right, sourceEdgeId: chainId, sideByRegion })
+      }
+    }
+    return byId
+  }
+
+  // For a chain named "${regionA}-${regionB}" (worldTerrainData.edges' own key
+  // convention), determine which region sits on 'left' vs 'right' by summing each
+  // region's seedPoint's squared distance to EVERY point's left vs right position
+  // along the whole chain (not just one point) — robust against local curvature, since
+  // a region's seedPoint is always deep inside that region, far from any local-bend
+  // ambiguity a single-point or per-polygon-centroid comparison could be thrown off by.
+  // Returns { [regionId]: 'left'|'right' }, or null if the key doesn't parse as two
+  // known region ids, or if both regions' seeds end up on the SAME side (a degenerate/
+  // unexpected geometry — safer to signal "don't trust this" than guess), in which case
+  // callers fall back to their own per-polygon heuristic.
+  _chainSideByRegion(chainId, corners) {
+    const parts = String(chainId).split('-')
+    if (parts.length !== 2) return null
+    const [ra, rb] = parts.map(Number)
+    if (!Number.isFinite(ra) || !Number.isFinite(rb)) return null
+    const regions = this.gameStateManager.worldTerrainData?.regions || []
+    const regionA = regions.find(r => r.id === ra)
+    const regionB = regions.find(r => r.id === rb)
+    if (!regionA?.seedPoint || !regionB?.seedPoint) return null
+    const sideFor = (seed) => {
+      let dL = 0, dR = 0
+      for (const c of corners) {
+        if (!c) continue
+        dL += (c.left.x - seed.x) ** 2 + (c.left.y - seed.y) ** 2
+        dR += (c.right.x - seed.x) ** 2 + (c.right.y - seed.y) ** 2
+      }
+      return dL < dR ? 'left' : 'right'
+    }
+    const sideA = sideFor(regionA.seedPoint), sideB = sideFor(regionB.seedPoint)
+    if (sideA === sideB) return null
+    return { [ra]: sideA, [rb]: sideB }
   }
 
   _inwardNormal(a, b, cx, cy) {
@@ -1575,6 +1675,71 @@ export default class SetupPhase {
       )
     }
 
+    const riverCliffFaces = []
+
+    // N-way (3+) river/cliff confluence face insertion (plan "typed-giggling-giraffe"
+    // addendum, generalizing the 2-bank water-splice above to the ALL-OWN-VOTE land
+    // case — e.g. three River chains meeting at one point, with no Lake/Sea/no-vote
+    // face involved at all). Confirmed live as the structural NORM for a dense river
+    // network, not a rare edge case: every interior vertex of the coarse-region Voronoi
+    // graph is a 3-way corner by construction, so wherever all 3 incident edges happen
+    // to be typed River/Cliff, this is exactly what happens (13/13 of one real map's
+    // multi-chain corners were this case, zero were the 2-chain/no-vote case). The
+    // water-splice loop above never sees these — every incident face has its OWN vote,
+    // so _computeRiverCliffDeltas' own no-vote fallback (the only thing that used to
+    // populate `ambiguous`) never fires here; `ambiguous` is now populated for every
+    // 2+-group vertex regardless of vote status (see that function's doc comment) so
+    // this loop can find them. splitVertexSimple above already moved each incident
+    // face's own corner to its own group's split point independently — nothing yet
+    // connects them, so _buildRiverCliffFaces' bank-path walker sees a topological gap
+    // (branch/closed loop) at every such vertex. Insert a small closing face here,
+    // connecting each adjacent pair of split points with a real edge — exactly the
+    // "closing edge" _buildRiverCliffFaces' termini-closing check (closes(), via
+    // findHalfEdge) already looks for, so NO changes are needed there: each individual
+    // chain's own 2-bank assembly just finds a real edge where before it found nothing.
+    for (const [vertexId, groups] of ambiguous) {
+      if (groups.length < 3) continue   // 2-way is the water-splice loop above's job
+      const base = dcel.points.get(vertexId)
+      if (!base) continue
+      const splitPts = groups.map(group => {
+        const v = dcel.getOrCreateSplitVertex(vertexId, group, base.x + group.dx, base.y + group.dy, base.z ?? 0, splitKind)
+        return { id: v.id, x: v.x, y: v.y, group }
+      })
+      // Each split point's own pull direction (group.dx/dy) points roughly outward
+      // from the vertex into its own face — sorting by that angle reconstructs the
+      // same rotational order the faces themselves actually surround the vertex in.
+      splitPts.sort((a, b) => Math.atan2(a.group.dy, a.group.dx) - Math.atan2(b.group.dy, b.group.dx))
+      let orderedIds = splitPts.map(p => p.id)
+      let orderedPts = splitPts.map(p => ({ x: p.x, y: p.y }))
+      if (this._polygonSelfIntersects(orderedPts)) {
+        const revIds = [...orderedIds].reverse(), revPts = [...orderedPts].reverse()
+        if (this._polygonSelfIntersects(revPts)) {
+          console.warn(`[river-cliff-confluence] vertex ${vertexId}: neither winding of a ${groups.length}-way confluence face is simple — skipped, its chains fall back to stroke here`)
+          continue
+        }
+        orderedIds = revIds; orderedPts = revPts
+      }
+      // Pick a visual type from whichever adjacent chain is actually tagged here — a
+      // cosmetic default only, since this face is typically a near-zero-area sliver;
+      // correctness of the LAND geometry around it doesn't depend on this choice.
+      // pendingChainTags is captured further below in raw-edge-index form, but built
+      // fully before this loop runs — safe to search here too.
+      let assignedType = 'River'
+      const idSet = new Set(orderedIds)
+      for (const { heId, sourceEdgeId } of pendingChainTags) {
+        const he = dcel.getHalfEdge(heId)
+        if (!he || !idSet.has(he.origin)) continue
+        const t = this.gameStateManager.worldTerrainData?.edges?.[sourceEdgeId]?.assignedType
+        if (t) { assignedType = t; break }
+      }
+      try {
+        const face = dcel.insertFace(orderedIds, 'river-cliff-confluence', { assignedType })
+        riverCliffFaces.push(face)
+      } catch (e) {
+        console.warn(`[river-cliff-confluence] insertFace failed at vertex ${vertexId}: ${e.message} — skipped, its chains fall back to stroke here`)
+      }
+    }
+
     // Execute the tagging plan captured BEFORE any splitting (see pendingChainTags'
     // construction above). It must be captured pre-split because splitVertexGeneral
     // INSERTS a half-edge into the spliced face's loop — a post-split hes[i] walk no
@@ -1585,7 +1750,6 @@ export default class SetupPhase {
     // split operators (splits only reassign origins or add new half-edges, never
     // delete or renumber), so tagging the recorded ids after splitting is safe — and
     // tagging must still happen after, so _buildRiverCliffFaces sees final origins.
-    const riverCliffFaces = []
     if (edgeSourceIds) {
       for (const { heId, sourceEdgeId } of pendingChainTags) dcel.tagChain(heId, sourceEdgeId)
       riverCliffFaces.push(...this._buildRiverCliffFaces(dcel))
@@ -1924,9 +2088,18 @@ export default class SetupPhase {
   // heuristics landing close enough. This also removes the redundant double-computation
   // this session's plan Grounding findings flagged from the start.
   _applyRiverCliffPullback(districts) {
-    this._applyRiverCliffPullbackToTerrainPlots()
-
+    // This used to unconditionally re-run the ENTIRE terrain-plot pullback from
+    // scratch on every single call (i.e. every generateForLocked() pass during
+    // District Setup, not just once on the Terrain->District transition). River/Cliff
+    // assignment is already finalized by the time District Setup runs — terrain plots
+    // were already correctly pulled back during Terrain Setup itself (assignEdgeType
+    // calls _applyRiverCliffPullbackToTerrainPlots directly, see its call sites) — so
+    // that re-run was geometrically a no-op except that registry.clearKind wiped and
+    // re-minted every 'terrain-split' point fresh each time, churning their ids even
+    // at unchanged coordinates, for no benefit. Removed (2026-07-12, live-confirmed
+    // it was purely redundant work, not load-bearing for anything below).
     const wt = this.gameStateManager.worldTerrainData
+    const registry = this.gameStateManager.pointRegistry
     const plotById = new Map((wt?.terrainPlots || []).map(p => [p.id, p]))
 
     for (const d of districts) {
@@ -1939,14 +2112,45 @@ export default class SetupPhase {
     for (const d of districts) {
       const originId = d.originPlotId ?? d.promotedFromPlotId
       const plot = originId != null ? plotById.get(originId) : null
-      if (!plot || plot.pointIds.length !== d._rawPointIds.length) {
+      if (!plot) {
         console.warn(`[river-cliff-pullback] district ${d.id}: no matching originating terrain plot (origin=${originId}) — pullback skipped for it this pass`)
         continue
       }
-      const changed = plot.pointIds.some((id, i) => id !== d._rawPointIds[i])
+      // Re-match by RAW-VERTEX LINEAGE, not array length. A district's own boundary is
+      // a direct copy of its origin plot's raw (pre-split) pointIds at promotion time
+      // (see this method's original doc comment above _applyRiverCliffPullback), so
+      // every id in d._rawPointIds is guaranteed to appear somewhere in the plot's OWN
+      // vertex history — but comparing ARRAY LENGTHS to decide "did this still match"
+      // is fragile to District Setup's incremental nature: edges get typed River/Cliff
+      // one at a time, and a terrain plot's OWN split-vertex count can legitimately
+      // grow (a newly-resolved confluence nearby, a new bank split) between the moment
+      // a district's snapshot was frozen and any later pass — with the length check,
+      // that alone permanently stops the district adopting, even though nothing about
+      // ITS OWN corners is actually wrong (confirmed live: a persistent ~50% adoption
+      // failure that persisted even after removing the redundant re-pullback above).
+      // Instead, resolve the plot's CURRENT points back to whichever raw/base vertex
+      // each one traces to (GroundPointRegistry.getOrCreateSplit tags every split
+      // point with .baseId; an unsplit 'terrain' point is its own base) and look each
+      // of the district's OWN raw ids up in that map individually — robust to the
+      // plot's total vertex count changing for reasons unrelated to this district's
+      // own corners.
+      const currentByBase = new Map()
+      for (const id of plot.pointIds) {
+        const p = registry.get(id)
+        const baseId = p?.baseId ?? id
+        if (!currentByBase.has(baseId)) currentByBase.set(baseId, id)
+      }
+      const newIds = d._rawPointIds.map(rawId => currentByBase.get(rawId))
+      if (newIds.length < 3 || newIds.some(id => id == null)) {
+        console.warn(`[river-cliff-pullback] district ${d.id}: origin plot ${originId} no longer resolves all raw vertices — pullback skipped for it this pass`)
+        continue
+      }
+      const newPolygon = newIds.map(id => { const p = registry.get(id); return p ? { x: p.x, y: p.y } : null })
+      if (newPolygon.some(p => !p)) continue
+      const changed = newIds.some((id, i) => id !== d.pointIds[i])
       if (changed) matchedDistrictCount++
-      d.pointIds = [...plot.pointIds]
-      d.polygon = plot.polygon.map(v => ({ x: v.x, y: v.y }))
+      d.pointIds = newIds
+      d.polygon = newPolygon
       const remap = new Map()
       for (let i = 0; i < d._rawPointIds.length; i++) remap.set(d._rawPointIds[i], d.pointIds[i])
       remapByDistrict.set(d.id, remap)
@@ -2128,9 +2332,9 @@ export default class SetupPhase {
   // polygon pi lies along, or null. Passed straight through from _pullBackPolygon —
   // consumed by _buildRiverCliffFaces to tag split half-edges with their physical
   // river/cliff chain.
-  _computeRiverCliffDeltas(rawPolygons, rawPointIdArrays, riverCliffSegs, halfWidth) {
+  _computeRiverCliffDeltas(rawPolygons, rawPointIdArrays, boundaryById, halfWidth, rawRegionIds = null) {
     const zeroDeltasFor = (n) => new Array(n).fill(null).map(() => ({ dx: 0, dy: 0 }))
-    if (!riverCliffSegs.length) {
+    if (!boundaryById.size) {
       return { deltas: rawPolygons.map(p => zeroDeltasFor(p.length)), anyMatch: rawPolygons.map(() => false), ambiguous: new Map(), edgeSourceIds: rawPolygons.map(p => new Array(p.length).fill(null)) }
     }
 
@@ -2141,7 +2345,8 @@ export default class SetupPhase {
     for (let pi = 0; pi < rawPolygons.length; pi++) {
       const poly = rawPolygons[pi]
       const ids = rawPointIdArrays[pi]
-      const { deltas, anyMatch: matched, edgeMatched } = this._pullBackPolygon(poly, riverCliffSegs, halfWidth)
+      const regionId = rawRegionIds ? rawRegionIds[pi] : null
+      const { deltas, anyMatch: matched, edgeMatched } = this._pullBackPolygon(poly, ids, boundaryById, halfWidth, regionId)
       anyMatch.push(matched)
       edgeSourceIds.push(edgeMatched)
       const contribs = new Array(poly.length).fill(null)
@@ -2156,7 +2361,22 @@ export default class SetupPhase {
       }
     }
 
-    for (const list of contribsById.values()) {
+    // Declared here (not after this loop, as it originally was) because this loop is
+    // now where EVERY multi-group vertex gets recorded — not just the no-vote-fallback
+    // ones the deltas map below used to be the sole populator of. A genuine N-way
+    // (N>=3) river/cliff confluence where every incident land face has its OWN vote
+    // (no Lake/Sea/no-vote face involved at all — e.g. three River chains meeting at
+    // one point) never triggered the old no-vote-only population, so
+    // _dcelPullbackMaterialize's confluence-splice loop never even saw it: each face's
+    // own corner got moved independently by splitVertexSimple with no connecting
+    // geometry ever inserted between them, leaving a topological gap that
+    // _buildRiverCliffFaces' bank-path walker sees as a "branch"/"closed loop" anomaly
+    // (confirmed live: 13/13 of this map's multi-chain corners are exactly this kind of
+    // all-own-vote 3-way confluence, not the water-splice case). Populating `ambiguous`
+    // for every 2+-group vertex here (regardless of own-vote status) is what lets a new
+    // N-way confluence-face pass in _dcelPullbackMaterialize find them.
+    const ambiguous = new Map()
+    for (const [vertexId, list] of contribsById) {
       const groups = []
       for (const c of list) {
         const g = groups.find(g => g.members[0].dx * c.dx + g.members[0].dy * c.dy >= 0)
@@ -2193,9 +2413,9 @@ export default class SetupPhase {
           bigger.avg.dy *= scale
         }
       }
+      if (groups.length >= 2) ambiguous.set(vertexId, groups.map(g => g.avg))
     }
 
-    const ambiguous = new Map()
     // hasOwnVote (returned, parallel to deltas): true where THIS polygon's own edge at
     // that vertex was itself river/cliff-matched (contribs[i] truthy) — false wherever
     // the resolved delta only exists because a NEIGHBOUR's vote won the ambiguous
@@ -2237,7 +2457,7 @@ export default class SetupPhase {
     // its doc comment), this half-width is what districts get too — 0.35 keeps the same
     // block/plot-tracing clearance margin that value was originally tuned for.
     const RIVER_CLIFF_HALF_WIDTH = 0.35
-    const riverCliffSegs = this._riverCliffSegments()
+    const boundaryById = this._riverCliffBoundaryById(RIVER_CLIFF_HALF_WIDTH)
     const terrainPlots = this.gameStateManager.worldTerrainData?.terrainPlots || []
     const registry = this.gameStateManager.pointRegistry
 
@@ -2253,7 +2473,8 @@ export default class SetupPhase {
 
     const rawPolys = terrainPlots.map(c => c._rawPolygon)
     const rawIds = terrainPlots.map(c => c._rawPointIds)
-    const { deltas, ambiguous, edgeSourceIds, hasOwnVote } = this._computeRiverCliffDeltas(rawPolys, rawIds, riverCliffSegs, RIVER_CLIFF_HALF_WIDTH)
+    const rawRegionIds = terrainPlots.map(c => c.parentRegionId)
+    const { deltas, ambiguous, edgeSourceIds, hasOwnVote } = this._computeRiverCliffDeltas(rawPolys, rawIds, boundaryById, RIVER_CLIFF_HALF_WIDTH, rawRegionIds)
 
     // Re-enabled (Stage B, plan Addendum 2): the second splitVertexGeneral failure —
     // after the fan-ordering fix — was root-caused as geometric overshoot (bank offsets
@@ -2287,7 +2508,7 @@ export default class SetupPhase {
     this._syncLinearFeatureRegions(riverCliffFaces)
     this._syncGroundplaneSurfaces()
 
-    console.log(`[river-cliff-pullback] ${riverCliffSegs.length} river/cliff terrain segments, ${matchedCount}/${terrainPlots.length} terrain plot(s) pulled back (miter, junction-averaged), ${riverCliffFaces.length} river/cliff face(s) built`)
+    console.log(`[river-cliff-pullback] ${boundaryById.size} river/cliff boundary point(s), ${matchedCount}/${terrainPlots.length} terrain plot(s) pulled back (miter, junction-averaged), ${riverCliffFaces.length} river/cliff face(s) built`)
   }
 
   // Edge→Region conversion (ADR-0020 decisions 4–6, plan Addendum 2 Stage B): every
@@ -2944,7 +3165,7 @@ export default class SetupPhase {
     // uses the raw `poly`, since _applyRiverCliffPullback (run later, once this district
     // is typed) is what actually insets district.polygon and keeps cityData.edgePoints in
     // sync; duplicating that here would double-pull-back this district's own boundary.
-    const matchPoly = this._pullBackPolygon(poly, this._riverCliffSegments(), 0.35).pushed
+    const matchPoly = this._pullBackPolygon(poly, ids, this._riverCliffBoundaryById(0.35), 0.35).pushed
 
     const segmentNeighbor = new Array(n).fill(null)
     for (let i = 0; i < n; i++) {

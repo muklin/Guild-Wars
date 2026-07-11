@@ -110,6 +110,15 @@ export default class CameraController {
     return true
   }
 
+  // Discards any saved view from a previous game, so the next restoreSavedState() call
+  // (via _focusCameraOnCity) finds nothing and falls through to centerOnMap()'s default
+  // instead of resurrecting wherever the camera happened to be left in a prior game.
+  // Called explicitly on New Game — an ordinary page reload of the SAME game still
+  // restores its saved view as before.
+  clearSavedState() {
+    try { localStorage.removeItem(CAMERA_STATE_KEY) } catch { /* ignore */ }
+  }
+
   setupEventListeners() {
     document.addEventListener('keydown', (e) => this.onKeyDown(e))
     document.addEventListener('keyup',   (e) => this.onKeyUp(e))

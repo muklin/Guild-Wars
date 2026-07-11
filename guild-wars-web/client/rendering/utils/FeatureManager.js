@@ -31,20 +31,6 @@ const FEATURES = {
     minScale: 0.08,
     leanMax: 0.03,
   },
-  mountains: {
-    glbPath: '/resources/Models/mtn.glb',
-    strategy: 'single',   // one instance at the cell seed point, scaled by polygon area
-    scaleFactor: 0.05,
-    scaleVariation: 0,
-    minScale: 1
-  },
-  hills: {
-    glbPath: '/resources/Models/hills.glb',
-    strategy: 'single',
-    scaleFactor: 0.30,
-    scaleVariation: 0.15,
-    minScale: 0.10
-  },
   bridge: {
     glbPath: '/resources/Models/bridge.glb',
     strategy: 'absolute',
@@ -148,17 +134,6 @@ export default class FeatureManager {
     return pts
   }
 
-  _polygonArea(polygon) {
-    let area = 0
-    const n = polygon.length
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n
-      area += polygon[i].x * polygon[j].y
-      area -= polygon[j].x * polygon[i].y
-    }
-    return Math.abs(area) / 2
-  }
-
   _spawnOne(gltf, x, z, scale, rotY, rotX = 0, rotZ = 0, billboard = false, loop = false, skipAnimation = false) {
     // Wrapper holds world position/rotation/scale so the animation on the inner
     // scene cannot displace the prop from its terrain plot seed point.
@@ -234,12 +209,6 @@ export default class FeatureManager {
           const model = gltfs ? gltfs[Math.floor(rng() * gltfs.length)] : gltf
           this._spawnOne(model, pt.x, pt.z, scale, rotY, rotX, rotZ, cfg.billboardY ?? false)
         }
-      } else if (cfg.strategy === 'single') {
-        const area = cell.polygon?.length >= 3 ? this._polygonArea(cell.polygon) : 1
-        const base = Math.sqrt(area) * cfg.scaleFactor
-        const scale = Math.max(cfg.minScale, base * (1 + (rng() - 0.5) * 2 * cfg.scaleVariation))
-        const rotY = rng() * Math.PI * 2
-        this._spawnOne(gltf, cell.seedPoint.x, cell.seedPoint.y, scale, rotY)
       } else if (cfg.strategy === 'absolute') {
         const scale = Math.max(cfg.minScale, cfg.baseScale + (rng() - 0.5) * 2 * cfg.scaleVariation)
         this._spawnOne(gltf, absolutePos.x, absolutePos.z, scale, absolutePos.rotY, absolutePos.rotX, absolutePos.rotZ, cfg.billboardY ?? false, false, cfg.noAnimation ?? false)

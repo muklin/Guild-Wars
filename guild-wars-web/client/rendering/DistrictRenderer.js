@@ -302,12 +302,24 @@ export default class DistrictRenderer {
         const mesh = this.buildWallMesh(edge, edgeId, chain ?? null)
         if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
       } else if (edge.assignedType === 'Canal') {
-        const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Canal')
-        if (chain) {
+        // buildCanalMesh only ever reads {x,y} off each entry (it computes its own
+        // mitered corners internally — see that function), so a plain edge.pointIds-
+        // derived polyline works exactly as well as a real street-graph chain. Falling
+        // back to it (same pattern Docks already uses below) fixes both districts
+        // being LOCKED but the boundary segment being too short/sharp-cornered for the
+        // street graph to have placed 2+ junctions along it — _extractBoundaryChain
+        // needs at least 2 matching junctions and returns null otherwise, which used
+        // to leave this case stuck on the thin EdgeLineRenderer placeholder forever,
+        // not just during the genuinely-pending (no district locked yet) state.
+        const streetChain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Canal')
+        const chain = streetChain ?? (edge.pointIds || []).map(id => this.cityEdgePointsById.get(id)).filter(Boolean)
+        if (chain.length >= 2) {
           const mesh = this.buildCanalMesh(chain, edgeId)
           if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
+          else console.warn(`[canal-debug] edge ${edgeId}: buildCanalMesh returned null for a ${chain.length}-point ${streetChain ? 'street-graph chain' : 'pointIds fallback'} — nothing rendered`)
         } else {
-          // Pending — show placeholder polyline until 1st adjacent district locks.
+          // Genuinely pending — show placeholder polyline until 1st adjacent district locks.
+          console.warn(`[canal-debug] edge ${edgeId}: no usable chain (street chain: ${streetChain ? streetChain.length : 'null'}, edge.pointIds: ${(edge.pointIds || []).length}, resolved: ${chain.length}) — falling back to thin placeholder`)
           nonWallEdges[edgeId] = edge
         }
       } else if (edge.assignedType === 'Docks') {
@@ -880,14 +892,19 @@ export default class DistrictRenderer {
     }
     if (type === 'Canal') {
       const edge = this.cityDistrictData?.edges?.[edgeId]
-      const chain = edge ? this._extractBoundaryChain(edge.districtA, edge.districtB, 'Canal') : null
-      if (chain) {
+      // Same fallback as renderCityEdges' Canal branch — see its doc comment.
+      const chain = edge
+        ? (this._extractBoundaryChain(edge.districtA, edge.districtB, 'Canal')
+          ?? (edge.pointIds || []).map(id => this.cityEdgePointsById.get(id)).filter(Boolean))
+        : null
+      if (chain?.length >= 2) {
         const polyMesh = this.cityPolylines?.getEdgeMesh(edgeId)
         if (polyMesh) polyMesh.visible = false
         const old = this.cityEdgeMeshes.get(edgeId)
         if (old) this.scene.remove(old)
         const mesh = this.buildCanalMesh(chain, edgeId)
         if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
+        else console.warn(`[canal-debug] updateCityEdgeColor ${edgeId}: buildCanalMesh returned null for a ${chain.length}-point chain — nothing rendered`)
         return
       }
     }

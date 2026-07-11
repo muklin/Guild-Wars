@@ -78,6 +78,13 @@ export default class GroundPointRegistry {
     let split = inner.get(side)
     if (!split) {
       split = this.create(x, y, z, kind)
+      // Lineage back to the vertex this was split FROM — survives this pass's
+      // _splitIndex being cleared (unlike the index itself), so a caller holding onto
+      // a RAW/pre-split id (e.g. a district's frozen _rawPointIds snapshot) can still
+      // re-resolve "what does my raw vertex X currently look like" by scanning any
+      // CURRENT point set for a matching .baseId — without needing the two id spaces
+      // to stay positionally aligned. See SetupPhase._applyRiverCliffPullback.
+      split.baseId = baseId
       inner.set(side, split)
     }
     return split

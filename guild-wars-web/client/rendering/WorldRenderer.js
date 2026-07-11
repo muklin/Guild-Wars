@@ -270,6 +270,11 @@ export default class WorldRenderer {
     this.cameraController?.setHomePosition(x, z)
   }
 
+  // See CameraController.clearSavedState — discards a previous game's saved camera view.
+  clearSavedCameraState() {
+    this.cameraController?.clearSavedState()
+  }
+
   // Restores a previously-saved view mode + camera location (see CameraController's
   // _saveState/restoreSavedState). Returns true if there was one to restore.
   restoreCameraState() {

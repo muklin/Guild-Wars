@@ -182,11 +182,26 @@ export function computeEdgeCorners(edge, edgeId, overrides, pointsById, r, miter
       if (len1 < 1e-10 || len2 < 1e-10) { corners.push(null); continue }
       const ux1 = dx1 / len1, uy1 = dy1 / len1
       const ux2 = dx2 / len2, uy2 = dy2 / len2
-      const rawLeft = lineIsect(pt.x - uy1 * r, pt.y + ux1 * r, ux1, uy1, pt.x - uy2 * r, pt.y + ux2 * r, ux2, uy2)
-      const rawRight = lineIsect(pt.x + uy1 * r, pt.y - ux1 * r, ux1, uy1, pt.x + uy2 * r, pt.y - ux2 * r, ux2, uy2)
+      const q1L = { x: pt.x - uy1 * r, y: pt.y + ux1 * r }, q2L = { x: pt.x - uy2 * r, y: pt.y + ux2 * r }
+      const q1R = { x: pt.x + uy1 * r, y: pt.y - ux1 * r }, q2R = { x: pt.x + uy2 * r, y: pt.y - ux2 * r }
+      const rawLeft = lineIsect(q1L.x, q1L.y, ux1, uy1, q2L.x, q2L.y, ux2, uy2)
+      const rawRight = lineIsect(q1R.x, q1R.y, ux1, uy1, q2R.x, q2R.y, ux2, uy2)
+      // A clamped (beveled) corner collapses two segments' own offset lines into a
+      // single shared point that no longer sits on either line — fine for the single
+      // canonical position server-side land-snapping wants (see riverCliffBoundary.js),
+      // but on the strip mesh this leaves the outer (convex) side of a sharp bend short
+      // of where each segment's own straight edge actually needs to reach, i.e. a real
+      // gap, not just a shorter spike (confirmed live: black notches along a tightly
+      // zigzagging river's stroke). q1/q2 — each segment's own local offset endpoint at
+      // this vertex — let the mesh builder emit a join triangle that closes exactly that
+      // gap, the same idea computeJunctionData already uses for beveled junctions.
+      const leftBeveled = Math.hypot(rawLeft.x - pt.x, rawLeft.y - pt.y) > miterLimitDist
+      const rightBeveled = Math.hypot(rawRight.x - pt.x, rawRight.y - pt.y) > miterLimitDist
       corners.push({
         left: clampToLimit(rawLeft, pt.x, pt.y),
         right: clampToLimit(rawRight, pt.x, pt.y),
+        leftBevel: leftBeveled ? { q1: q1L, q2: q2L, pt } : null,
+        rightBevel: rightBeveled ? { q1: q1R, q2: q2R, pt } : null,
       })
     }
   }

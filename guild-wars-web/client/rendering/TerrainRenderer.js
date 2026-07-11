@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import PolylineRenderer from './utils/PolylineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
-import { pointInPolygon, distanceToLineSegment, clipPolygonToBox, triangulatePolygon, resolvePolygon } from './utils/renderUtils.js'
+import { pointInPolygon, distanceToLineSegment, clipPolygonToBox, triangulatePolygon, resolvePolygon, posHash } from './utils/renderUtils.js'
 
 const TERRAIN_COLORS = {
   City:          0x808080,
@@ -229,16 +229,20 @@ export default class TerrainRenderer {
     }
     this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces }
     this.renderTerrain(regions, terrainPlots || [])
-    // Reverted (2026-07-11): Terrain Setup mode goes back to stroke rendering for every
-    // River/Cliff edge, not the filled DCEL faces — the face pipeline still has
-    // unresolved visual artifacts at bends/confluences (see plan "typed-giggling-
-    // giraffe" Addendum 2 Stage B notes) that the fixed-width stroke has always simply
-    // painted over. District mode keeps consuming riverCliffFaces via GroundRenderer/
-    // TerrainPlotConverter (confirmed working there) — this only changes Terrain mode's
-    // OWN rendering choice; the server still computes and sends riverCliffFaces
-    // unchanged. Endpoints/confluences are just whatever the underlying land-plot
-    // pullback triangles already look like — no special-casing needed, exactly as
-    // before the face-rendering work started.
+    // Reverted (2026-07-11): Terrain Setup mode's EDGE OVERLAY (renderEdges, below) goes
+    // back to stroke rendering for every River/Cliff edge instead of skipping the ones
+    // covered by a filled DCEL face — the face pipeline still has unresolved visual
+    // artifacts at bends/confluences (see plan "typed-giggling-giraffe" Addendum 2 Stage
+    // B notes) that the fixed-width stroke has always simply painted over. That revert
+    // is scoped to the stroke overlay only; the filled faces themselves are still built
+    // here so District mode (which tears down the stroke overlay entirely via
+    // setCityModeActive) has something to show for River/Cliff before GroundRenderer's
+    // own district-plot fill takes over (see deleteNonCityTerrainPlots, which retires
+    // these meshes the moment that handoff happens — a restored call here was
+    // accidentally dropped in the same edit that reverted the stroke overlay, leaving a
+    // gap where River/Cliff rendered as nothing at all during District Setup, before any
+    // district had a street graph).
+    this.renderRiverCliffFaces(riverCliffFaces)
     this.drawVoronoiCenters(regions)
     if (edges && Object.keys(edges).length > 0) {
       this.renderEdges(edges)
@@ -290,11 +294,7 @@ export default class TerrainRenderer {
         if (mesh) mesh.visible = false
       }
       for (const region of regions) {
-        if (region.assignedType === 'Forest')    this._spawnFeatureForRegion('forest', region.id)
-        if (region.assignedType === 'Mountains') this._spawnFeatureForRegion('mountains', region.id)
-        if (region.assignedType === 'Hills')     this._spawnFeatureForRegion('hills', region.id)
-        if (region.assignedType === 'Sea')       this._spawnFeatureForRegion('sea', region.id)
-        if (region.assignedType === 'Lake')      this._spawnFeatureForRegion('lake', region.id)
+        if (region.assignedType === 'Forest') this._spawnFeatureForRegion('forest', region.id)
       }
     } else {
       let successCount = 0
@@ -350,7 +350,15 @@ export default class TerrainRenderer {
       return null
     }
 
-    const color = TERRAIN_COLORS.get(region.assignedType) || TERRAIN_COLORS.unassigned
+    // Jittered per-polygon, same formula/seed as GroundRenderer's terrain-plot fill
+    // (_jitterColor/_polySeed there) — once District Setup hands a cell's rendering off
+    // to GroundRenderer (see deleteNonCityTerrainPlots), the SAME cell polygon
+    // (TerrainPlotConverter copies cell.polygon into plot.blockCorners unchanged) is
+    // re-colored by that identical formula, so the handoff produces no visible color
+    // change. Computed from the pre-clip polygon (region.polygon) to match
+    // GroundRenderer, which never clips.
+    const baseColor = TERRAIN_COLORS.get(region.assignedType) || TERRAIN_COLORS.unassigned
+    const color = this._jitterColor(baseColor, this._polySeed(region.polygon))
     // DoubleSide: every other renderer in this codebase (DistrictRenderer, GroundRenderer)
     // already renders this way — this was the one mesh left culling backfaces, so any
     // wrong-winding polygon (several found this session, from different sources) went
@@ -372,6 +380,32 @@ export default class TerrainRenderer {
     return mesh
   }
 
+  // Identical formula to GroundRenderer's own _rand/_polySeed/_jitterColor — kept as an
+  // exact duplicate (not a shared import) so the two renderers' output matches bit-for-
+  // bit on the same polygon/seed without coupling them structurally; see buildRegionMesh's
+  // doc comment for why that match matters (seamless Terrain→District handoff).
+  _rand(seed) {
+    let s = (seed * 2654435761) >>> 0
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+    return (s >>> 0) / 0x100000000
+  }
+
+  _polySeed(poly) {
+    if (!poly?.length) return 0
+    let cx = 0, cy = 0
+    for (const v of poly) { cx += v.x; cy += v.y }
+    return posHash(cx / poly.length, cy / poly.length)
+  }
+
+  _jitterColor(hex, seed) {
+    const ch = (shift, i) => {
+      const v = (hex >> shift) & 255
+      const f = 0.95 + this._rand(seed * 31 + i) * 0.10
+      return Math.max(0, Math.min(255, Math.round(v * f)))
+    }
+    return (ch(16, 1) << 16) | (ch(8, 2) << 8) | ch(0, 3)
+  }
+
   // Once city/district mode is active, this whole overlay stays dark permanently — see
   // _cityModeActive's doc comment. setTerrainData still gets called on every subsequent
   // sync while in that mode (it's unconditional in App.js), so this guard is what stops
@@ -384,7 +418,15 @@ export default class TerrainRenderer {
   renderEdges(edges) {
     if (this._cityModeActive) return
     if (!this.terrainPolylines) {
-      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.5, stripY: 0.01, priorityColor: TERRAIN_COLORS.River })
+      // thickness 0.7 -> half-width 0.35, matching SetupPhase.js's RIVER_CLIFF_HALF_WIDTH
+      // exactly (that's what the land pullback now snaps to, via riverCliffBoundary.js's
+      // shared geometry) — was 0.5 (half-width 0.25) from when terrain-mode stroking was
+      // purely visual and pullback used its own, then-separate 0.25. Left mismatched
+      // after RIVER_CLIFF_HALF_WIDTH was bumped to 0.35 for district-adoption (see that
+      // constant's doc comment) — confirmed live as a constant ~0.1 gap between the
+      // stroke's edge and the pulled-back land, i.e. the land was already agreeing with
+      // the true river width, only the stroke was too narrow to reach it.
+      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.7, stripY: 0.01, priorityColor: TERRAIN_COLORS.River })
     }
     // Reverted (2026-07-11): every edge strokes, including River/Cliff — see
     // setTerrainData's matching comment for why the filled-face pass was dropped for
@@ -432,10 +474,7 @@ export default class TerrainRenderer {
 
   updateRegionColor(regionId, terrainType) {
     this._applyRegionColor(regionId, TERRAIN_COLORS.get(terrainType) || TERRAIN_COLORS.unassigned)
-    if (terrainType === 'Forest')    this._spawnFeatureForRegion('forest', regionId)
-    if (terrainType === 'Mountains') this._spawnFeatureForRegion('mountains', regionId)
-    if (terrainType === 'Hills')     this._spawnFeatureForRegion('hills', regionId)
-    if (terrainType === 'Sea')       this._spawnFeatureForRegion('sea', regionId)
+    if (terrainType === 'Forest') this._spawnFeatureForRegion('forest', regionId)
   }
 
   selectRegion(regionId) {

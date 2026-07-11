@@ -1787,6 +1787,11 @@ export default class App {
         this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [])
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')
+        // New Game: discard any saved camera view from the previous game first, so
+        // _focusCameraOnCity's restoreCameraState() finds nothing and falls through to
+        // centerOnMap()'s default (iso mode, North at top) instead of resurrecting
+        // wherever the camera was left in the game just discarded.
+        this.renderer.clearSavedCameraState()
         this._focusCameraOnCity(response.regions)
         this.eventBus.emit('SETUP_STARTED')
       } else {

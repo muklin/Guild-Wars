@@ -189,9 +189,31 @@ export default class PolylineRenderer {
       const c1 = corners[i], c2 = corners[i + 1]
       if (!c1 || !c2) continue
       const base = allVerts.length / 3
-      allVerts.push(c1.right.x, Y, c1.right.y, c1.left.x, Y, c1.left.y,
-                    c2.left.x,  Y, c2.left.y,  c2.right.x, Y, c2.right.y)
+      // At a beveled interior vertex, the segment's own quad must reach its own local
+      // offset endpoint (q2 for the segment starting here, q1 for the segment ending
+      // here) rather than the shared clamped corner — the join triangles below fill the
+      // remainder, closing what would otherwise be a notch (see the doc comment on
+      // leftBevel/rightBevel in shared/polylineGeometry.js).
+      const c1Right = c1.rightBevel ? c1.rightBevel.q2 : c1.right
+      const c1Left  = c1.leftBevel  ? c1.leftBevel.q2  : c1.left
+      const c2Left  = c2.leftBevel  ? c2.leftBevel.q1  : c2.left
+      const c2Right = c2.rightBevel ? c2.rightBevel.q1 : c2.right
+      allVerts.push(c1Right.x, Y, c1Right.y, c1Left.x, Y, c1Left.y,
+                    c2Left.x,  Y, c2Left.y,  c2Right.x, Y, c2Right.y)
       allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    }
+    // Bevel join triangles at sharp interior bends — fan from the centreline vertex to
+    // its two segments' own local offset points, filling exactly the wedge the
+    // shortened quads above leave uncovered.
+    for (let i = 1; i < n - 1; i++) {
+      const c = corners[i]
+      if (!c) continue
+      for (const bevel of [c.leftBevel, c.rightBevel]) {
+        if (!bevel) continue
+        const base = allVerts.length / 3
+        allVerts.push(bevel.pt.x, Y, bevel.pt.y, bevel.q1.x, Y, bevel.q1.y, bevel.q2.x, Y, bevel.q2.y)
+        allIdx.push(base, base + 1, base + 2)
+      }
     }
     if (allVerts.length === 0) return null
 
