@@ -152,7 +152,7 @@ export default class TerrainTypePanel {
     return row
   }
 
-  _buildRegionContent(container, { pendingType, isEdge = false, isNorthEdge = false, adjacentRegions = [] }) {
+  _buildRegionContent(container, { pendingType, isEdge = false, isNorthEdge = false, adjacentRegions = [], worldHasIceSheet = false, worldHasDesert = false }) {
     const adjacentTypes = adjacentRegions.map(r => r.type)
     container.appendChild(this._headerRow('Terrain Type'))
 
@@ -168,6 +168,8 @@ export default class TerrainTypePanel {
       let disabledReason = null
       if (EDGE_ONLY.includes(type) && !isEdge)              disabledReason = `${type} can only be placed on boundary (edge-of-map) regions`
       else if (type === 'Ice Sheet' && !isNorthEdge)         disabledReason = 'Ice Sheet can only be placed on north-edge regions'
+      else if (type === 'Ice Sheet' && worldHasDesert)       disabledReason = 'Cannot be placed — this map already has a Desert'
+      else if (type === 'Desert' && worldHasIceSheet)        disabledReason = 'Cannot be placed — this map already has an Ice Sheet'
       else if (type === 'Sea' && adjacentTypes.includes('Lake'))  disabledReason = 'Cannot be placed adjacent to a Lake'
       else if (type === 'Lake' && adjacentTypes.includes('Sea'))  disabledReason = 'Cannot be placed adjacent to the Sea'
       const disabled = disabledReason !== null

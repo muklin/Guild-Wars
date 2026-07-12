@@ -270,7 +270,23 @@ export default class DistrictTypePanel {
       applyBtn.textContent = 'Apply Threat'
       applyBtn.style.cssText = 'width:100%;padding:7px;background:#6b1a1a;color:#fff;border:1px solid #994444;border-radius:3px;cursor:pointer;font-weight:bold;font-size:12px'
       applyBtn.addEventListener('click', () => {
-        this.eventBus.emit('TERRAIN_THREAT_APPLY', { name: '', description: '' })
+        applyBtn.disabled = true
+        applyBtn.style.opacity = '0.6'
+        applyBtn.style.cursor = 'default'
+        // Local (terrain-plot) threat only — Foreign Power threats already arrive
+        // pre-named and use their own dialog (hideSuggestions) elsewhere.
+        const dialog = new NameDialog({
+          entityKind: 'threat', entityLabel: 'Threat', subType: 'Threat',
+          onApply: (name, description) => {
+            this.eventBus.emit('TERRAIN_THREAT_APPLY', { name, description })
+          },
+          onCancel: () => {
+            applyBtn.disabled = false
+            applyBtn.style.opacity = '1'
+            applyBtn.style.cursor = 'pointer'
+          }
+        })
+        dialog.open()
       })
       container.appendChild(applyBtn)
       return

@@ -501,6 +501,16 @@ export default class SetupPhase {
       throw new Error('Ice Sheet can only be placed on north-edge regions')
     }
 
+    // Ice Sheet and Desert are mutually exclusive world-wide (not just adjacency, unlike
+    // Sea/Lake below) — the first one placed anywhere on the map fixes the whole world's
+    // climate as "cold" or "hot", ruling out the other for the rest of the game.
+    if (terrainType === 'Ice Sheet' || terrainType === 'Desert') {
+      const forbidden = terrainType === 'Ice Sheet' ? 'Desert' : 'Ice Sheet'
+      if (regions.some(r => r.assignedType === forbidden)) {
+        throw new Error(`${terrainType} cannot be placed — ${forbidden} already exists on this map`)
+      }
+    }
+
     if (terrainType === 'Sea' || terrainType === 'Lake') {
       const forbidden = terrainType === 'Sea' ? 'Lake' : 'Sea'
       const edges = this.gameStateManager.worldTerrainData.edges
@@ -3318,7 +3328,7 @@ export default class SetupPhase {
     let streetGraph = null
     for (let attempt = 0; attempt <= MAX_TOPOLOGY_RETRIES; attempt++) {
       const gen = new StreetVoronoiGenerator()
-      streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes)
+      streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes, this.gameStateManager.pointRegistry)
       const issues = streetGraph.topologyIssues
       if (!issues || issues.crossings === 0) break
 

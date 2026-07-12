@@ -78,7 +78,18 @@ function reconcileParallelStreetTypes(nodes, edges) {
 // kind: the ephemeral Point kind for freshly-minted (non-reused) nodes.
 // Returns Map<localNodeId, registryId>.
 export function resolveNodeRegistryIds(nodes, nodeSourceEdgePointId, registry, kind = 'street') {
-  throw new Error('resolveNodeRegistryIds: not implemented yet (ADR-0020 Stage C, awaiting go-ahead after red tests)')
+  const result = new Map()
+  for (const node of nodes) {
+    const sourceId = nodeSourceEdgePointId.get(node.id)
+    const sourcePt = sourceId != null ? registry.get(sourceId) : null
+    if (sourcePt) {
+      result.set(node.id, sourceId)
+    } else {
+      const p = registry.create(node.x, node.y, 0, kind)
+      result.set(node.id, p.id)
+    }
+  }
+  return result
 }
 
 // Per-district street/block/plot generation tuning now lives in
@@ -775,7 +786,12 @@ export default class StreetVoronoiGenerator {
   // `districts` may be a subset of the city's districts (e.g. only the locked ones
   // during per-district City Subdivision). City edges touching no district in the
   // subset are skipped, so boundaries to not-yet-generated districts are deferred.
-  generate(districts, cityEdges, edgePoints, epochSeed = 0, tradeRoutes = []) {
+  generate(districts, cityEdges, edgePoints, epochSeed = 0, tradeRoutes = [], registry = null) {
+    // Retry loop (SetupPhase.js) can call generate() up to 3x on unresolved crossings —
+    // clearing here, at generate()'s own top, matches PlotVoronoiGenerator.generate()'s
+    // identical reasoning: clearing mid-call would wipe an earlier attempt's points
+    // within the same outer call.
+    if (registry) registry.clearKind('street')
     const districtResults = []
     let nextNodeId = 0
     const edgePointById = new Map((edgePoints || []).map(p => [p.id, p]))
@@ -949,6 +965,11 @@ export default class StreetVoronoiGenerator {
     const boundaryNodes = []
     const boundaryEdges = []
     const boundaryNodesByEdge = new Map()  // edgeId → [node, ...]  (all nodes incl. interp.)
+    // localNodeId → the real edgePoint id it was minted at (registry-id resolution, see
+    // resolveNodeRegistryIds) — only set for nodes minted directly at a known edge point,
+    // never for BOUNDARY_INTERVAL-interpolated ones. Propagated (not recomputed) through
+    // every later pass that renames/merges a node id onto a survivor.
+    const nodeSourceEdgePointId = new Map()
 
     for (const [edgeId, cityEdge] of Object.entries(cityEdges)) {
       // Skip boundaries touching no generated district — defer them until a side joins.
@@ -964,6 +985,7 @@ export default class StreetVoronoiGenerator {
           const node = { id: nextNodeId++, x: pts[i].x, y: pts[i].y }
           boundaryNodeByPtId.set(pts[i].id, node)
           boundaryNodes.push(node)
+          nodeSourceEdgePointId.set(node.id, pts[i].id)
         }
         ordered.push(boundaryNodeByPtId.get(pts[i].id))
 
@@ -1081,6 +1103,13 @@ export default class StreetVoronoiGenerator {
     // district boundary and leave a visible gap between adjacent district plots.
     const boundaryNodeIdSet = new Set(boundaryNodes.map(n => n.id))
     const rootData = new Map()
+    // A cluster's surviving root id is whichever member the union-find happened to visit
+    // first (allNodes lists voronoi nodes before boundary ones, so a voronoi id often
+    // wins even though the merged POSITION above always prefers the boundary node's) —
+    // if any member of the cluster was minted at a real edge point, propagate that
+    // tracking onto the root id so resolveNodeRegistryIds still reuses the exact id
+    // later, regardless of which local id happened to survive here.
+    const finalNodeSourceEdgePointId = new Map()
     for (const n of allNodes) {
       const root = find(n.id)
       if (!rootData.has(root)) {
@@ -1092,6 +1121,8 @@ export default class StreetVoronoiGenerator {
       } else {
         r.sumX += n.x; r.sumY += n.y; r.count++
       }
+      const src = nodeSourceEdgePointId.get(n.id)
+      if (src != null && !finalNodeSourceEdgePointId.has(root)) finalNodeSourceEdgePointId.set(root, src)
     }
     const finalNodes = [...rootData.values()].map(r =>
       r.bCount > 0
@@ -1216,6 +1247,23 @@ export default class StreetVoronoiGenerator {
     const byType = finalEdges.reduce((acc, e) => { acc[e.type] = (acc[e.type] || 0) + 1; return acc }, {})
     const typeStr = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(', ')
     console.log(`Street graph: ${junctions.length} junctions (${typeStr}), ${allCells.length} Voronoi cells`)
+
+    // Registry-back the final junction ids (ADR-0020 Stage C) — a junction minted
+    // directly at a real edge point reuses that EXACT id (see resolveNodeRegistryIds'
+    // doc comment for why: so the street graph's boundary vertices are the same
+    // registry points as the district polygon's own boundary, not a coordinate-close
+    // approximation). No-op when no registry is passed — full backward compatibility
+    // for callers/tests that don't opt in.
+    if (registry) {
+      const idMap = resolveNodeRegistryIds(finalNodes, finalNodeSourceEdgePointId, registry, 'street')
+      for (const j of junctions) {
+        j.id = idMap.get(j.id) ?? j.id
+        for (const c of (j.connections || [])) {
+          c.toId = idMap.get(c.toId) ?? c.toId
+        }
+      }
+    }
+
     return { junctions, cells: allCells, seeds: allSeeds, topologyIssues }
   }
 

@@ -132,11 +132,10 @@ export default class App {
     this.eventBus.on('CITY_EDGE_APPLY',       (data) => this._handleCityEdgeApply(data))
 
     this.eventBus.on('TERRAIN_ACTION_SELECT', ({ action }) => {
-      if (action === 'Threat') {
-        // Apply immediately — Threats on terrain plots don't need a separate naming step.
-        this.eventBus.emit('TERRAIN_THREAT_APPLY', { name: '', description: '' })
-        return
-      }
+      // Threat used to apply immediately here with an empty name — the server
+      // rejects that ("A threat must have a name"), so it needs the same
+      // pendingTerrainAction → NameDialog flow as every other terrain action
+      // (DistrictTypePanel's pendingAction === 'Threat' branch).
       this.pendingTerrainAction = action
       this._refreshDistrictPanel()
     })
@@ -853,11 +852,14 @@ export default class App {
       const region = this.renderer.terrainData?.regions?.find(r => r.id === this.selectedRegionId)
       if (region?.vertices?.length) panel.setAnchorPoints(region.vertices)
       else if (region?.seedPoint) panel.setAnchorPoints([{ x: region.seedPoint.x, y: region.seedPoint.y }])
+      const allRegions = this.renderer.terrainData?.regions || []
       panel.showContext('region', {
         pendingType: this.pendingTerrainType,
         isEdge: region?.isEdge ?? false,
         isNorthEdge: region?.isNorthEdge ?? false,
-        adjacentRegions: this._getAdjacentRegions(this.selectedRegionId)
+        adjacentRegions: this._getAdjacentRegions(this.selectedRegionId),
+        worldHasIceSheet: allRegions.some(r => r.assignedType === 'Ice Sheet'),
+        worldHasDesert: allRegions.some(r => r.assignedType === 'Desert')
       })
     } else if (this.selectedEdgeIds.size > 0) {
       const edgePts = this._getEdgeWorldPoints()
