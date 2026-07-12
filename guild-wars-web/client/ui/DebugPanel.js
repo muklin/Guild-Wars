@@ -1,5 +1,6 @@
 // Floating debug window — shown only when Shift+D debug mode is active.
 // Controls per-layer visibility and perf logging independently.
+import { makeDraggable } from './utils/draggable.js'
 
 const LAYERS = [
   { key: 'buildings',       label: 'Buildings' },
@@ -33,10 +34,27 @@ export default class DebugPanel {
       'box-shadow:0 4px 16px #0008',
     ].join(';')
 
+    const titleRow = document.createElement('div')
+    titleRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move'
     const title = document.createElement('div')
     title.textContent = 'DEBUG'
-    title.style.cssText = 'font-weight:bold;letter-spacing:2px;color:#fc8;margin-bottom:8px;font-size:11px'
-    el.appendChild(title)
+    title.style.cssText = 'font-weight:bold;letter-spacing:2px;color:#fc8;font-size:11px'
+    const closeBtn = document.createElement('button')
+    closeBtn.textContent = '✕'
+    closeBtn.title = 'Close'
+    closeBtn.style.cssText = 'background:none;border:none;color:#666;cursor:pointer;font-size:13px;line-height:1;padding:0'
+    closeBtn.addEventListener('mouseenter', () => { closeBtn.style.color = '#ccc' })
+    closeBtn.addEventListener('mouseleave', () => { closeBtn.style.color = '#666' })
+    // Mirrors Shift+D exactly (flips the same renderer-tracked flag) so a later Shift+D
+    // press re-opens the panel immediately instead of first needing to re-sync state.
+    closeBtn.addEventListener('click', () => {
+      this.renderer.toggleDebugVisualization()
+      this.hide()
+    })
+    titleRow.appendChild(title)
+    titleRow.appendChild(closeBtn)
+    el.appendChild(titleRow)
+    makeDraggable(el, titleRow)
 
     const states = this.renderer.getDebugLayerStates()
 

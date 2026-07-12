@@ -290,10 +290,24 @@ app.post('/api/setup/terrain/assign', requireActiveSeat, async (req, res) => {
     const result = setupPhase.assignTerrainToRegion(regionId, terrainType, description, name)
     const seat = seatOf(req)
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Terrain', entityName: name?.trim() || terrainType, vetoable: true } : null)
+    const wt = gameStateManager.worldTerrainData
     res.json({
       ok: result.ok,
       clearedEdgeIds: result.clearedEdgeIds,
-      regions: gameStateManager.worldTerrainData.regions,
+      autoCliffEdgeIds: result.autoCliffEdgeIds,
+      // Sea/Mountains/Desert/Ice Sheet can reveal+merge adjacent hidden terrain and
+      // create brand-new Terrain Edges (SetupPhase.js's _revealAdjacentHiddenTerrain)
+      // — the client has never seen that geometry before, so send the full current
+      // terrain snapshot (same shape as /api/setup/init) rather than just the ids,
+      // letting it fully re-hydrate via renderer.setTerrainData when a reveal happened.
+      revealedRegionIds: result.revealedRegionIds,
+      newEdgeIds: result.newEdgeIds,
+      regions: wt.regions,
+      terrainPlots: wt.terrainPlots,
+      edges: wt.edges,
+      edgePoints: wt.edgePoints,
+      riverCliffFaces: wt.riverCliffFaces || [],
+      pointRegistry: gameStateManager.pointRegistry.toJSON(),
       log: result.log
     })
   } catch (error) {

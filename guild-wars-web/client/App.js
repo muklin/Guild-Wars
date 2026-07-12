@@ -529,6 +529,23 @@ export default class App {
     try {
       const response = await GameAPI.assignTerrain(regionId, terrainType, description, name)
       if (response.ok) {
+        // Sea/Mountains/Desert/Ice Sheet can reveal+merge adjacent hidden terrain and
+        // create brand-new Terrain Edges the client has never seen geometry for (see
+        // SetupPhase.js's _revealAdjacentHiddenTerrain) — a full re-hydrate is the only
+        // way those new plot/edge meshes actually get built, so the narrow per-id
+        // patches below aren't enough on their own in that case.
+        if (response.revealedRegionIds?.length) {
+          const pointsById = new Map((response.pointRegistry || []).map(p => [p.id, p]))
+          this.renderer.setTerrainData(
+            response.regions || [],
+            response.edges || {},
+            response.terrainPlots || [],
+            response.edgePoints || [],
+            pointsById,
+            response.riverCliffFaces || []
+          )
+        }
+
         const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
         if (region) { region.assignedType = terrainType; region.name = name; region.description = description }
         this.renderer.updateRegionColor(regionId, terrainType)
@@ -763,9 +780,6 @@ export default class App {
     const regions = this.renderer.terrainData?.regions || []
     const regionMap = new Map(regions.map(r => [r.id, r]))
 
-    const pointPositions = this.renderer.edgePointsById
-    const worldSize = this.renderer.terrainData?.worldSize ?? 50
-
     for (const edgeId of selectedEdgeIds) {
       const edge = edges[edgeId]
       if (!edge) continue
@@ -793,7 +807,7 @@ export default class App {
     const freeEndpoints = [...ptCount].filter(([, c]) => c === 1).map(([p]) => p)
 
     for (const ptId of freeEndpoints) {
-      if (!this._isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap, pointPositions, worldSize)) {
+      if (!this._isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap)) {
         return 'Endpoints must connect to a River, Sea, Lake, Ice Sheet, Mountains, or the map edge'
       }
     }
@@ -801,11 +815,16 @@ export default class App {
     return null
   }
 
-  _isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap, pointPositions, worldSize) {
-    // Map boundary: point coordinates on the world edge
-    const pt = pointPositions.get(ptId)
-    const eps = 0.5
-    if (pt && (pt.x < eps || pt.x > worldSize - eps || pt.y < eps || pt.y > worldSize - eps)) return true
+  _isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap) {
+    // Map boundary: this point is a vertex of an edge region's own hull polygon — the
+    // organic-world equivalent of the old square-coordinate check (see
+    // TerrainVoronoiGenerator's void-adjacency isEdge; plan "federated-baking-dragon").
+    // Approximate (an edge region's convex hull can rarely include a genuinely-interior
+    // vertex at a concave dent) rather than a new exact-per-point server payload — close
+    // enough in practice since edge regions predominantly trace the true outer boundary.
+    for (const region of regionMap.values()) {
+      if (region.isEdge && region.polygon?.some(v => v.id === ptId)) return true
+    }
 
     for (const [edgeId, edge] of Object.entries(edges)) {
       const pts = edge.pointIds || []

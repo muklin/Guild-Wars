@@ -2,6 +2,47 @@ import Point from '../voronoi/Point.js'
 import DelaunayTriangulator from '../voronoi/DelaunayTriangulator.js'
 import { clipToPolygon } from '../voronoi/VoronoiUtils.js'
 
+// The organic-world boundary — a many-sided polygon approximating the circle every
+// kept region's geometry gets clipped to (see generate()'s Step 5.5 doc comment for
+// why a circle instead of the literal [0,worldSize] square). Exported so
+// SetupPhase.js's _recoverGeometryFromSeeds can reproduce the EXACT same boundary on
+// every load — it used to fall back to a literal square (computeVoronoiCellsHalfPlane
+// has no concept of "hidden" seeds bounding a cell the way sentinel-triangulation
+// does), which visibly reverted the whole map to the old square-clipped look on every
+// server restart-with-save-load (confirmed live 2026-07-12).
+export function organicClipCircle(worldSize, sides = 48) {
+  const cx = worldSize / 2, cy = worldSize / 2
+  const circleRadius = worldSize / Math.sqrt(2 * Math.PI)
+  const clipRadius = circleRadius + worldSize * 0.08
+  return Array.from({ length: sides }, (_, i) => {
+    const theta = (i / sides) * 2 * Math.PI
+    return { x: cx + Math.cos(theta) * clipRadius, y: cy + Math.sin(theta) * clipRadius }
+  })
+}
+
+// Liang-Barsky clip of segment inside->outside against the axis-aligned box
+// [0,worldSize]x[0,worldSize]. `inside` MUST already satisfy 0<=x,y<=worldSize;
+// `outside` is wherever it actually is. Returns the point where the segment exits the
+// box (nearest `outside`), or null if the segment never actually leaves the box
+// (shouldn't happen given the caller's own in/out-of-bounds split, but a segment
+// exactly along a box edge can produce a degenerate zero-length clip).
+export function clipSegmentToWorldBounds(inside, outside, worldSize) {
+  const dx = outside.x - inside.x, dy = outside.y - inside.y
+  let t0 = 0, t1 = 1
+  const edges = [
+    [-dx, inside.x], [dx, worldSize - inside.x],
+    [-dy, inside.y], [dy, worldSize - inside.y],
+  ]
+  for (const [p, q] of edges) {
+    if (p === 0) { if (q < 0) return null; continue }
+    const r = q / p
+    if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r }
+    else { if (r < t0) return null; if (r < t1) t1 = r }
+  }
+  if (t0 > t1 || t1 <= 0) return null
+  return { x: inside.x + t1 * dx, y: inside.y + t1 * dy }
+}
+
 export default class TerrainVoronoiGenerator {
   generateRawVoronoi(regionCount, worldSize, manhattan = 0) {
     const seedPoints = []
@@ -100,8 +141,22 @@ export default class TerrainVoronoiGenerator {
   // same ids by construction instead of re-deriving their own via coordinate matching.
   generate(regionCount = 15, worldSize = 50, mergeDistance = 0, manhattan = 0, registry) {
 
-    const plotCount = Math.max(regionCount * 10, 150)
-    console.log(`Generating: ${plotCount} terrain plots → ${regionCount} merged regions`)
+    // Organic-edged world (TODO.md, plan "federated-baking-dragon", circle-partition
+    // revision 2026-07-12): fine cells are split by distance from the map centre into
+    // an INSIDE circle (the visible world — `regionCount` merged regions) and an
+    // OUTSIDE ring (hidden, but still generated and tracked — a future "guilds
+    // discover foreign lands" hook, not deleted). Each half gets its OWN independent
+    // farthest-point seed pool and its OWN nearest-seed assignment, so an inside
+    // plot can never be assigned to an outside seed or vice versa. This replaces the
+    // earlier "oversample the whole square 3x, keep the `regionCount` closest by
+    // rank" approach: ranking by distance alone didn't guarantee the kept set was
+    // spatially contiguous — with only 1/3 of an evenly-scattered candidate pool
+    // kept, nearly every kept region (including the dead-centre one) ended up
+    // bordering at least one hidden candidate, so `isEdge` came out true almost
+    // everywhere. A hard inside/outside partition means an inside region only
+    // borders a hidden one near the circle's actual rim.
+    const plotCount = Math.max(regionCount * 2 * 5, 150)
+    console.log(`Generating: ${plotCount} terrain plots → ${regionCount} inside + ${regionCount} outside (circle-partitioned, organic edge)`)
 
     // Step 1: Single triangulation for all terrain plots. Staggered sentinels keep
     // every real seed interior → bounded, valid circumcenter polygons.
@@ -122,28 +177,53 @@ export default class TerrainVoronoiGenerator {
       console.log(`After vertex merge: ${validTerrainPlots.length} terrain plots valid`)
     }
 
-    // Step 2: Pick region seeds using greedy farthest-point from interior plots
-    // so seeds are evenly spread across the map, not biased toward large boundary plots.
-    const selectedSeeds = this.selectSeeds(validTerrainPlots, regionCount, worldSize)
-    console.log(`Selected ${selectedSeeds.length} seed points`)
-
-    // Step 3: Assign each terrain plot to its nearest seed
+    // Step 2: partition fine cells by distance from the map centre. Circle area is
+    // half the map's total area, so the outside pool has a comparable spread/density
+    // to draw its own farthest-point sample from.
+    const cx = worldSize / 2, cy = worldSize / 2
+    const circleRadius = worldSize / Math.sqrt(2 * Math.PI)
+    const circleRadiusSq = circleRadius * circleRadius
+    const insidePlots = [], outsidePlots = []
     for (const plot of validTerrainPlots) {
-      plot.parentRegionId = this.findNearestSeed(plot.seedPoint, selectedSeeds)
+      const dx = plot.seedPoint.x - cx, dy = plot.seedPoint.y - cy
+      ;(dx * dx + dy * dy <= circleRadiusSq ? insidePlots : outsidePlots).push(plot)
     }
 
-    // Step 3.5: Resolve exclaves — isolated terrain plots that belong to a region
-    // but are disconnected from that region's main body. Must run here, while
-    // polygon vertices are still shared objects (reference equality gives adjacency).
+    // Step 3: scatter `regionCount` seeds evenly within the circle, and the same
+    // count evenly outside it — two independent farthest-point samples, each drawn
+    // only from its own pool.
+    const insideSeeds = this.selectSeeds(insidePlots, regionCount, worldSize)
+    const outsideSeeds = this.selectSeeds(outsidePlots, regionCount, worldSize)
+    console.log(`Selected ${insideSeeds.length} inside + ${outsideSeeds.length} outside seed points`)
+
+    // Outside ids are offset past the inside range (0..regionCount-1 inside,
+    // regionCount..2*regionCount-1 outside) so both pools share one id space without
+    // collision — and the inside range is already the compact 0..regionCount-1 ids
+    // every downstream consumer expects, no remap step needed later.
+    for (const plot of insidePlots)  plot.parentRegionId = this.findNearestSeed(plot.seedPoint, insideSeeds)
+    for (const plot of outsidePlots) plot.parentRegionId = this.findNearestSeed(plot.seedPoint, outsideSeeds) + regionCount
+    validTerrainPlots = [...insidePlots, ...outsidePlots]
+
+    // Step 3.5: Resolve exclaves — isolated terrain plots disconnected from their
+    // region's main body get reassigned to the dominant neighbouring region. Runs
+    // across BOTH pools together (an exclave can legitimately flip from inside to
+    // outside id-space or back if its true neighbours disagree with the raw circle
+    // cutoff) — the final inside/outside partition below reads `parentRegionId`
+    // fresh, after this runs, not the pre-exclave pool arrays above.
     const exclavesFixed = this.resolveExclaves(validTerrainPlots)
     if (exclavesFixed > 0) console.log(`Resolved ${exclavesFixed} exclave terrain plots`)
+
+    const keptSet = new Set(Array.from({ length: regionCount }, (_, i) => i))
+    const selectedSeeds = insideSeeds
 
     // Step 4: Mint every still-shared circumcenter object into the GLOBAL point
     // registry (kind:'terrain') — one registry point per physically-shared corner,
     // exactly matching the reference-equality adjacency the rest of this pipeline
     // already relies on. `v.id` continues to double as the local "seen" marker.
     // Must happen before any clipping — clipping creates new vertex objects, breaking
-    // the shared circumcenter references that findSharedEdge relies on.
+    // the shared circumcenter references that findSharedEdge relies on. Runs on EVERY
+    // plot (inside + outside) — an outside plot's vertices still need real ids so
+    // Step 5 can detect an inside region's segment bordering it.
     const seenVertices = new Set()
     for (const plot of validTerrainPlots) {
       for (const v of plot.polygon) {
@@ -151,9 +231,25 @@ export default class TerrainVoronoiGenerator {
       }
     }
 
-    // Step 5: Boundary edges via reference equality on unclipped polygons
-    const { edges, edgePoints } = this.generateBoundaryEdges(validTerrainPlots, regionCount)
-    console.log(`Generated ${Object.keys(edges).length} boundary edges, ${edgePoints.length} edge points`)
+    // Step 5: Boundary edges via reference equality on unclipped polygons — scans
+    // EVERY plot (inside + outside) for correct adjacency, but only builds a real
+    // Edge chain between two KEPT (inside) regions (`keptSet`); an inside region
+    // bordering an outside one gets no Edge at all (exactly "outside edges don't need
+    // a Terrain edge") and is recorded in `regionIdsTouchingVoid` instead — the
+    // adjacency-based `isEdge` (Step 6).
+    const raw = this.generateBoundaryEdges(validTerrainPlots, keptSet)
+    console.log(`Generated ${Object.keys(raw.edges).length} boundary edges, ${raw.edgePoints.length} edge points, ${raw.regionIdsTouchingVoid.size} edge regions`)
+
+    // Split the final (post-exclave) plot list into inside (returned, rendered) and
+    // outside (hidden — retained on the return value, not deleted, for a possible
+    // future "discover foreign lands" feature).
+    const hiddenTerrainPlots = validTerrainPlots.filter(plot => !keptSet.has(plot.parentRegionId))
+    validTerrainPlots = validTerrainPlots.filter(plot => keptSet.has(plot.parentRegionId))
+    console.log(`Kept ${validTerrainPlots.length} terrain plots across ${selectedSeeds.length} inside regions (hid ${hiddenTerrainPlots.length} outside plots across ${outsideSeeds.length} outside regions)`)
+
+    const edges = raw.edges
+    const edgePoints = raw.edgePoints
+    const regionIdsTouchingVoid = raw.regionIdsTouchingVoid
 
     // Step 5.5: Clip terrain plot polygons to world bounds for client rendering.
     // Must happen AFTER edge detection — clipping creates new vertex objects that
@@ -166,14 +262,60 @@ export default class TerrainVoronoiGenerator {
     // plot.polygon is kept as a resolved convenience copy during this transitional stage
     // (later pipeline stages, and all current renderer/consumer code, still read it) —
     // see plan Stage 7 for its eventual removal once every consumer reads pointIds.
+    // Clip against the CIRCLE (the true organic-world boundary), not the literal
+    // [0,worldSize] square. A kept fine cell near the circle's rim can have a
+    // naturally elongated Voronoi polygon — sparse real neighbours on its outward
+    // side (its nearest points out there belong to the hidden outside pool, or are
+    // sentinel-influenced) mean nothing bounds it tightly except the eventual
+    // sentinel wall. Clipping that only against the square let those elongated
+    // cells stretch all the way out to the map's literal edge as long thin spikes
+    // radiating from the kept cluster — confirmed live (2026-07-12), and got much
+    // more visible after lowering plot density (fewer points → bigger boundary
+    // cells). A modest circleRadius margin gives rim cells room for their own
+    // normal size without truncating them right at the boundary.
     const W = worldSize
-    const worldRect = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: W }, { x: 0, y: W }]
+    const clipCircle = organicClipCircle(worldSize)
+    // Collect clipped polygons WITHOUT minting new vertex ids per-plot — two adjacent
+    // plots whose shared boundary crosses the clip circle each compute their OWN
+    // intersection point independently (Sutherland-Hodgman clipping isn't guaranteed
+    // to land on the bit-identical point when the same physical crossing is traversed
+    // in opposite directions by each plot's own polygon winding), so minting
+    // immediately, per plot, mints two near-but-different points for what should be
+    // one shared corner — a real, thin sliver/wedge gap right at that junction
+    // (confirmed live 2026-07-12: ~10 genuine "nearMiss" HOLE findings per generation
+    // before this fix, at multi-region junctions along the clip circle). Collect every
+    // brand-new (not-yet-id'd) vertex across ALL plots first, then dedupe them
+    // together in one pass — same technique mintDeduped's own doc comment describes
+    // for near-cocircular circumcenters.
+    const clippedPlots = []
+    const newClipVertices = []
     for (const plot of validTerrainPlots) {
-      const clipped = clipToPolygon(plot.polygon, worldRect)
+      const clipped = clipToPolygon(plot.polygon, clipCircle)
       if (!clipped) continue
       plot.polygon = clipped
-      plot.pointIds = clipped.map(v => v.id !== undefined ? v.id : registry.create(v.x, v.y, 0, 'terrain').id)
+      clippedPlots.push(plot)
+      for (const v of clipped) if (v.id === undefined) newClipVertices.push(v)
     }
+    const dedupedClipIds = registry.mintDeduped(newClipVertices, 'terrain', 0.01)
+    newClipVertices.forEach((v, i) => { v.id = dedupedClipIds[i] })
+    for (const plot of clippedPlots) {
+      plot.pointIds = plot.polygon.map(v => v.id)
+    }
+
+    // Step 5.6: Clip edge chains to world bounds too — Step 5 built them from the
+    // UNCLIPPED polygons above, so a chain touching an unbounded Voronoi vertex (a real,
+    // if rare, case for cells near the sentinel-triangle-influenced convex hull — see
+    // generateRawVoronoi's sentinel comment) keeps that wild, far-outside-the-map
+    // position forever; nothing in Step 5.5 ever touches `edges`. Confirmed live
+    // (2026-07-12): a 3-region junction vertex landed at y=-27 (worldSize=50), used only
+    // as an edge terminus (no terrain plot referenced it — plot clipping had already
+    // replaced it with a proper boundary point on every plot that used to share it), so
+    // the River/Cliff pullback built a face stretching from the map edge down to y=-27,
+    // overlapping dozens of unrelated plots on the way. Terminus-only fix (only the
+    // leading/trailing run of out-of-bounds points is trimmed) rather than general
+    // polyline clipping — interior chain points are real shared corners between two
+    // valid, already-in-bounds plots and have never been observed out of bounds.
+    this._clipEdgeChainsToWorldBounds(edges, registry, W)
 
     // Step 6: Build merged region convex hulls (used for click hit-testing fallback)
     const vertsByRegion = new Map()
@@ -191,10 +333,74 @@ export default class TerrainVoronoiGenerator {
       seedPoint: seed,
       polygon: this.convexHull(vertsByRegion.get(i) || []),
       assignedType: null,
+      isEdge: regionIdsTouchingVoid.has(i),
       description: ''
     }))
 
-    return { worldSize, regions, terrainPlots: validTerrainPlots, edges, edgePoints }
+    // Step 6b: same merged-hull treatment for the OUTSIDE regions — not rendered or
+    // exposed to the client today, but retained on the return value rather than
+    // discarded, per the "still exist in the game, may be discoverable later" design
+    // (2026-07-12). `id` is kept in the SAME offset (regionCount..2*regionCount-1)
+    // space as `hiddenTerrainPlots[].parentRegionId` and `hiddenNeighborsByRegion`'s
+    // values — a compact 0..regionCount-1 id here (an earlier version of this code)
+    // silently never matched either of those when looking a hidden region up by id.
+    const hiddenVertsByRegion = new Map()
+    for (let i = 0; i < outsideSeeds.length; i++) hiddenVertsByRegion.set(i, [])
+    for (const plot of hiddenTerrainPlots) {
+      const bucket = hiddenVertsByRegion.get(plot.parentRegionId - regionCount)
+      if (bucket) {
+        for (const v of plot.polygon) {
+          if (isFinite(v.x) && isFinite(v.y)) bucket.push(v)
+        }
+      }
+    }
+    const hiddenRegions = outsideSeeds.map((seed, i) => ({
+      id: i + regionCount,
+      seedPoint: seed,
+      polygon: this.convexHull(hiddenVertsByRegion.get(i) || []),
+      assignedType: null,
+      isEdge: false,
+      description: ''
+    }))
+
+    // Plain-object form (id → array of hidden ids) — Maps don't survive JSON
+    // serialization (save files, worldTerrainData), and this needs to persist so a
+    // later terrain assignment (SetupPhase.js's _revealAdjacentHiddenTerrain) can
+    // look up what to reveal.
+    const hiddenNeighborsByRegion = {}
+    for (const [regionId, hiddenIds] of raw.hiddenNeighborsByRegion) {
+      hiddenNeighborsByRegion[regionId] = [...hiddenIds]
+    }
+
+    return { worldSize, regions, terrainPlots: validTerrainPlots, edges, edgePoints, hiddenRegions, hiddenTerrainPlots, hiddenNeighborsByRegion }
+  }
+
+  // Trims the leading/trailing run of out-of-[0,worldSize] points from every edge
+  // chain, replacing each with a single point where the chain crosses the world
+  // boundary (Liang-Barsky segment-vs-box clip against the last in-bounds point and its
+  // wayward neighbour) — see the Step 5.6 call site's doc comment for why this is
+  // needed at all. Mutates `edges` in place.
+  _clipEdgeChainsToWorldBounds(edges, registry, worldSize) {
+    const inBounds = (p) => p && p.x >= -1e-9 && p.x <= worldSize + 1e-9 && p.y >= -1e-9 && p.y <= worldSize + 1e-9
+    for (const edge of Object.values(edges)) {
+      const pts = edge.pointIds.map(id => registry.get(id))
+      let start = 0
+      while (start < pts.length && !inBounds(pts[start])) start++
+      let end = pts.length - 1
+      while (end >= 0 && !inBounds(pts[end])) end--
+      if (start > end) continue   // entire chain out of bounds — nothing sane to clip to, leave as-is
+
+      const ids = edge.pointIds.slice(start, end + 1)
+      if (start > 0) {
+        const cross = clipSegmentToWorldBounds(pts[start], pts[start - 1], worldSize)
+        if (cross) ids.unshift(registry.create(cross.x, cross.y, 0, 'terrain').id)
+      }
+      if (end < pts.length - 1) {
+        const cross = clipSegmentToWorldBounds(pts[end], pts[end + 1], worldSize)
+        if (cross) ids.push(registry.create(cross.x, cross.y, 0, 'terrain').id)
+      }
+      edge.pointIds = ids
+    }
   }
 
   // Finds terrain plots that are disconnected from their region's largest contiguous
@@ -423,9 +629,17 @@ export default class TerrainVoronoiGenerator {
     }
   }
 
-  generateBoundaryEdges(plots, regionCount) {
+  // `keptSet`: Set of KEPT candidate region ids (see generate()'s Step 3.7) — `plots`
+  // itself must still include HIDDEN candidates' plots too, so their Voronoi cells
+  // keep correctly bounding the kept ones; this function just skips building an
+  // Edge/isEdge FROM a hidden region's own perspective, and never emits an Edge chain
+  // for a kept-to-hidden boundary (only kept-to-kept ones), per generate()'s Step 5
+  // doc comment.
+  generateBoundaryEdges(plots, keptSet) {
     // Build vertex → cells map by reference so we can find which cells share
-    // each polygon segment without an O(n²) cell-pair scan.
+    // each polygon segment without an O(n²) cell-pair scan. Built from EVERY plot
+    // (kept + hidden) so adjacency — and therefore Voronoi-cell bounding — stays
+    // correct regardless of which regions end up in the output.
     const vertexCells = new Map()
     for (const cell of plots) {
       for (const v of cell.polygon) {
@@ -438,10 +652,20 @@ export default class TerrainVoronoiGenerator {
     const segmentsByKey = new Map() // edgeKey → [{v1, v2}]
     const metaByKey     = new Map() // edgeKey → {regionA, regionB}
     const registeredPairs = new Set()
+    // A KEPT region with a segment whose only neighbour(s) are HIDDEN (or genuinely
+    // nothing) is an edge region — the new, adjacency-based isEdge (see generate()'s
+    // Step 6), replacing the old post-hoc square-touching geometry test entirely.
+    const regionIdsTouchingVoid = new Set()
+    // Which specific hidden region(s) each kept region borders — needed for the
+    // "assigning Sea/Mountains/Desert/Ice Sheet reveals adjacent hidden terrain"
+    // feature (SetupPhase.js's _revealAdjacentHiddenTerrain): regionIdsTouchingVoid
+    // alone is just a boolean, this tracks WHICH hidden region(s) to reveal.
+    const hiddenNeighborsByRegion = new Map()
 
     for (const cell of plots) {
       const regionA = cell.parentRegionId
-      const poly    = cell.polygon
+      if (!keptSet.has(regionA)) continue   // hidden regions need no Edges/isEdge of their own
+      const poly = cell.polygon
       for (let i = 0; i < poly.length; i++) {
         const va = poly[i]
         const vb = poly[(i + 1) % poly.length]
@@ -454,16 +678,50 @@ export default class TerrainVoronoiGenerator {
         registeredPairs.add(pairKey)
 
         // Cells containing BOTH va and vb are the two cells on opposite sides
-        // of this Delaunay edge (reference equality preserved throughout).
+        // of this Delaunay edge (reference equality preserved throughout). Exclude
+        // `cell` itself BY REFERENCE (not by comparing parentRegionId) — a coarse
+        // region merges many fine cells, so an ordinary INTERNAL seam between two
+        // fine cells that both belong to regionA has its one real neighbour cell
+        // filtered right back out if self-exclusion goes by id instead of identity,
+        // leaving an empty neighbour list that reads as "touching void". That bug
+        // fired for every internal seam of every coarse region (i.e. essentially
+        // always, for any region built from >1 fine cell), which is why every kept
+        // region came out isEdge=true regardless of the seed-selection scheme —
+        // confirmed live (2026-07-12) across both the old ranked-candidate approach
+        // and the circle-partition rewrite.
         const cellsOfB = new Set(vertexCells.get(vb) || [])
-        const sharedCells = (vertexCells.get(va) || []).filter(c => cellsOfB.has(c))
-        const neighborIds = [...new Set(sharedCells.map(c => c.parentRegionId).filter(r => r !== regionA))]
+        const otherCells = (vertexCells.get(va) || []).filter(c => c !== cell && cellsOfB.has(c))
 
-        // Only register edges between two DIFFERENT merged regions.
-        // Skip same-region internal boundaries and world-boundary segments.
-        if (neighborIds.length === 0) continue
+        if (otherCells.length === 0) {
+          // No neighbouring fine cell shares this edge at all — a true topological
+          // boundary (literal generation-area edge, or a convex-hull artefact).
+          regionIdsTouchingVoid.add(regionA)
+          continue
+        }
 
-        const regionB = neighborIds[0]
+        const neighborIds = [...new Set(otherCells.map(c => c.parentRegionId))]
+
+        // Every neighbour sharing this edge is the SAME coarse region as `cell` —
+        // purely an internal seam, not a region boundary. Skip entirely (no Edge,
+        // no void flag).
+        if (neighborIds.every(r => r === regionA)) continue
+
+        const keptNeighborIds = neighborIds.filter(r => r !== regionA && keptSet.has(r))
+
+        // No KEPT neighbour — either genuinely nothing, or the neighbour is hidden.
+        // Either way, no Edge chain gets built (outside edges don't need one) and
+        // regionA becomes an edge region.
+        if (keptNeighborIds.length === 0) {
+          regionIdsTouchingVoid.add(regionA)
+          for (const nid of neighborIds) {
+            if (nid === regionA || keptSet.has(nid)) continue
+            if (!hiddenNeighborsByRegion.has(regionA)) hiddenNeighborsByRegion.set(regionA, new Set())
+            hiddenNeighborsByRegion.get(regionA).add(nid)
+          }
+          continue
+        }
+
+        const regionB = keptNeighborIds[0]
         const rA = Math.min(regionA, regionB)
         const rB = Math.max(regionA, regionB)
         const edgeKey = `${rA}-${rB}`
@@ -495,7 +753,7 @@ export default class TerrainVoronoiGenerator {
       }
     }
 
-    return { edges, edgePoints: Array.from(edgePointsMap.values()) }
+    return { edges, edgePoints: Array.from(edgePointsMap.values()), regionIdsTouchingVoid, hiddenNeighborsByRegion }
   }
 
   sortSegmentsIntoPolyline(segments) {

@@ -3,14 +3,13 @@
 - Archways are not appearing in game.  I've not yet found one.  
 
 
+
 # Features:
 ## General 
-- All UI panels should be movable by dragging.  ie. New Terrain, Edge, District, etc, panels.   -dragging them should never clear current selections 
+ 
 - Sometime Edge definition panels are not in a logical place.  
 
 ## Terrain Mode
-- change the terrain generation away from a forced square World, to a circular-ish set of terrains.  still need to detect edge terrains.  
-- Change City selection (currently its the largest non-edge terrain) to the terrain region that is in the centre of the map (use the terrain that contains the center point.)
 
 
 
@@ -249,3 +248,10 @@ Changes to Rivers.
 Randomize the initially selected colour of a new Foreign power.  Don't allow 2 FPs to be the same colour, (Don't add new colours to the UI just disable that colour, when its selected)
 - don't use Guild names (Weavers, Illusionists, etc.) for Terrain names.  We need to make a new way to make good terrain names.
 - Don't name Threats and Trade Routes.  Allow the option to rename it, but mainly we're looking for the description.
+
+
+Do the work to correct the jittered terrain-plot color reverting to default on hover/unhover instead of the deterministic jittered color - pending task  now.
+
+
+- change the terrain generation away from a forced square World, to a circular-ish set of terrains.  still need to detect edge terrains.  
+- Change City selection (currently its the largest non-edge terrain) to the terrain region that is in the centre of the map (use the terrain that contains the center point.)

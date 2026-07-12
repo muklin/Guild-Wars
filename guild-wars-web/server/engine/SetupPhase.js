@@ -1,4 +1,4 @@
-import TerrainVoronoiGenerator from './CityGenerator/TerrainVoronoiGenerator.js'
+import TerrainVoronoiGenerator, { organicClipCircle } from './CityGenerator/TerrainVoronoiGenerator.js'
 import StreetVoronoiGenerator from './CityGenerator/StreetVoronoiGenerator.js'
 import CityBlockGenerator, { majorityStreetType, gutterRoadEdges } from './CityGenerator/CityBlockGenerator.js'
 import PlotVoronoiGenerator, { markSquareBlocks } from './CityGenerator/PlotVoronoiGenerator.js'
@@ -10,7 +10,7 @@ import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
 import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
-import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane } from './voronoi/VoronoiUtils.js'
+import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { getDistrictConfig } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
 import { readFileSync } from 'fs'
@@ -24,6 +24,14 @@ import { dirname, join } from 'path'
 const _dir = dirname(fileURLToPath(import.meta.url))
 let _nameLib = null
 let _abilityArrays = null
+
+// Terrain types that represent "the edge of the known world" — assigning one of these
+// triggers _revealAdjacentHiddenTerrain (reveal+merge adjacent hidden terrain into the
+// assigning region). Regions carrying one of these types have plots that legitimately
+// extend to the literal world square rather than the organic clip circle (see
+// _revealAdjacentHiddenTerrain's own doc comment and _recoverGeometryFromSeeds' use of
+// this same list to know which regions to clip which way on reload).
+const TERRAIN_REVEAL_TYPES = ['Desert', 'Mountains', 'Sea', 'Ice Sheet']
 
 function _loadCharacterData() {
   if (!_nameLib) {
@@ -174,7 +182,14 @@ export default class SetupPhase {
     this.gameStateManager = gameStateManager
     this.currentStep = 'Terrain'
     this.log = []
-    this.worldGenerator = null
+    // Stateless utility instance (no per-generation state — generateBoundaryEdges,
+    // convexHull etc. work standalone) — constructed here, not just inside
+    // initialize(), so it's never null after a server restart that loads an existing
+    // save instead of calling initialize() fresh. _revealAdjacentHiddenTerrain relies
+    // on this being present; before this fix a restart-then-reveal threw
+    // "Cannot read properties of null (reading 'convexHull')", silently failing the
+    // whole assignment before autoSave/broadcast ever ran (confirmed live 2026-07-12).
+    this.worldGenerator = new TerrainVoronoiGenerator()
     this.selectedRegionId = null
     this.selectedDistrictId = null
     this.terrainPlacements = []
@@ -221,13 +236,18 @@ export default class SetupPhase {
     this.gameStateManager.worldTerrainData = worldData
     this.log.push(`Generated ${worldData.regions.length} terrain regions`)
 
+    // region.isEdge already set by the generator (Step 3.7/Step 5's void-adjacency
+    // scan — see TerrainVoronoiGenerator.js) — the organic world boundary means "edge"
+    // is now a real adjacency fact from generation, not a post-hoc square-touching
+    // geometry test. isNorthEdge still needs computing here (a SetupPhase-only
+    // gameplay concept, Ice Sheet gating) — see isNorthOfCentre's doc comment for why
+    // it's angular now instead of a literal straight-edge test.
     const worldSize = 50
     for (const region of worldData.regions) {
-      region.isEdge = this.touchesBoundary(region, worldSize)
-      region.isNorthEdge = this.touchesNorthBoundary(region, worldSize)
+      region.isNorthEdge = region.isEdge && this.isNorthOfCentre(region, worldSize)
     }
 
-    const cityRegion = this.findCityRegion(worldData.regions, worldData.terrainPlots)
+    const cityRegion = this.findCityRegion(worldData.regions, worldSize)
     if (cityRegion) {
       cityRegion.assignedType = 'City'
       for (const cell of worldData.terrainPlots || [])
@@ -432,47 +452,39 @@ export default class SetupPhase {
     return chains
   }
 
-  findCityRegion(regions, terrainPlots) {
-    const terrainPlotCount = new Map()
-    if (terrainPlots) {
-      for (const cell of terrainPlots) {
-        terrainPlotCount.set(cell.parentRegionId, (terrainPlotCount.get(cell.parentRegionId) || 0) + 1)
-      }
-    }
-    const centralRegions = regions.filter(r => !this.touchesBoundary(r, 50))
-    const pool = centralRegions.length > 0 ? centralRegions : regions
-    if (terrainPlotCount.size > 0) {
-      return pool.reduce((a, b) =>
-        (terrainPlotCount.get(a.id) || 0) >= (terrainPlotCount.get(b.id) || 0) ? a : b
-      )
-    }
-    return pool.reduce((a, b) => a.polygon.length > b.polygon.length ? a : b)
+  // City region = whichever region's polygon actually CONTAINS the map's centre point
+  // (TODO.md; organic-world plan "federated-baking-dragon") — replaces the old
+  // "largest non-edge region by terrain-plot count" heuristic, which existed only
+  // because a forced-square world had no other natural notion of "the middle."
+  findCityRegion(regions, worldSize = 50) {
+    const cx = worldSize / 2, cy = worldSize / 2
+    const containing = regions.find(r => r.polygon?.length >= 3 && pip(cx, cy, r.polygon))
+    if (containing) return containing
+    // Fallback (rare: centre lands exactly on a shared boundary edge, so neither
+    // region's polygon strictly contains it) — nearest region by seed distance to
+    // centre, keeping the old function's "always returns something" guarantee.
+    return regions.reduce((a, b) => {
+      const da = (a.seedPoint.x - cx) ** 2 + (a.seedPoint.y - cy) ** 2
+      const db = (b.seedPoint.x - cx) ** 2 + (b.seedPoint.y - cy) ** 2
+      return da <= db ? a : b
+    })
   }
 
-  touchesBoundary(region, worldSize) {
-    if (!region.polygon || region.polygon.length === 0) return false
-    const eps = 0.5
-    const poly = region.polygon
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i], b = poly[(i + 1) % poly.length]
-      if ((a.x < eps && b.x < eps) ||
-          (a.x > worldSize - eps && b.x > worldSize - eps) ||
-          (a.y < eps && b.y < eps) ||
-          (a.y > worldSize - eps && b.y > worldSize - eps)) return true
-    }
-    return false
-  }
+  // "North" = the y=0 side of the map (low Z in 3D, the far side as seen from default
+  // camera) — same convention `touchesNorthBoundary` used, but angular now that the
+  // world boundary is organic (TerrainVoronoiGenerator's centre-selection) rather than
+  // a literal straight edge: qualifies if the bearing from map-centre to the region's
+  // seedPoint falls within NORTH_HALF_ANGLE_DEG of due north (0°=north, clockwise).
+  // Callers must also check region.isEdge — this only answers "which direction," not
+  // "is it actually on the world's outer boundary."
+  static NORTH_HALF_ANGLE_DEG = 60
 
-  // "North" = the y=0 edge of the 2D map (low Z in 3D, the far side as seen from default camera)
-  touchesNorthBoundary(region, worldSize) {
-    if (!region.polygon || region.polygon.length === 0) return false
-    const eps = 0.5
-    const poly = region.polygon
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i], b = poly[(i + 1) % poly.length]
-      if (a.y < eps && b.y < eps) return true
-    }
-    return false
+  isNorthOfCentre(region, worldSize) {
+    const cx = worldSize / 2, cy = worldSize / 2
+    const dx = region.seedPoint.x - cx, dy = region.seedPoint.y - cy
+    if (dx === 0 && dy === 0) return false
+    const bearing = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360
+    return bearing <= SetupPhase.NORTH_HALF_ANGLE_DEG || bearing >= 360 - SetupPhase.NORTH_HALF_ANGLE_DEG
   }
 
   assignTerrainToRegion(regionId, terrainType, description = '', name = '') {
@@ -563,7 +575,93 @@ export default class SetupPhase {
     // needed for that, and is unsafe for the reasons above.
     if (autoCliffEdgeIds.length || clearedEdgeIds.length) this._applyRiverCliffPullbackToTerrainPlots()
 
-    return { ok: true, clearedEdgeIds, autoCliffEdgeIds, log: this.log }
+    // Sea/Mountains/Desert/Ice Sheet represent "the edge of the known world" — reveal
+    // and absorb whatever hidden terrain borders this region directly (see
+    // _revealAdjacentHiddenTerrain's doc comment).
+    let revealedRegionIds = [], newEdgeIds = []
+    if (TERRAIN_REVEAL_TYPES.includes(terrainType)) {
+      ;({ revealedRegionIds, newEdgeIds } = this._revealAdjacentHiddenTerrain(regionId, terrainType))
+    }
+
+    return { ok: true, clearedEdgeIds, autoCliffEdgeIds, revealedRegionIds, newEdgeIds, log: this.log }
+  }
+
+  // Sea/Mountains/Desert/Ice Sheet only ever get placed on an `isEdge` region — the
+  // organic-world boundary means "edge" is literally "borders hidden (generated but
+  // unrendered) terrain" (see TerrainVoronoiGenerator's circle-partition design). For
+  // these four types specifically there's no real conceptual boundary between "our"
+  // Sea and the Sea beyond it, so instead of leaving that hidden territory dark
+  // forever, reveal it and merge it directly into the assigning region — same id,
+  // same assignedType, no Terrain Edge needed between the two (they're one region
+  // now). The newly-exposed area's own outer edge can, though, newly touch OTHER
+  // already-kept regions it didn't border before; those get ordinary new Terrain
+  // Edges, same as any other kept-kept boundary. Single ring only — reveals exactly
+  // the hidden region(s) directly adjacent to `regionId`, not a cascade into hidden-
+  // neighbours-of-hidden-neighbours.
+  _revealAdjacentHiddenTerrain(regionId, terrainType) {
+    const wt = this.gameStateManager.worldTerrainData
+    const hiddenIds = wt.hiddenNeighborsByRegion?.[regionId]
+    if (!hiddenIds?.length) return { revealedRegionIds: [], newEdgeIds: [] }
+
+    const registry = this.gameStateManager.pointRegistry
+    const worldSize = wt.worldSize || 50
+    const worldRect = [{ x: 0, y: 0 }, { x: worldSize, y: 0 }, { x: worldSize, y: worldSize }, { x: 0, y: worldSize }]
+
+    const hiddenIdSet = new Set(hiddenIds)
+    const revealedPlots = wt.hiddenTerrainPlots.filter(p => hiddenIdSet.has(p.parentRegionId))
+    wt.hiddenTerrainPlots = wt.hiddenTerrainPlots.filter(p => !hiddenIdSet.has(p.parentRegionId))
+    wt.hiddenRegions = (wt.hiddenRegions || []).filter(r => !hiddenIdSet.has(r.id))
+
+    // Clip each revealed plot to the literal world square — same treatment
+    // generate()'s Step 5.5 gives every kept plot at generation time; these plots
+    // were never clipped before since they were hidden (their raw polygon can reach
+    // well outside [0,worldSize], a sentinel-triangulation artefact).
+    for (const plot of revealedPlots) {
+      const clipped = clipToPolygon(plot.polygon, worldRect)
+      if (!clipped) continue
+      plot.polygon = clipped
+      plot.pointIds = clipped.map(v => v.id !== undefined ? v.id : registry.create(v.x, v.y, 0, 'terrain').id)
+      plot.parentRegionId = regionId
+      plot.assignedType = terrainType
+      wt.terrainPlots.push(plot)
+    }
+
+    // Rebuild the revealing region's own merged-hull polygon (click hit-testing
+    // fallback only — see generate()'s Step 6 doc comment) now that it includes the
+    // newly-merged plots.
+    const region = wt.regions.find(r => r.id === regionId)
+    const allVerts = []
+    for (const p of wt.terrainPlots) {
+      if (p.parentRegionId !== regionId) continue
+      for (const v of p.polygon) if (isFinite(v.x) && isFinite(v.y)) allVerts.push(v)
+    }
+    region.polygon = this.worldGenerator.convexHull(allVerts)
+
+    // Recompute boundary edges fresh over the CURRENT plot set (kept + still-hidden)
+    // — the exact same adjacency scan generate() used initially. Only ADD brand-new
+    // edge keys; an edge that already exists is left completely untouched (it may
+    // already carry a player-assigned type/name/description).
+    const keptSet = new Set(wt.regions.map(r => r.id))
+    const allPlots = [...wt.terrainPlots, ...wt.hiddenTerrainPlots]
+    const raw = this.worldGenerator.generateBoundaryEdges(allPlots, keptSet)
+
+    const newEdgeIds = []
+    for (const [key, edge] of Object.entries(raw.edges)) {
+      if (!wt.edges[key]) { wt.edges[key] = edge; newEdgeIds.push(key) }
+    }
+
+    // Only regionId's own adjacency changed (its footprint grew) — every other
+    // region's neighbours are unaffected, so only refresh isEdge/hiddenNeighbors for
+    // regionId itself.
+    region.isEdge = raw.regionIdsTouchingVoid.has(regionId)
+    wt.hiddenNeighborsByRegion = wt.hiddenNeighborsByRegion || {}
+    const freshHidden = raw.hiddenNeighborsByRegion.get(regionId)
+    if (freshHidden?.size) wt.hiddenNeighborsByRegion[regionId] = [...freshHidden]
+    else delete wt.hiddenNeighborsByRegion[regionId]
+
+    this.log.push(`Revealed ${revealedPlots.length} hidden terrain plot(s) (region${hiddenIds.length > 1 ? 's' : ''} ${hiddenIds.join(', ')}) into region ${regionId} (${terrainType}); added ${newEdgeIds.length} new Terrain Edge(s)`)
+
+    return { revealedRegionIds: hiddenIds, newEdgeIds }
   }
 
   assignEdgeType(edgeId, edgeType, description = '', name = '') {
@@ -1171,9 +1269,11 @@ export default class SetupPhase {
   }
 
   // River and Cliff terrain Edges render as a fixed-thickness polyline CENTRED on the
-  // edge (TerrainRenderer: thickness 0.5), extending RIVER_CLIFF_HALF_WIDTH into both
-  // neighbouring plots' nominal area — so a district's raw Voronoi-cell polygon
-  // otherwise reaches past the river bank / cliff face into the rendered water/rock
+  // edge (TerrainRenderer: thickness `0.7/3`, kept in sync with
+  // _applyRiverCliffPullbackToTerrainPlots's RIVER_CLIFF_HALF_WIDTH — see that
+  // constant's doc comment), extending RIVER_CLIFF_HALF_WIDTH into both neighbouring
+  // plots' nominal area — so a district's raw Voronoi-cell polygon otherwise reaches
+  // past the river bank / cliff face into the rendered water/rock
   // (see Edge, CONTEXT_WorldTerrain.md). Sea/Lake need no pullback — they're already
   // filled region polygons, not a centreline+width polyline.
   //
@@ -1299,13 +1399,23 @@ export default class SetupPhase {
 
     if (!this._polygonSelfIntersects(pushed)) return { pushed, deltas, anyMatch, edgeMatched }
 
-    // Fallback: the canonical snap self-intersected THIS polygon's own local shape.
-    // Same bisector-miter-with-retry computation the old code always used, kept only as
-    // a safety net now.
-    const computeAt = (hw) => {
-      const p2 = poly.map(v => ({ x: v.x, y: v.y }))
-      const d2 = zeroDeltas()
-      for (let i = 0; i < n; i++) {
+    // Fallback: shrink ONLY the vertices actually participating in the self-
+    // intersection (see _polygonSelfIntersectingVertices) — every OTHER boundary-
+    // adjacent vertex keeps its already-resolved shared-corner position (`pushed`/
+    // `deltas` above), the exact same position the neighbouring land polygon and the
+    // river/cliff face itself land on. Confirmed live (2026-07-12) that the old
+    // behavior — discarding and independently recomputing EVERY boundary-adjacent
+    // vertex the moment ANY one of them caused a self-intersection, not just the
+    // offending ones — was the direct cause of a whole class of near-miss gaps and
+    // area overlaps between this polygon and its neighbours (see the groundplane
+    // audit tool). Recomputes the bad-vertex set fresh each retry (off the latest
+    // attempt's actual result, not the original), so a vertex that stops being
+    // implicated reverts cleanly to its correct shared value instead of staying
+    // needlessly shrunk, and a vertex that becomes newly implicated gets included.
+    const computeAt = (hw, badVertices) => {
+      const p2 = pushed.map(v => ({ x: v.x, y: v.y }))
+      const d2 = deltas.map(d => ({ ...d }))
+      for (const i of badVertices) {
         const prevMatched = edgeMatched[(i - 1 + n) % n], nextMatched = edgeMatched[i]
         if (!prevMatched && !nextMatched) continue
         // Orient toward this vertex's own region-consistent target (see knownChosen's
@@ -1333,17 +1443,19 @@ export default class SetupPhase {
         const nextLen = Math.hypot(poly[(i + 1) % n].x - poly[i].x, poly[(i + 1) % n].y - poly[i].y)
         const effHw = Math.min(hw, 0.5 * Math.min(prevLen, nextLen))
         const dx = mx * effHw, dy = my * effHw
-        p2[i].x += dx; p2[i].y += dy
+        p2[i].x = poly[i].x + dx; p2[i].y = poly[i].y + dy
         d2[i] = { dx, dy }
       }
       return { pushed: p2, deltas: d2 }
     }
     let hw = halfWidth
-    let result = computeAt(hw)
+    let badVertices = this._polygonSelfIntersectingVertices(pushed)
+    let result = computeAt(hw, badVertices)
     let attempts = 0
     while (this._polygonSelfIntersects(result.pushed) && attempts < 8) {
       hw *= 0.5
-      result = computeAt(hw)
+      badVertices = this._polygonSelfIntersectingVertices(result.pushed)
+      result = computeAt(hw, badVertices)
       attempts++
     }
     return { pushed: result.pushed, deltas: result.deltas, anyMatch, edgeMatched }
@@ -1469,6 +1581,26 @@ export default class SetupPhase {
     return false
   }
 
+  // Same crossing scan as _polygonSelfIntersects, but returns WHICH vertex indices
+  // participate in at least one crossing (both endpoints of every crossing edge pair)
+  // instead of a plain boolean — see _pullBackPolygon's fallback, which uses this to
+  // shrink only the vertices actually causing a self-intersection instead of discarding
+  // every boundary-adjacent vertex's already-correct shared-corner position.
+  _polygonSelfIntersectingVertices(poly) {
+    const n = poly.length
+    const bad = new Set()
+    for (let i = 0; i < n; i++) {
+      const a1 = poly[i], a2 = poly[(i + 1) % n]
+      for (let j = i + 1; j < n; j++) {
+        if (j === i || j === (i + 1) % n || i === (j + 1) % n) continue
+        if (this._segmentsProperlyCross(a1, a2, poly[j], poly[(j + 1) % n])) {
+          bad.add(i); bad.add((i + 1) % n); bad.add(j); bad.add((j + 1) % n)
+        }
+      }
+    }
+    return bad
+  }
+
   _segmentsProperlyCross(p1, p2, p3, p4) {
     const d1x = p2.x - p1.x, d1y = p2.y - p1.y, d2x = p4.x - p3.x, d2y = p4.y - p3.y
     const denom = d1x * d2y - d1y * d2x
@@ -1479,9 +1611,11 @@ export default class SetupPhase {
   }
 
   // River and Cliff terrain Edges render as a fixed-thickness polyline CENTRED on the
-  // edge (TerrainRenderer: thickness 0.5), extending RIVER_CLIFF_HALF_WIDTH into both
-  // neighbouring plots' nominal area — so a district's raw Voronoi-cell polygon
-  // otherwise reaches past the river bank / cliff face into the rendered water/rock
+  // edge (TerrainRenderer: thickness `0.7/3`, kept in sync with
+  // _applyRiverCliffPullbackToTerrainPlots's RIVER_CLIFF_HALF_WIDTH — see that
+  // constant's doc comment), extending RIVER_CLIFF_HALF_WIDTH into both neighbouring
+  // plots' nominal area — so a district's raw Voronoi-cell polygon otherwise reaches
+  // past the river bank / cliff face into the rendered water/rock
   // (see Edge, CONTEXT_WorldTerrain.md). Sea/Lake need no pullback — they're already
   // filled region polygons, not a centreline+width polyline.
   //
@@ -1568,8 +1702,6 @@ export default class SetupPhase {
     }
 
     for (const [vertexId, groups] of ambiguous) {
-      let fan
-      try { fan = dcel.outgoingFan(vertexId) } catch { continue }
       // EVERY fan face with NO vote of its own at this vertex needs its own splice —
       // not just the first one found. That's the actual structural definition of
       // "ambiguous" from _computeRiverCliffDeltas (a face whose OWN edges at this
@@ -1584,14 +1716,31 @@ export default class SetupPhase {
       // Ice-Sheet-auto-cliffed edges meeting), where the THIRD region's own plot at
       // that exact corner has no vote either. Falls back to the water flag alone if
       // hasOwnVote wasn't supplied (older callers), so this stays backward compatible.
-      const spliceCandidates = fan.filter(he => {
-        const face = dcel.getFace(he.face)
-        if (!face) return false
-        if (face.water === true) return true
-        if (!hasOwnVote) return false
-        return hasOwnVoteByFaceVertex.get(`${he.face},${vertexId}`) === false
-      })
-      for (const spliceHe of spliceCandidates) {
+      //
+      // The fan is re-derived FRESH before every single splice attempt, rather than
+      // once up front — splitVertexGeneral mutates the DCEL (inserts a half-edge into
+      // the target face's loop), which can invalidate a second no-vote face's stale
+      // he.prev/he.twin/he.next references if it were computed before the first splice
+      // ran. `attemptedFaceIds` tracks which faces at THIS vertex have already been
+      // resolved (successfully or not) so re-deriving the fan doesn't just re-find and
+      // re-attempt the same one forever; capped at the fan's own original size, since a
+      // vertex can never need more splice attempts than it has incident faces.
+      const attemptedFaceIds = new Set()
+      let initialFanSize = 0
+      try { initialFanSize = dcel.outgoingFan(vertexId).length } catch { continue }
+      for (let attempt = 0; attempt < initialFanSize; attempt++) {
+        let fan
+        try { fan = dcel.outgoingFan(vertexId) } catch { break }
+        const spliceHe = fan.find(he => {
+          if (attemptedFaceIds.has(he.face)) return false
+          const face = dcel.getFace(he.face)
+          if (!face) return false
+          if (face.water === true) return true
+          if (!hasOwnVote) return false
+          return hasOwnVoteByFaceVertex.get(`${he.face},${vertexId}`) === false
+        })
+        if (!spliceHe) break
+        attemptedFaceIds.add(spliceHe.face)
         // groupA = this face's fan-PREDECESSOR's own resolved group; groupB = its fan-
         // SUCCESSOR's own resolved group (see DCEL.splitVertexGeneral's doc comment on
         // exactly which fan positions those are: waterHe.prev.twin and waterHe.twin.next
@@ -1746,7 +1895,7 @@ export default class SetupPhase {
       if (!edge) continue
       const ptIds = edge.pointIds || []
       const idxs = []
-      const lefts = [], rights = []
+      let lefts = [], rights = []
       for (let i = 0; i < corners.length; i++) {
         if (!corners[i]) continue
         idxs.push(i)
@@ -1764,14 +1913,30 @@ export default class SetupPhase {
         // regions crossing each other across a short segment between them — the same
         // class of bug _pullBackPolygon's own effHw already guards against for land
         // polygons. Rather than drop the whole chain (a black gap — the stroke
-        // fallback doesn't exist in District mode), progressively shrink ONLY the
-        // INTERIOR corners (k=1..len-2) toward the chain's own raw centreline point —
-        // the first/last corners are left untouched since those are what neighbouring
-        // chains'/land faces' own already-committed corners are matched against
-        // (shrinking them would just move the gap to the junction instead of fixing it).
+        // fallback doesn't exist in District mode), progressively shrink toward the
+        // chain's own raw centreline point — the first/last corners are left untouched
+        // since those are what neighbouring chains'/land faces' own already-committed
+        // corners are matched against (shrinking them would just move the gap to the
+        // junction instead of fixing it).
+        //
+        // Scoped to only the SPECIFIC interior corners actually participating in a
+        // crossing (via _polygonSelfIntersectingVertices), recomputed fresh from the
+        // pristine, byte-for-byte-matching-the-land-side corner each attempt — not
+        // every interior corner uniformly. Confirmed live (2026-07-12) that uniformly
+        // shrinking the whole interior was the direct cause of visibly thin
+        // River/Cliff ribbons and near-miss gaps against the land faces at every
+        // corner along a chain, even ones nowhere near the actual crossing (see the
+        // groundplane audit tool) — most of a long chain's corners were never the
+        // problem and don't need to move at all.
+        const m = idxs.length
+        const fullLefts = lefts.slice(), fullRights = rights.slice()
         for (let attempt = 0; attempt < 4 && this._polygonSelfIntersects(loopPts); attempt++) {
           const t = 0.5 ** (attempt + 1)
-          for (let k = 1; k < idxs.length - 1; k++) {
+          const badLoopIdx = this._polygonSelfIntersectingVertices(loopPts)
+          lefts = fullLefts.slice(); rights = fullRights.slice()
+          for (const idx of badLoopIdx) {
+            const k = idx < m ? idx : (2 * m - 1 - idx)
+            if (k <= 0 || k >= m - 1) continue
             const raw = registry.get(ptIds[idxs[k]])
             if (!raw) continue
             const c = corners[idxs[k]]
@@ -1820,6 +1985,15 @@ export default class SetupPhase {
       }
       if (deduped.length >= 2 && Math.hypot(deduped[0].x - deduped[deduped.length - 1].x, deduped[0].y - deduped[deduped.length - 1].y) < 1e-6) deduped.pop()
       if (deduped.length < 3) continue   // fully mitered (or degenerate) — nothing to fill
+      // computeJunctionData sorts incident edges by atan2 (CCW) and derives each capPt
+      // from consecutive (i, i+1) pairs in that order — the opposite winding convention
+      // from _buildRiverCliffFacesDirect's ribbons (lefts + reversed-rights). Left as-is,
+      // this cap's boundary traverses its shared edge with a neighbouring ribbon in the
+      // SAME direction the ribbon already claimed it, instead of the reverse a proper
+      // manifold neighbour needs — confirmed live via the groundplane audit (8/8 junction
+      // caps on a real map conflicting with their adjacent ribbon at insertFace time,
+      // all resolved with zero new conflicts by this single reversal).
+      deduped.reverse()
       if (this._polygonSelfIntersects(deduped)) {
         console.warn(`[river-cliff-junction-cap] point ${ptId}: fan-cap polygon self-intersects — skipped`)
         continue
@@ -2211,11 +2385,17 @@ export default class SetupPhase {
 
   _applyRiverCliffPullbackToTerrainPlots() {
     // Was 0.25 ("purely visual/feature-placement — no block-tracing slop to buffer
-    // against"), back when districts computed their OWN independent 0.35 pullback. Now
-    // that _applyRiverCliffPullback adopts districts' geometry directly from here (see
-    // its doc comment), this half-width is what districts get too — 0.35 keeps the same
-    // block/plot-tracing clearance margin that value was originally tuned for.
-    const RIVER_CLIFF_HALF_WIDTH = 0.35
+    // against"), back when districts computed their OWN independent 0.35 pullback. Then
+    // 0.35 once _applyRiverCliffPullback started adopting districts' geometry directly
+    // from here (see its doc comment) — that value carried over as districts' own
+    // block/plot-tracing clearance margin too. Now 0.35/3, kept in sync with
+    // TerrainRenderer's stroke thickness (`0.7/3` — see its doc comment) so the visual
+    // stroke exactly covers the pulled-back gap again, same invariant as before (half-
+    // width = thickness/2). NOTE: 0.25 was previously too small and caused
+    // splitVertexGeneral geometric-overshoot failures (see _computeRiverCliffDeltas's
+    // "Re-enabled" comment below) before being bumped to 0.35 — 0.35/3 (~0.117) is
+    // smaller still, so watch for that failure mode resurfacing.
+    const RIVER_CLIFF_HALF_WIDTH = 0.35 / 3
     const { byId: boundaryById, boundaries, fillsOut, edges: riverCliffEdges } = this._computeRiverCliffBoundaryData(RIVER_CLIFF_HALF_WIDTH)
     const terrainPlots = this.gameStateManager.worldTerrainData?.terrainPlots || []
     const registry = this.gameStateManager.pointRegistry
@@ -2438,8 +2618,36 @@ export default class SetupPhase {
     const RECOVERY_TOL = 0.05
     const W = wt.worldSize ?? 50
     const worldRect = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: W }, { x: 0, y: W }]
-    const seeds = cells.map(c => c.seedPoint)
+    // Hidden (organic-world, generated-but-unrendered) plots must be included here too
+    // — computeVoronoiCellsHalfPlane has no sentinel-triangulation concept of "a
+    // neighbour outside this point set bounds me"; without the hidden seeds acting as
+    // real neighbours, every kept cell's half-plane clip only sees OTHER KEPT seeds and
+    // the literal square, so it naturally expands to fill the square — visibly
+    // reverting the whole map to the old square-clipped look on every load (confirmed
+    // live 2026-07-12). Only kept cells' recomputed polygons are actually used below
+    // (via polyBySeedKey, looked up only for `cells` = wt.terrainPlots).
+    const seeds = [...cells.map(c => c.seedPoint), ...(wt.hiddenTerrainPlots || []).map(c => c.seedPoint)]
     const recomputed = computeVoronoiCellsHalfPlane(seeds, worldRect)
+    // Same organic boundary generate()'s Step 5.5 clips kept plots to — even with
+    // hidden seeds bounding it, a rim cell can still have residual boundary-effect
+    // elongation (sparse real neighbours in one direction); the circle clip trims that
+    // exactly like it does on a fresh generation, keeping recovered geometry identical
+    // to what a live "New Game" would have produced.
+    //
+    // EXCEPT for regions that have had hidden terrain revealed into them
+    // (_revealAdjacentHiddenTerrain, triggered by a TERRAIN_REVEAL_TYPES assignment) —
+    // those regions' plots were deliberately clipped to the literal world SQUARE, not
+    // the circle, when revealed (a Sea/Desert/etc legitimately extends to the map's
+    // edge). Clipping their plots back to the circle here would truncate them right
+    // back down on every reload — confirmed live (2026-07-12): a saved region with Sea
+    // already revealed into it had those far-out plots silently left un-clipped by the
+    // circle-clip fallback (`clipToPolygon` returning null for a subject entirely
+    // outside the clip circle), masking a real bug until this case was excluded
+    // properly instead of relying on that fallback.
+    const clipCircle = organicClipCircle(W)
+    const revealTypeRegionIds = new Set(
+      (wt.regions || []).filter(r => TERRAIN_REVEAL_TYPES.includes(r.assignedType)).map(r => r.id)
+    )
     const keyOf = (p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
     const polyBySeedKey = new Map(recomputed.map(r => [keyOf(r.seedPoint), r.polygon]))
     const signedArea = (poly) => {
@@ -2465,7 +2673,9 @@ export default class SetupPhase {
     for (const c of cells) {
       const poly = polyBySeedKey.get(keyOf(c.seedPoint))
       if (!poly) continue
-      c.polygon = coerceWinding(poly)
+      const wound = coerceWinding(poly)
+      const clipTarget = revealTypeRegionIds.has(c.parentRegionId) ? worldRect : clipCircle
+      c.polygon = clipToPolygon(wound, clipTarget) || wound
       c.pointIds = registry.mintDeduped(c.polygon, 'terrain', RECOVERY_TOL, { reuseExisting: true })
       delete c._rawPolygon
       delete c._rawPointIds
@@ -3203,8 +3413,7 @@ export default class SetupPhase {
     // doesn't require tracking which districts changed since the last pass.
     const tTerrain = performance.now()
     const wt = this.gameStateManager.worldTerrainData
-    const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
-    const rawTerrainPlots = (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId)
+    const rawTerrainPlots = this._rawSurroundingTerrainPlots()
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
@@ -3232,6 +3441,28 @@ export default class SetupPhase {
     this.log.push(`Generated ${blocks.length} blocks, ${plots.length} plots, ${landmarkBuildings.length} landmarks, ${cityData.streetGraph.squares.length} squares, ${terrainPlotCount} terrain plots`)
   }
 
+  // Terrain plots to render as "surrounding countryside" outside the city — excludes
+  // both the original City region's plots AND any individually City-Expansion-
+  // promoted plot (promoteTerrainPlotToDistrict). A promoted plot becomes a district
+  // (its own blocks/plots/buildings) but was never removed from
+  // worldTerrainData.terrainPlots itself (by design — other code still needs its raw
+  // geometry, e.g. _isWithinLivingBoundary) — without this exclusion its OLD raw
+  // terrain-plot Surface kept rendering underneath/around the new district's own
+  // content forever (confirmed live 2026-07-12: a district's buildings/streets sitting
+  // on top of a visible leftover green terrain fill). Three call sites used to
+  // duplicate this filter inline with only the cityRegionId half of it — factored out
+  // so the promoted-plot half can't be missed in any of them again.
+  _rawSurroundingTerrainPlots() {
+    const wt = this.gameStateManager.worldTerrainData
+    const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
+    const promotedPlotIds = new Set(
+      (this.gameStateManager.cityDistrictData?.districts || [])
+        .filter(d => d.promotedFromPlotId != null)
+        .map(d => d.promotedFromPlotId)
+    )
+    return (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId && !promotedPlotIds.has(p.id))
+  }
+
   // Re-derive terrain plots from the current world terrain plots — run on save-load so
   // that saved terrain plots always reflect the latest conversion code.
   regenerateTerrainPlots() {
@@ -3239,8 +3470,7 @@ export default class SetupPhase {
     if (!cityData?.blocks?.length) return 0
     const wt = this.gameStateManager.worldTerrainData
     if (!(wt?.terrainPlots?.length)) return 0
-    const cityRegionId = (wt.regions || []).find(r => r.assignedType === 'City')?.id
-    const rawTerrainPlots = wt.terrainPlots.filter(p => p.parentRegionId !== cityRegionId)
+    const rawTerrainPlots = this._rawSurroundingTerrainPlots()
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
@@ -3272,8 +3502,7 @@ export default class SetupPhase {
     const { plots } = new PlotVoronoiGenerator().generate(blocks, districts, junctions, roadEdges, footprints, this.gameStateManager.pointRegistry)
 
     const wt = this.gameStateManager.worldTerrainData
-    const cityRegionId = (wt?.regions || []).find(r => r.assignedType === 'City')?.id
-    const rawTerrainPlots = (wt?.terrainPlots || []).filter(p => p.parentRegionId !== cityRegionId)
+    const rawTerrainPlots = this._rawSurroundingTerrainPlots()
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)

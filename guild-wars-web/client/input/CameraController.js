@@ -387,7 +387,7 @@ export default class CameraController {
 
   // Reset to the default new-game view: iso mode, North at the top of the screen,
   // city centred, whole map visible. "North at the top" means the world direction the
-  // screen's top edge shows must be world -Z (see SetupPhase.touchesNorthBoundary's
+  // screen's top edge shows must be world -Z (see SetupPhase.isNorthOfCentre's
   // "North = low Z" convention) — with updateCameraPosition's
   // camera = target + hDist*(cos(az),0,sin(az)), the screen-up world direction works out
   // to (-cos(az),-sin(az)); solving that against (0,-1) (world -Z) gives az = PI/2,

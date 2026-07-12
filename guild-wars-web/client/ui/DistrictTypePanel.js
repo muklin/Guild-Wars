@@ -2,6 +2,7 @@ import TerrainColors from '../rendering/TerrainColors.js'
 import ResourceDialog from './ResourceDialog.js'
 import NameDialog from './NameDialog.js'
 import { DISTRICTS, DEFAULTS, districtConfigKey } from '../../shared/districtConfig.js'
+import { makeDraggable } from './utils/draggable.js'
 
 const DISTRICT_TYPES = [
   'Residential', 'Market',
@@ -75,7 +76,19 @@ export default class DistrictTypePanel {
     this._anchorPoints = pts
   }
 
+  // Keeps the settings sub-panel flush to the right of this panel — shared by both
+  // the camera-follow reposition and the drag-end handler (see _reposition/makeDraggable).
+  _syncSettingsPanelPosition() {
+    const sp = document.querySelector('.district-settings-panel')
+    if (!sp) return
+    const margin = 8
+    const rect = this._el.getBoundingClientRect()
+    sp.style.left = `${rect.right + 8}px`
+    sp.style.top  = `${Math.max(margin, Math.min(rect.top, window.innerHeight - sp.offsetHeight - margin))}px`
+  }
+
   _reposition() {
+    if (this._userMoved) return
     if (this._el.style.display === 'none') return
     if (!this._anchorPoints?.length) return
 
@@ -100,12 +113,7 @@ export default class DistrictTypePanel {
     }
 
     // Keep the settings panel flush to the right of this panel as it repositions.
-    const sp = document.querySelector('.district-settings-panel')
-    if (sp) {
-      const rect = this._el.getBoundingClientRect()
-      sp.style.left = `${rect.right + 8}px`
-      sp.style.top  = `${Math.max(margin, Math.min(rect.top, window.innerHeight - sp.offsetHeight - margin))}px`
-    }
+    this._syncSettingsPanelPosition()
   }
 
   showContext(type, options = {}) {
@@ -120,12 +128,13 @@ export default class DistrictTypePanel {
 
     if (type === 'none') {
       this._el.style.display = 'none'
+      this._userMoved = false   // next selection gets a fresh auto-position
       return
     }
 
-    // Close button
+    // Close button — also the drag handle for the whole panel.
     const closeRow = document.createElement('div')
-    closeRow.style.cssText = 'display:flex;justify-content:flex-end;margin-bottom:4px'
+    closeRow.style.cssText = 'display:flex;justify-content:flex-end;margin-bottom:4px;cursor:move'
     const closeBtn = document.createElement('button')
     closeBtn.textContent = '✕'
     closeBtn.title = 'Close'
@@ -135,6 +144,9 @@ export default class DistrictTypePanel {
     closeBtn.addEventListener('click', () => this.showContext('none'))
     closeRow.appendChild(closeBtn)
     this._el.appendChild(closeRow)
+    makeDraggable(this._el, closeRow, {
+      onDragEnd: () => { this._userMoved = true; this._syncSettingsPanelPosition() },
+    })
 
     const main = document.createElement('div')
     if (type === 'district') {

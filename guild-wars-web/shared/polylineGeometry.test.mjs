@@ -117,5 +117,65 @@ const byId = (pts) => new Map(Object.entries(pts).map(([id, p]) => [Number(id), 
     ptNear(cornersA[0].left, aOvr.trueLeft.x, aOvr.trueLeft.y) && ptNear(cornersA[0].right, aOvr.trueRight.x, aOvr.trueRight.y))
 }
 
+// ── Test 8: River/Cliff confluence — the Cliff-Cliff seam facing the water must NOT
+// mitre shut; each Cliff should taper to a point at its OWN river-adjacent corner ─────
+{
+  // One River (south) flanked by two Cliffs (northwest, northeast) — mirrors the live
+  // "Sea confluence" bug (2026-07-12): a plain fan junction would mitre the two Cliffs'
+  // far corners together, sealing the coastline shut across the river mouth.
+  const pointsById = byId({ 0: pt(0, 0), 1: pt(0, -10), 2: pt(-7, 7), 3: pt(7, 7) })
+  const edges = {
+    river: { pointIds: [0, 1], assignedType: 'River' },
+    cliffA: { pointIds: [0, 2], assignedType: 'Cliff' },
+    cliffB: { pointIds: [0, 3], assignedType: 'Cliff' },
+  }
+  const fills = new Map()
+  const overrides = computeJunctionData(edges, pointsById, 1, 100, fills)
+  const riverAt0 = overrides.get('river_0')
+  const cliffAAt0 = overrides.get('cliffA_0')
+  const cliffBAt0 = overrides.get('cliffB_0')
+
+  check('cliffA tapers to a single point (left === right)',
+    near(cliffAAt0.trueLeft.x, cliffAAt0.trueRight.x) && near(cliffAAt0.trueLeft.y, cliffAAt0.trueRight.y))
+  check('cliffB tapers to a single point (left === right)',
+    near(cliffBAt0.trueLeft.x, cliffBAt0.trueRight.x) && near(cliffBAt0.trueLeft.y, cliffBAt0.trueRight.y))
+
+  // Each Cliff's tapered point must be exactly one of the river's own two bank corners —
+  // not some third, independently-mitered point — so the land pullback (which reads the
+  // river's own corners) and the Cliff ribbons agree by construction.
+  const cliffAMatchesRiver =
+    (near(cliffAAt0.trueLeft.x, riverAt0.trueLeft.x) && near(cliffAAt0.trueLeft.y, riverAt0.trueLeft.y)) ||
+    (near(cliffAAt0.trueLeft.x, riverAt0.trueRight.x) && near(cliffAAt0.trueLeft.y, riverAt0.trueRight.y))
+  const cliffBMatchesRiver =
+    (near(cliffBAt0.trueLeft.x, riverAt0.trueLeft.x) && near(cliffBAt0.trueLeft.y, riverAt0.trueLeft.y)) ||
+    (near(cliffBAt0.trueLeft.x, riverAt0.trueRight.x) && near(cliffBAt0.trueLeft.y, riverAt0.trueRight.y))
+  check('cliffA\'s taper point matches one of the river\'s own bank corners', cliffAMatchesRiver)
+  check('cliffB\'s taper point matches one of the river\'s own bank corners', cliffBMatchesRiver)
+  check('cliffA and cliffB taper to DIFFERENT points (opposite riverbanks, not sealed together)',
+    !(near(cliffAAt0.trueLeft.x, cliffBAt0.trueLeft.x) && near(cliffAAt0.trueLeft.y, cliffBAt0.trueLeft.y)))
+
+  // The fan-cap fill must not be a fillable polygon here — the confluence gap should stay
+  // open, not get patched with a triangle sealing it back up.
+  const fill = fills.get(0)
+  check('confluence fan-cap has a null boundary point for the collapsed Cliff-Cliff seam',
+    fill.boundaryPts.some(p => p === null))
+}
+
+// ── Test 9: two Rivers + one Cliff — the fix is scoped to Cliff-Cliff seams only, so a
+// genuine river/river confluence (two streams joining) still mitres normally ───────────
+{
+  const pointsById = byId({ 0: pt(0, 0), 1: pt(0, -10), 2: pt(-7, 7), 3: pt(7, 7) })
+  const edges = {
+    riverA: { pointIds: [0, 1], assignedType: 'River' },
+    riverB: { pointIds: [0, 2], assignedType: 'River' },
+    cliff: { pointIds: [0, 3], assignedType: 'Cliff' },
+  }
+  const overrides = computeJunctionData(edges, pointsById, 1, 100, new Map())
+  const riverAAt0 = overrides.get('riverA_0'), riverBAt0 = overrides.get('riverB_0')
+  check('two Rivers meeting a Cliff still mitre normally between themselves (unaffected by the Cliff-Cliff-only fix)',
+    (near(riverAAt0.trueLeft.x, riverBAt0.trueRight.x) && near(riverAAt0.trueLeft.y, riverBAt0.trueRight.y)) ||
+    (near(riverAAt0.trueRight.x, riverBAt0.trueLeft.x) && near(riverAAt0.trueRight.y, riverBAt0.trueLeft.y)))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

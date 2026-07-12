@@ -1,5 +1,6 @@
 import TerrainColors from '../rendering/TerrainColors.js'
 import NameDialog from './NameDialog.js'
+import { makeDraggable } from './utils/draggable.js'
 
 // Attaches a custom tooltip to a button that may be visually-disabled.
 // We avoid btn.disabled because that strips pointer events, making native title/hover unusable.
@@ -77,6 +78,7 @@ export default class TerrainTypePanel {
 
     if (type === 'none') {
       this._el.style.display = 'none'
+      this._userMoved = false   // next selection gets a fresh auto-position
       NameDialog.closeAll()
       return
     }
@@ -94,11 +96,13 @@ export default class TerrainTypePanel {
     this._el.style.display = 'block'
     // Only reposition when first shown or switching context type (region↔edge).
     // Adding a second/third edge to an existing multi-edge selection keeps the
-    // panel where the user last saw it.
-    if (wasHidden || contextTypeChanged) this._reposition()
+    // panel where the user last saw it — and once the user has manually dragged it,
+    // it stops auto-following entirely until closed and reopened on a new selection.
+    if ((wasHidden || contextTypeChanged) && !this._userMoved) this._reposition()
   }
 
   _reposition() {
+    if (this._userMoved) return
     if (this._el.style.display === 'none') return
     if (!this._anchorPoints?.length) return
 
@@ -126,12 +130,31 @@ export default class TerrainTypePanel {
     }
   }
 
+  // Shared header row: label + close (✕) button, doubling as the drag handle — same
+  // pattern as DistrictTypePanel's closeRow. Close only hides the panel (showContext
+  // 'none'); it never touches the underlying map selection.
+  _headerRow(text) {
+    const row = document.createElement('div')
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move'
+    const label = document.createElement('div')
+    label.textContent = text
+    label.style.cssText = 'font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px'
+    const closeBtn = document.createElement('button')
+    closeBtn.textContent = '✕'
+    closeBtn.title = 'Close'
+    closeBtn.style.cssText = 'background:none;border:none;color:#666;cursor:pointer;font-size:13px;line-height:1;padding:0'
+    closeBtn.addEventListener('mouseenter', () => { closeBtn.style.color = '#ccc' })
+    closeBtn.addEventListener('mouseleave', () => { closeBtn.style.color = '#666' })
+    closeBtn.addEventListener('click', () => this.showContext('none'))
+    row.appendChild(label)
+    row.appendChild(closeBtn)
+    makeDraggable(this._el, row, { onDragEnd: () => { this._userMoved = true } })
+    return row
+  }
+
   _buildRegionContent(container, { pendingType, isEdge = false, isNorthEdge = false, adjacentRegions = [] }) {
     const adjacentTypes = adjacentRegions.map(r => r.type)
-    const label = document.createElement('div')
-    label.textContent = 'Terrain Type'
-    label.style.cssText = 'margin-bottom:8px;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px'
-    container.appendChild(label)
+    container.appendChild(this._headerRow('Terrain Type'))
 
     const grid = document.createElement('div')
     grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px'
@@ -195,10 +218,7 @@ export default class TerrainTypePanel {
   }
 
   _buildEdgeContent(container, { edgeCount, pendingType, adjacentTypes = [], riverDisabledReason = null }) {
-    const label = document.createElement('div')
-    label.textContent = `${edgeCount} Edge${edgeCount > 1 ? 's' : ''} Selected`
-    label.style.cssText = 'margin-bottom:8px;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px'
-    container.appendChild(label)
+    container.appendChild(this._headerRow(`${edgeCount} Edge${edgeCount > 1 ? 's' : ''} Selected`))
 
     const hint = document.createElement('div')
     hint.textContent = 'Click connected edges to add to selection.'

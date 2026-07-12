@@ -162,9 +162,26 @@ export default class TerrainRenderer {
     this.selectedTerrainPlotId = null
   }
 
+  // Deterministic jittered color for ONE terrain plot's OWN corner geometry —
+  // recomputed from (assignedType, cell.polygon) via the exact same formula/seed
+  // buildRegionMesh used when first creating this plot's mesh, rather than cached
+  // per-session state. This is what makes every restore-to-normal path (hover/select
+  // clear) land back on exactly the color the mesh was created with: recomputed
+  // fresh each time, so it's identical after any number of hovers and identical
+  // between any two users looking at the same plot (see TODO.md).
+  _terrainPlotColor(cell) {
+    const parent = this.terrainData?.regions?.find(r => r.id === cell.parentRegionId)
+    return this._jitteredColorFor(parent?.assignedType, cell.polygon)
+  }
+
+  _jitteredColorFor(assignedType, polygon) {
+    const base = TERRAIN_COLORS.get(assignedType) || TERRAIN_COLORS.unassigned
+    return this._jitterColor(base, this._polySeed(polygon))
+  }
+
   _restoreTerrainPlotColor(cellId) {
     const cell = this.terrainData?.terrainPlots?.find(c => c.id === cellId)
-    const base = cell ? this._regionBaseColor(cell.parentRegionId) : 0x888888
+    const base = cell ? this._terrainPlotColor(cell) : 0x888888
     const mesh = this.terrainPlotMeshes.get(cellId)
     if (mesh?.material) {
       mesh.material.color.setHex(base)
@@ -173,12 +190,54 @@ export default class TerrainRenderer {
     }
   }
 
+  // Region-wide counterpart to _restoreTerrainPlotColor: every plot in the region gets
+  // ITS OWN deterministic jitter back (not one shared flat color) unless the region is
+  // currently selected (solid white) or a debug-mode pre-hover color was captured for
+  // it (see setRegionHover) — same three-way precedence clearHover's region branch and
+  // deselectRegion both need, so it lives here once instead of twice.
+  _restoreRegionColors(regionId) {
+    const isSelected = this.selectedRegionId === regionId
+    const cellIds = this.regionTerrainPlots.get(regionId) || []
+    for (const cellId of cellIds) {
+      const mesh = this.terrainPlotMeshes.get(cellId)
+      if (!mesh?.material) continue
+      let color
+      if (isSelected) color = 0xffffff
+      else if (this.showDebug && this._debugPreHoverColors.has(cellId)) color = this._debugPreHoverColors.get(cellId)
+      else {
+        const cell = this.terrainData?.terrainPlots?.find(c => c.id === cellId)
+        color = cell ? this._terrainPlotColor(cell) : this._regionBaseColor(regionId)
+      }
+      mesh.material.color.setHex(color)
+      mesh.material.emissive?.setHex(color)
+      mesh.material.emissiveIntensity = 0.2
+      this._debugPreHoverColors.delete(cellId)
+    }
+    if (cellIds.length === 0) {
+      const rm = this.regionMeshes.get(regionId)
+      if (rm?.material) {
+        const key = 'region_' + regionId
+        let color
+        if (isSelected) color = 0xffffff
+        else if (this.showDebug && this._debugPreHoverColors.has(key)) color = this._debugPreHoverColors.get(key)
+        else {
+          const region = this.terrainData?.regions?.find(r => r.id === regionId)
+          color = region ? this._jitteredColorFor(region.assignedType, region.polygon) : this._regionBaseColor(regionId)
+        }
+        rm.material.color.setHex(color)
+        rm.material.emissive?.setHex(color)
+        rm.material.emissiveIntensity = 0.2
+        this._debugPreHoverColors.delete(key)
+      }
+    }
+  }
+
   clearHover() {
     if (this.hoveredTerrainPlotId !== null) {
       // Don't wipe the selected-cell's white highlight when clearing hover
       if (this.hoveredTerrainPlotId !== this.selectedTerrainPlotId) {
         const cell = this.terrainData?.terrainPlots?.find(c => c.id === this.hoveredTerrainPlotId)
-        const baseColor = cell ? this._regionBaseColor(cell.parentRegionId) : 0x888888
+        const baseColor = cell ? this._terrainPlotColor(cell) : 0x888888
         const mesh = this.terrainPlotMeshes.get(this.hoveredTerrainPlotId)
         if (mesh?.material) {
           mesh.material.color.setHex(baseColor)
@@ -189,30 +248,7 @@ export default class TerrainRenderer {
       this.hoveredTerrainPlotId = null
     }
     if (this.hoveredRegionId !== null) {
-      const isSelected = this.selectedRegionId === this.hoveredRegionId
-      const baseColor = isSelected ? 0xffffff : this._regionBaseColor(this.hoveredRegionId)
-      const cellIds = this.regionTerrainPlots.get(this.hoveredRegionId) || []
-      for (const cellId of cellIds) {
-        const mesh = this.terrainPlotMeshes.get(cellId)
-        if (mesh?.material) {
-          const restoreColor = this.showDebug ? (this._debugPreHoverColors.get(cellId) ?? baseColor) : baseColor
-          mesh.material.color.setHex(restoreColor)
-          mesh.material.emissive?.setHex(restoreColor)
-          mesh.material.emissiveIntensity = 0.2
-          this._debugPreHoverColors.delete(cellId)
-        }
-      }
-      if (cellIds.length === 0) {
-        const rm = this.regionMeshes.get(this.hoveredRegionId)
-        if (rm?.material) {
-          const key = 'region_' + this.hoveredRegionId
-          const restoreColor = this.showDebug ? (this._debugPreHoverColors.get(key) ?? baseColor) : baseColor
-          rm.material.color.setHex(restoreColor)
-          rm.material.emissive?.setHex(restoreColor)
-          rm.material.emissiveIntensity = 0.2
-          this._debugPreHoverColors.delete(key)
-        }
-      }
+      this._restoreRegionColors(this.hoveredRegionId)
       this.hoveredRegionId = null
     }
     if (this.hoveredEdgeId !== null) {
@@ -456,15 +492,15 @@ export default class TerrainRenderer {
   renderEdges(edges) {
     if (this._cityModeActive) return
     if (!this.terrainPolylines) {
-      // thickness 0.7 -> half-width 0.35, matching SetupPhase.js's RIVER_CLIFF_HALF_WIDTH
-      // exactly (that's what the land pullback now snaps to, via riverCliffBoundary.js's
-      // shared geometry) — was 0.5 (half-width 0.25) from when terrain-mode stroking was
-      // purely visual and pullback used its own, then-separate 0.25. Left mismatched
-      // after RIVER_CLIFF_HALF_WIDTH was bumped to 0.35 for district-adoption (see that
-      // constant's doc comment) — confirmed live as a constant ~0.1 gap between the
-      // stroke's edge and the pulled-back land, i.e. the land was already agreeing with
-      // the true river width, only the stroke was too narrow to reach it.
-      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.7, stripY: 0.01, priorityColor: TERRAIN_COLORS.River })
+      // Visual stroke only — 1/3 of the true land-pullback width (SetupPhase.js's
+      // RIVER_CLIFF_HALF_WIDTH = 0.35, i.e. a 0.7 gap once an edge is assigned River/
+      // Cliff and the land recedes). Deliberately thinner than that gap now (was 0.7,
+      // exactly matching it) because the full-width stroke read as oversized/dominant
+      // in practice; the tradeoff is a visible sliver of the pulled-back gap on either
+      // side of the stroke for an ASSIGNED River/Cliff edge specifically (unassigned
+      // edges have no land pullback yet, so they're unaffected). Revisit if that gap
+      // reads as a bug once seen live on an assigned edge.
+      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.7 / 3, stripY: 0.01, priorityColor: TERRAIN_COLORS.River })
     }
     // Reverted (2026-07-11): every edge strokes, including River/Cliff — see
     // setTerrainData's matching comment for why the filled-face pass was dropped for
@@ -527,7 +563,7 @@ export default class TerrainRenderer {
       const plot = this.terrainData?.terrainPlots?.find(p => p.id === this.selectedTerrainPlotId)
       if (plot?.parentRegionId === regionId) this.clearTerrainPlotSelected()
     }
-    this._applyRegionColor(regionId, this._regionBaseColor(regionId))
+    this._restoreRegionColors(regionId)
   }
 
   previewRegionType(regionId, terrainType) {
@@ -628,8 +664,7 @@ export default class TerrainRenderer {
   clearFactionRegion() {
     if (this._factionRegionId == null) return
     const id = this._factionRegionId
-    const base = (this.selectedRegionId === id) ? 0xffffff : this._regionBaseColor(id)
-    this._paintRegion(id, base, 0.2)
+    this._restoreRegionColors(id)
     this._factionRegionId = null
   }
 

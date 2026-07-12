@@ -286,6 +286,12 @@ export default class DCEL {
 
   getAllChains() { return [...this._chainsById.values()] }
 
+  // Full half-edge / face enumeration — for callers that need to scan the whole
+  // structure (e.g. a manifold audit looking for unreclaimed void half-edges), not just
+  // walk one face/vertex/chain at a time like every other accessor above.
+  allHalfEdges() { return [...this._halfEdgesById.values()] }
+  allFaces() { return [...this._facesById.values()] }
+
   // Directed-pair lookup, exposed for callers (river/cliff face assembly) that need to
   // confirm a candidate boundary step already exists as a void placeholder before
   // relying on insertFace to reclaim it, rather than risk it silently minting a fresh

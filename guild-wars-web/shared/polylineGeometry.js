@@ -59,7 +59,7 @@ export function computeJunctionData(edges, pointsById, r, miterLimitDist, fillsO
       }
       const len = Math.sqrt(dx * dx + dy * dy)
       if (len < 1e-10) continue
-      edgeData.push({ edgeId, ux: dx / len, uy: dy / len })
+      edgeData.push({ edgeId, ux: dx / len, uy: dy / len, type: edge.assignedType })
     }
     if (edgeData.length < 2) continue
 
@@ -86,6 +86,36 @@ export function computeJunctionData(edges, pointsById, r, miterLimitDist, fillsO
         slots[i] = { q1: miter, q2: miter, capPt: miter }
       } else {
         slots[i] = { q1, q2, capPt: { x: (q1.x + q2.x) / 2, y: (q1.y + q2.y) / 2 } }
+      }
+    }
+
+    // A River meeting two (or more) Cliffs at the same point is a confluence, not an
+    // ordinary fan junction: the Cliff-Cliff seam that "closes the loop" on the far side
+    // of the water is the imaginary continuation of the coastline as if the river weren't
+    // there — mitering it normally (as the loop above does for every seam, blind to edge
+    // type) bridges the two cliffs shut right across the confluence gap, sealing the
+    // coastline and burying the river mouth behind it (confirmed live 2026-07-12: both
+    // cliffs' shared corner landed on the SEA side of the river's own mouth corners,
+    // overlapping the water's land-polygon boundary instead of stopping at it). Each such
+    // Cliff should instead taper its ribbon to a point at ITS OWN river-adjacent corner
+    // (reusing the corner from its other, water-touching seam) rather than get a second,
+    // independent far corner shared with the other cliff. Scoped to Cliff-Cliff seams
+    // specifically (not River-River) and to seams whose OTHER neighbour on each side is
+    // non-Cliff, so a same-type fan among 3+ cliffs (no river directly across) still
+    // mitres/bevels normally — only the seam directly facing the water gap collapses.
+    // This is server-consumed (SetupPhase.js's pullback, via riverCliffBoundary.js) as
+    // well as client stroke rendering (PolylineRenderer.js) — the Node dev server does
+    // NOT hot-reload on edits here, restart it for a re-saved game to pick this up.
+    if (edgeData.some(e => e.type === 'River')) {
+      for (let i = 0; i < n; i++) {
+        const A = edgeData[i], B = edgeData[(i + 1) % n]
+        if (A.type !== 'Cliff' || B.type !== 'Cliff') continue
+        const aOtherType = edgeData[(i - 1 + n) % n].type
+        const bOtherType = edgeData[(i + 2) % n].type
+        if (aOtherType === 'Cliff' || bOtherType === 'Cliff') continue
+        const aOtherSeam = slots[(i - 1 + n) % n]
+        const bOtherSeam = slots[(i + 1) % n]
+        slots[i] = { q1: aOtherSeam.q2, q2: bOtherSeam.q1, capPt: null }
       }
     }
 
