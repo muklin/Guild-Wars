@@ -4,8 +4,14 @@
 
 
 # Features:
+## General 
+- All UI panels should be movable by dragging.  ie. New Terrain, Edge, District, etc, panels.   -dragging them should never clear current selections 
+- Sometime Edge definition panels are not in a logical place.  
+
 ## Terrain Mode
-- change the terrain generation away from a forced square World, to a circular-ish set of terrains.  still need to detect edge terrains.  Change City selection away from the largest non-edge terrain, to be the terrain that is in the centre of the map (find terrain that contains the center point./)
+- change the terrain generation away from a forced square World, to a circular-ish set of terrains.  still need to detect edge terrains.  
+- Change City selection (currently its the largest non-edge terrain) to the terrain region that is in the centre of the map (use the terrain that contains the center point.)
+
 
 
 ### Groundplane Z-height implementation.  HUGE
@@ -37,12 +43,6 @@
 
 
 ## District Mode
-### Names 
-- Don't name Threats and Trade Routes.  Allow the option to rename it, but mainly we're looking for the description.
-- Cliff Names are optional.  
-- Add a "regenerate names" option everwhere prepopulated names are used. 
-- Triple the number of random Names in all district, etc, naming categories.  (But not character names.)
-- don't use Guild names (Weavers, Illusionists, etc.) for Terrain names.  We need to make a new way to make good terrain names.
 
 ### Outside city Plot improvements. 
 - Hovering ie Mines, Fishing Factions, doesn't highlight their position on the map.  it should. 
@@ -238,4 +238,14 @@ Changes to Rivers.
 ## Compass and minimap
 - show the Compass in the Top down and iso modes, in the same space that the minimap is, in Walk mode. 
 - Add NSEW indictors around the outside of the minimap.
+
+
+## Names 
 - When loading a new game, (or when a game loads and a previous view position isn't found) we're currently loading with N to the right.  Change this to be North at the top.
+- Cliff and river Names are optional, if the user clicks apply without a name specified, allow it.  
+- Add a "regenerate names" option everwhere prepopulated names are used. 
+- Triple the number of random Names in all district, etc, naming categories.  (But not character names.)
+
+Randomize the initially selected colour of a new Foreign power.  Don't allow 2 FPs to be the same colour, (Don't add new colours to the UI just disable that colour, when its selected)
+- don't use Guild names (Weavers, Illusionists, etc.) for Terrain names.  We need to make a new way to make good terrain names.
+- Don't name Threats and Trade Routes.  Allow the option to rename it, but mainly we're looking for the description.

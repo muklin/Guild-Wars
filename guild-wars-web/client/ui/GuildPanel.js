@@ -300,8 +300,9 @@ export default class GuildPanel {
     nameRow.appendChild(nameWrap)
 
     if (!locked) {
-      const showSuggestions = () => {
-        if (nameWrap.querySelector('.gp-name-suggestions')) return
+      const showSuggestions = (force = false) => {
+        const existing = nameWrap.querySelector('.gp-name-suggestions')
+        if (existing) { if (!force) return; existing.remove() }
         const leaderChar = (this.guild.characters || []).find(c => c.role === 'guild-leader')
         const standingMap = this.guild.standing || {}
         const standingsChanged = Object.values(standingMap).some(v => v !== 50)
@@ -323,6 +324,13 @@ export default class GuildPanel {
           chip.addEventListener('mouseleave', () => { chip.style.background = '' })
           dropdown.appendChild(chip)
         }
+        const regen = document.createElement('div')
+        regen.textContent = '🔄 Regenerate'
+        regen.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:11px;color:#7ab;text-align:center'
+        regen.addEventListener('mousedown', e => { e.preventDefault(); showSuggestions(true) })
+        regen.addEventListener('mouseenter', () => { regen.style.background = '#2a3a2a' })
+        regen.addEventListener('mouseleave', () => { regen.style.background = '' })
+        dropdown.appendChild(regen)
         nameWrap.appendChild(dropdown)
       }
       nameInput.addEventListener('focus', showSuggestions)

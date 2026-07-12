@@ -133,19 +133,52 @@ export default class InputHandler {
     }
 
     if (this.renderer.mode === 'city') {
-      // District hover applies in all sub-modes (debug and non-debug alike)
-      const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
+      // District hover applies in non-debug sub-modes only — disabled in debug mode
+      // (2026-07-12) so highlighting a whole district's colour doesn't fight visually
+      // with precisely positioning over a small debug dot (confirmed live: this branch
+      // used to run unconditionally, INCLUDING while debug was on).
+      const district = debug ? null : this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
       if (district) { this.renderer.setDistrictHover(district.id); this._hideTooltip() }
 
       if (debug) {
-        // Debug dot priority: block > plot > street junction seed > district center
-        // Thresholds are ~1.5× the sphere visual radius so hovering is responsive
-        // without the hit area feeling huge.
+        // Debug dot priority: block > plot > street junction seed > district center >
+        // terrain plot center > terrain (region) center. City-specific dots take
+        // priority since that's the more common thing being inspected in city mode;
+        // terrain centers are checked last since they're coarser/less specific and
+        // still persist in the background under city geometry.
         const blockCenter    = this.renderer.getBlockCenterAtWorldPos(worldPos.x, worldPos.y, 0.05)
         const plotCenter     = blockCenter ? null : this.renderer.getPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.04)
         const streetSeed     = (!blockCenter && !plotCenter) ? this.renderer.getStreetSeedAtWorldPos(worldPos.x, worldPos.y, 0.03) : null
         const districtCenter = (!blockCenter && !plotCenter && !streetSeed) ? this.renderer.getDistrictCenterAtWorldPos(worldPos.x, worldPos.y, 0.1) : null
-        const dot = blockCenter || plotCenter || streetSeed || districtCenter
+        const priorSoFar = blockCenter || plotCenter || streetSeed || districtCenter
+        const surfaceCorner = priorSoFar ? null : this.renderer.getSurfaceCornerAtWorldPos(worldPos.x, worldPos.y, 0.05)
+        const priorSoFar2 = priorSoFar || surfaceCorner
+        const terrainVertex = priorSoFar2 ? null : this.renderer.getTerrainCornerAtWorldPos(worldPos.x, worldPos.y, 0.06)
+        const priorSoFar3 = priorSoFar2 || terrainVertex
+        const terrainPlotCenter = priorSoFar3 ? null : this.renderer.getTerrainPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.06)
+        const terrainCenter     = (priorSoFar3 || terrainPlotCenter) ? null : this.renderer.getTerrainCenterAtWorldPos(worldPos.x, worldPos.y, 0.12)
+        const dot = priorSoFar3 || terrainPlotCenter || terrainCenter
+        if (dot === terrainVertex && terrainVertex) {
+          this.renderer.clearHover()
+          const regionList = terrainVertex.regionIds
+            .map((id, i) => `Region ${id} (v${terrainVertex.vertexIndices[i]})`).join(', ')
+          const vid = terrainVertex.point.id !== undefined ? `Vertex ${terrainVertex.point.id}` : 'Vertex'
+          this._showTooltip(
+            `<div style="font-weight:bold">${vid}</div>` +
+            `<div style="font-size:0.9em;margin-top:2px">${regionList}</div>` +
+            `<div style="font-size:0.85em;opacity:0.85">(${terrainVertex.point.x.toFixed(3)}, ${terrainVertex.point.y.toFixed(3)})</div>`,
+            e)
+          return
+        }
+        if (dot === surfaceCorner && surfaceCorner) {
+          this.renderer.clearHover()
+          this._showTooltip(
+            `<div style="font-weight:bold">Surface Corner ${surfaceCorner.id}</div>` +
+            `<div style="font-size:0.9em;margin-top:2px">source: ${surfaceCorner.sourceKind ?? '?'}</div>` +
+            `<div style="font-size:0.85em;opacity:0.85">(${surfaceCorner.x?.toFixed(3)}, ${surfaceCorner.y?.toFixed(3)})</div>`,
+            e)
+          return
+        }
         if (dot) {
           this.renderer.clearHover()
           if (dot.kind === 'block') {
@@ -172,6 +205,18 @@ export default class InputHandler {
               `<div style="font-size:0.9em;margin-top:2px">type: ${dot.assignedType ?? '?'}</div>` +
               (dot.residentialClass ? `<div style="font-size:0.85em;opacity:0.85">class: ${dot.residentialClass}</div>` : ''),
               e)
+          } else if (dot.kind === 'terrainPlotCenter') {
+            this._showTooltip(
+              `<div style="font-weight:bold">Terrain Plot ${dot.id}</div>` +
+              `<div style="font-size:0.9em;margin-top:2px">region: ${dot.parentRegionId ?? '?'} &nbsp;|&nbsp; type: ${dot.assignedType ?? 'unassigned'}</div>` +
+              `<div style="font-size:0.85em;opacity:0.85">(${dot.x?.toFixed(3)}, ${dot.y?.toFixed(3)})</div>`,
+              e)
+          } else if (dot.kind === 'terrainCenter') {
+            this._showTooltip(
+              `<div style="font-weight:bold">Region ${dot.id}</div>` +
+              `<div style="font-size:0.9em;margin-top:2px">type: ${dot.assignedType ?? 'unassigned'}</div>` +
+              `<div style="font-size:0.85em;opacity:0.85">(${dot.x?.toFixed(3)}, ${dot.y?.toFixed(3)})</div>`,
+              e)
           }
           return
         }
@@ -197,6 +242,13 @@ export default class InputHandler {
           this.renderer.setStreetEdgeHover(edge)
           return
         }
+        // Debug mode with nothing under the cursor: stay quiet — do NOT fall through
+        // to the broad terrain/district/edge highlighting below (that fallthrough was
+        // confirmed live as the actual cause of "hover fights with picking a dot": it
+        // ran even in debug mode whenever the cursor wasn't exactly on a dot).
+        this.renderer.clearHover()
+        this._hideTooltip()
+        return
       }
       // HQ pick mode: outline hovered plot or landmark, no other interaction.
       if (this.renderer.hqPickMode) {
@@ -234,10 +286,44 @@ export default class InputHandler {
       return
     }
 
-    // Terrain mode — check region center seed points first
+    // Terrain mode — check Surface corner points first (finest granularity, off by
+    // default — see DebugPanel), then terrain PLOT centers, then coarse region centers.
+    const surfaceCorner = this.renderer.getSurfaceCornerAtWorldPos(worldPos.x, worldPos.y, 0.05)
+    if (surfaceCorner) {
+      this.renderer.clearHover()
+      if (debug) {
+        this._showTooltip(
+          `<div style="font-weight:bold">Surface Corner ${surfaceCorner.id}</div>` +
+          `<div style="font-size:0.9em;margin-top:2px">source: ${surfaceCorner.sourceKind ?? '?'}</div>` +
+          `<div style="font-size:0.85em;opacity:0.85">(${surfaceCorner.x?.toFixed(3)}, ${surfaceCorner.y?.toFixed(3)})</div>`,
+          e)
+      } else { this._hideTooltip() }
+      return
+    }
+
+    // Both terrain PLOT centers and region centers are debug-only dots
+    // (drawVoronoiCenters/drawTerrainPlotCenters) but stay hoverable outside debug mode
+    // too, same as before, for the tooltip-off/region-hover-only legacy behaviour.
+    const terrainPlotCenter = this.renderer.getTerrainPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.06)
+    if (terrainPlotCenter) {
+      this.renderer.clearHover()
+      if (debug) {
+        this._showTooltip(
+          `<div style="font-weight:bold">Terrain Plot ${terrainPlotCenter.id}</div>` +
+          `<div style="font-size:0.9em;margin-top:2px">region: ${terrainPlotCenter.parentRegionId ?? '?'} &nbsp;|&nbsp; type: ${terrainPlotCenter.assignedType ?? 'unassigned'}</div>` +
+          `<div style="font-size:0.85em;opacity:0.85">(${terrainPlotCenter.x?.toFixed(3)}, ${terrainPlotCenter.y?.toFixed(3)})</div>`,
+          e)
+      } else { this._hideTooltip() }
+      return
+    }
+
     const regionCenter = this.renderer.getTerrainSeedAtWorldPos(worldPos.x, worldPos.y, 0.1)
     if (regionCenter) {
-      this.renderer.setRegionHover(regionCenter.regionId)
+      // Region hover highlight is disabled in debug mode (2026-07-12) — see the
+      // city-mode branch's matching comment; only the tooltip should show while
+      // precisely positioning over a debug dot.
+      if (!debug) this.renderer.setRegionHover(regionCenter.regionId)
+      else this.renderer.clearHover()
       if (debug) {
         this._showTooltip(
           `<div style="font-weight:bold">Region ${regionCenter.regionId} (terrainCenter)</div>` +
@@ -264,15 +350,18 @@ export default class InputHandler {
       return
     }
 
+    // Broad edge/region hover (highlighting) is disabled in debug mode — same reasoning
+    // as the district/region hover disabling above: it otherwise fights with precisely
+    // positioning over a small debug dot.
+    if (debug) { this.renderer.clearHover(); this._hideTooltip(); return }
+
     const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
     if (edge) { this.renderer.setEdgeHover(edge.id); this._hideTooltip(); return }
 
     const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
     if (region) {
       this.renderer.setRegionHover(region.id)
-      if (debug) {
-        this._showTooltip(`Region ${region.id} - ${region.assignedType || 'Unassigned'}`, e)
-      } else { this._hideTooltip() }
+      this._hideTooltip()
     } else {
       this.renderer.clearHover()
       this._hideTooltip()

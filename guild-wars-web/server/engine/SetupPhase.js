@@ -1190,13 +1190,6 @@ export default class SetupPhase {
   // (un-pulled-back) boundary regardless of how far district.polygon itself moved. So
   // every vertex displacement computed below is mirrored onto any cityData.edgePoints
   // entry sitting at that same (pristine) coordinate.
-  // Tolerance for chain-adjacent geometry checks downstream of the pullback (bridging a
-  // small T-junction tagging gap in _mergeNearbyPathFragments, and the confluence
-  // termini-closing check in _buildRiverCliffFaces) — NOT used for polygon-to-river
-  // matching anymore (see _riverCliffBoundaryById's doc comment: that now matches by
-  // exact registry id, not coordinate tolerance).
-  static RIVER_CLIFF_MATCH_TOL = 1.0
-
   // Inset a single (pristine) polygon by halfWidth along any edge that lies on a
   // River/Cliff terrain segment. Snaps each matched vertex directly to the shared,
   // junction-aware boundary position computed by riverCliffBoundary.js (the SAME
@@ -1382,7 +1375,14 @@ export default class SetupPhase {
   // position entirely — confirmed live as the exact cause of thin spike/fold artifacts
   // clustered at multi-chain junction regions (2026-07-11). _pullBackPolygon picks the
   // right array entry per land-edge by matching sourceEdgeId, not by vertex alone.
-  _riverCliffBoundaryById(halfWidth) {
+  // Single source for every River/Cliff-derived geometry this pass needs — LAND-side
+  // snapping (byId, keyed by point id, consumed by _pullBackPolygon) AND the river/
+  // cliff FACE ribbons themselves (boundaries, per-chain, consumed by
+  // _buildRiverCliffFacesDirect/_buildRiverCliffJunctionCaps) all come from this ONE
+  // computeRiverCliffBoundaries call — guaranteeing every corner position agrees
+  // byte-for-byte between the land polygons and the river/cliff face that fills the gap
+  // between them, by construction, not by a separate reconciliation pass.
+  _computeRiverCliffBoundaryData(halfWidth) {
     const terrainData = this.gameStateManager.worldTerrainData
     const registry = this.gameStateManager.pointRegistry
     const edges = {}
@@ -1390,8 +1390,9 @@ export default class SetupPhase {
       if (e.assignedType === 'River' || e.assignedType === 'Cliff') edges[key] = e
     }
     const byId = new Map()
-    if (Object.keys(edges).length === 0) return byId
-    const boundaries = computeRiverCliffBoundaries(edges, registry, halfWidth, halfWidth * SetupPhase.MITER_LIMIT_RATIO)
+    if (Object.keys(edges).length === 0) return { byId, boundaries: new Map(), fillsOut: new Map(), edges }
+    const fillsOut = new Map()
+    const boundaries = computeRiverCliffBoundaries(edges, registry, halfWidth, halfWidth * SetupPhase.MITER_LIMIT_RATIO, fillsOut)
     for (const [chainId, corners] of boundaries) {
       const pts = edges[chainId].pointIds || []
       // Determine, ONCE per chain, which coarse region sits on which canonical side —
@@ -1408,7 +1409,11 @@ export default class SetupPhase {
         byId.get(pts[i]).push({ left: corners[i].left, right: corners[i].right, sourceEdgeId: chainId, sideByRegion })
       }
     }
-    return byId
+    return { byId, boundaries, fillsOut, edges }
+  }
+
+  _riverCliffBoundaryById(halfWidth) {
+    return this._computeRiverCliffBoundaryData(halfWidth).byId
   }
 
   // For a chain named "${regionA}-${regionB}" (worldTerrainData.edges' own key
@@ -1516,13 +1521,24 @@ export default class SetupPhase {
   // it an extra vertex; callers that need a 1:1 remap (only districts do — terrain
   // plots have no dependent edges structure) must build it themselves and can only
   // rely on same-length zipping where isWaterByIndex is false for that face.
-  // edgeSourceIds (optional, parallel to rawPolys/rawIds, see _computeRiverCliffDeltas)
-  // drives river/cliff FACE construction (see _buildRiverCliffFaces) — omit it (or pass
-  // null) to get exactly the old pullback-only behavior with no faces built.
   // hasOwnVote (optional, same shape as deltas, see _computeRiverCliffDeltas) — used
   // only to find the confluence splice target (a face with no vote of its own at an
   // ambiguous vertex, not necessarily water); omit for the old water-only behavior.
-  _dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, splitKind, isWaterByIndex, edgeSourceIds = null, hasOwnVote = null) {
+  //
+  // River/Cliff FACE construction (the filled ribbon between two banks) is NOT this
+  // function's job anymore — see _buildRiverCliffFacesDirect/_buildRiverCliffJunctionCaps,
+  // called separately from _applyRiverCliffPullbackToTerrainPlots. It used to be built
+  // HERE by tagging split half-edges and walking the DCEL to reverse-engineer which
+  // land faces belonged to which bank (_buildRiverCliffFaces, since removed) — that
+  // approach could never reliably distinguish a genuine N-way region-tripoint
+  // confluence from an ordinary T-junction tagging gap (plan "typed-giggling-giraffe"
+  // Addendum 2 Stage B "KNOWN ISSUE"), and inherited LAND pullback's per-cell effHw
+  // clamp, whose magnitude depends on each terrain plot's own local edge length —
+  // producing visibly uneven river width wherever tessellation density varied along the
+  // chain (confirmed live, 2026-07-12). The direct approach builds each chain's ribbon
+  // from ONLY its own polyline + a fixed half-width (see riverCliffBoundary.js), fully
+  // independent of terrain-plot geometry or DCEL topology.
+  _dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, splitKind, isWaterByIndex, hasOwnVote = null) {
     const registry = this.gameStateManager.pointRegistry
     const dcel = new DCEL(registry)
 
@@ -1550,114 +1566,94 @@ export default class SetupPhase {
       }
     }
 
-    // Capture the chain-tagging plan NOW, while every face's half-edge walk still
-    // aligns with its raw edge indices — splitVertexGeneral (below) INSERTS half-edges
-    // into spliced faces' loops, so a post-split walk can't recover this pairing (see
-    // the execution site below for the confirmed live failure). A face whose ids got
-    // collapsed by dedupeConsecutiveIds (near-duplicate consecutive corners) is NOT
-    // skipped — that used to silently drop the whole face's tags, fragmenting one
-    // bank of an otherwise-buildable chain (confirmed live: chain 3-9's Ice Sheet
-    // side lost 2 of its 3 edges to exactly this, leaving a 2-vertex bank that could
-    // never pair with the 7-vertex far bank). Instead, map each raw edge index to its
-    // deduped loop index via a provenance walk: a collapsed (zero-length, u===v) raw
-    // edge contributes nothing; every other raw edge maps to the deduped edge leaving
-    // its vertex's first surviving occurrence.
-    const pendingChainTags = []
-    if (edgeSourceIds) {
-      for (let fi = 0; fi < rawPolys.length; fi++) {
-        const face = dcelFaces[fi]
-        if (!face) continue
-        let hes
-        try { hes = dcel._faceHalfEdges(face.id) } catch { continue }
-        const ids = rawIds[fi], sources = edgeSourceIds[fi]
-        // prov[k] = the raw index of deduped vertex k's first occurrence (mirrors
-        // dedupeConsecutiveIds' construction exactly, including the wraparound pop).
-        const prov = []
-        for (let i = 0; i < ids.length; i++) {
-          if (prov.length === 0 || ids[prov[prov.length - 1]] !== ids[i]) prov.push(i)
-        }
-        if (prov.length > 1 && ids[prov[0]] === ids[prov[prov.length - 1]]) prov.pop()
-        let k = 0
-        for (let i = 0; i < ids.length && i < sources.length; i++) {
-          while (k + 1 < prov.length && prov[k + 1] <= i) k++
-          if (sources[i] == null) continue
-          if (ids[i] === ids[(i + 1) % ids.length]) continue   // collapsed zero-length edge
-          if (k < hes.length) pendingChainTags.push({ heId: hes[k].id, sourceEdgeId: sources[i] })
-        }
-      }
-    }
-
     for (const [vertexId, groups] of ambiguous) {
-      if (groups.length !== 2) continue
       let fan
       try { fan = dcel.outgoingFan(vertexId) } catch { continue }
-      // The splice target is whichever fan face has NO vote of its own at this vertex
-      // — that's the actual structural definition of "ambiguous" from
-      // _computeRiverCliffDeltas (a face whose OWN edges at this vertex aren't
-      // river/cliff-matched, so its resolved delta only exists because a NEIGHBOUR's
-      // vote won the fallback — see hasOwnVote's doc comment; deltaByFaceVertex alone
-      // can't distinguish this from an ordinary own-vote face, since the fallback
-      // returns a `groups` entry by reference, same as an own-vote face's own group).
-      // A water face (Lake/Sea) is the common case — it never has a vote, since its own
-      // shoreline edge is deliberately de-typed away from River/Cliff (see
-      // assignTerrainToRegion) — but this is NOT water-specific: the identical
-      // situation happens at a land-only 3+-region corner (e.g. two Ice-Sheet-auto-
-      // cliffed edges meeting), where the THIRD region's own plot at that exact corner
-      // has no vote either. Falls back to the water flag alone if hasOwnVote wasn't
-      // supplied (older callers), so this stays backward compatible.
-      const spliceHe = fan.find(he => {
+      // EVERY fan face with NO vote of its own at this vertex needs its own splice —
+      // not just the first one found. That's the actual structural definition of
+      // "ambiguous" from _computeRiverCliffDeltas (a face whose OWN edges at this
+      // vertex aren't river/cliff-matched, so its resolved delta only exists because a
+      // NEIGHBOUR's vote won the fallback — see hasOwnVote's doc comment;
+      // deltaByFaceVertex alone can't distinguish this from an ordinary own-vote face,
+      // since the fallback returns a `groups` entry by reference, same as an own-vote
+      // face's own group). A water face (Lake/Sea) is the common case — it never has a
+      // vote, since its own shoreline edge is deliberately de-typed away from
+      // River/Cliff (see assignTerrainToRegion) — but this is NOT water-specific: the
+      // identical situation happens at a land-only 3+-region corner (e.g. two
+      // Ice-Sheet-auto-cliffed edges meeting), where the THIRD region's own plot at
+      // that exact corner has no vote either. Falls back to the water flag alone if
+      // hasOwnVote wasn't supplied (older callers), so this stays backward compatible.
+      const spliceCandidates = fan.filter(he => {
         const face = dcel.getFace(he.face)
         if (!face) return false
         if (face.water === true) return true
         if (!hasOwnVote) return false
         return hasOwnVoteByFaceVertex.get(`${he.face},${vertexId}`) === false
       })
-      if (!spliceHe) continue
-      // groupA/groupB must be passed in FAN order (predecessor, successor) — `groups`
-      // itself came from a Set built in arbitrary contribution order (see
-      // _computeRiverCliffDeltas), not winding order, and splicing them in the wrong
-      // order produces a self-crossing "bowtie" notch instead of a clean flat one
-      // (confirmed live: two terrain plots self-intersecting after the cutover, traced
-      // to exactly this). heIn.twin's face is the fan-predecessor's own arm (same
-      // identity splitVertexGeneral itself uses internally) — match that against
-      // `groups` to find which one is actually groupA.
-      const heIn = dcel.getHalfEdge(spliceHe.prev)
-      const predFaceId = heIn ? dcel.getHalfEdge(heIn.twin)?.face : null
-      const predGroup = predFaceId != null ? deltaByFaceVertex.get(`${predFaceId},${vertexId}`) : null
-      let groupA = groups.find(g => g === predGroup)
-      let groupB = groups.find(g => g !== groupA)
-      if (!groupA || !groupB) { [groupA, groupB] = groups }   // couldn't determine fan order — fall back rather than skip
+      for (const spliceHe of spliceCandidates) {
+        // groupA = this face's fan-PREDECESSOR's own resolved group; groupB = its fan-
+        // SUCCESSOR's own resolved group (see DCEL.splitVertexGeneral's doc comment on
+        // exactly which fan positions those are: waterHe.prev.twin and waterHe.twin.next
+        // respectively). Generalized (2026-07-13) to work at ANY total group count at
+        // this vertex, not just exactly 2 — a no-vote face's correct neighbour pair is
+        // always its own immediate fan predecessor/successor, regardless of how many
+        // OTHER, unrelated groups exist elsewhere around the same vertex. The old
+        // `groups.length !== 2` gate meant a no-vote face at a 3+-group vertex (e.g. a
+        // Cliff bank, a River bank, and Sea's own no-vote corner all meeting at once)
+        // fell through entirely to _computeRiverCliffDeltas' centroid-distance
+        // heuristic instead — confirmed live (2026-07-13, "Terrain Plot 28"): a Sea
+        // plot's corner landed on the two INNERMOST split points of a 4-point cluster
+        // instead of the two points actually flanking its own fan wedge, visibly
+        // pushing Sea's polygon into the neighbouring Cliff face's space.
+        const heIn = dcel.getHalfEdge(spliceHe.prev)
+        const predFaceId = heIn ? dcel.getHalfEdge(heIn.twin)?.face : null
+        const predGroup = predFaceId != null ? deltaByFaceVertex.get(`${predFaceId},${vertexId}`) : null
+        const heOutTwin = dcel.getHalfEdge(spliceHe.twin)
+        const succHe = heOutTwin ? dcel.getHalfEdge(heOutTwin.next) : null
+        const succFaceId = succHe ? succHe.face : null
+        const succGroup = succFaceId != null ? deltaByFaceVertex.get(`${succFaceId},${vertexId}`) : null
+        let groupA = predGroup, groupB = succGroup
+        if (!groupA || !groupB) {
+          // Couldn't resolve one side via true fan adjacency (edge of a boundary void,
+          // or a neighbour with no delta of its own there) — fall back to the old
+          // two-groups-in-arbitrary-order behaviour only when there really are exactly
+          // 2 groups total; otherwise skip rather than guess.
+          if (groups.length === 2) { [groupA, groupB] = groups }
+          else continue
+        }
+        if (groupA === groupB) continue   // this face's own wedge doesn't cross a bank transition — nothing to splice
 
-      // Validate BEFORE splicing: vA/vB sit at the BANKS' pullback offsets, whose
-      // magnitude was clamped against the LAND faces' own edge lengths
-      // (_pullBackPolygon's effHw) — never against the splice face's own geometry. A
-      // small splice face (the live "Plot 79" case: a 3-vertex Lake triangle; the same
-      // can happen for a small land corner plot at a confluence) has a mouth wedge
-      // smaller than those offsets, so the spliced loop crosses itself — a pure
-      // geometric overshoot the fan-order fix above can't prevent. Build the
-      // prospective polygon (v replaced by [vA, vB] in the splice face's current loop,
-      // matching exactly what splitVertexGeneral's splice produces) and only splice if
-      // it stays simple; otherwise fall back to the single-position split already baked
-      // into `deltas`, exactly as _pullBackPolygon itself falls back at land corners.
-      const baseV = dcel.points.get(vertexId)
-      const loopIds = dcel.walkFacePolygon(spliceHe.face)
-      const vIdx = loopIds.indexOf(vertexId)
-      if (!baseV || vIdx === -1) continue
-      const loopPts = loopIds.map(id => { const p = dcel.points.get(id); return p ? { x: p.x, y: p.y } : null })
-      if (loopPts.some(p => !p)) continue
-      const prospective = [
-        ...loopPts.slice(0, vIdx),
-        { x: baseV.x + groupA.dx, y: baseV.y + groupA.dy },
-        { x: baseV.x + groupB.dx, y: baseV.y + groupB.dy },
-        ...loopPts.slice(vIdx + 1),
-      ]
-      if (this._polygonSelfIntersects(prospective)) {
-        console.warn(`[confluence-splice] vertex ${vertexId}: spliced face would self-intersect (bank offsets exceed the face's local wedge) — falling back to single-position split`)
-        continue
+        // Validate BEFORE splicing: vA/vB sit at the BANKS' pullback offsets, whose
+        // magnitude was clamped against the LAND faces' own edge lengths
+        // (_pullBackPolygon's effHw) — never against the splice face's own geometry. A
+        // small splice face (the live "Plot 79" case: a 3-vertex Lake triangle; the same
+        // can happen for a small land corner plot at a confluence) has a mouth wedge
+        // smaller than those offsets, so the spliced loop crosses itself — a pure
+        // geometric overshoot the fan-order fix above can't prevent. Build the
+        // prospective polygon (v replaced by [vA, vB] in the splice face's current loop,
+        // matching exactly what splitVertexGeneral's splice produces) and only splice if
+        // it stays simple; otherwise fall back to the single-position split already baked
+        // into `deltas`, exactly as _pullBackPolygon itself falls back at land corners.
+        const baseV = dcel.points.get(vertexId)
+        const loopIds = dcel.walkFacePolygon(spliceHe.face)
+        const vIdx = loopIds.indexOf(vertexId)
+        if (!baseV || vIdx === -1) continue
+        const loopPts = loopIds.map(id => { const p = dcel.points.get(id); return p ? { x: p.x, y: p.y } : null })
+        if (loopPts.some(p => !p)) continue
+        const prospective = [
+          ...loopPts.slice(0, vIdx),
+          { x: baseV.x + groupA.dx, y: baseV.y + groupA.dy },
+          { x: baseV.x + groupB.dx, y: baseV.y + groupB.dy },
+          ...loopPts.slice(vIdx + 1),
+        ]
+        if (this._polygonSelfIntersects(prospective)) {
+          console.warn(`[confluence-splice] vertex ${vertexId}: spliced face would self-intersect (bank offsets exceed the face's local wedge) — falling back to single-position split`)
+          continue
+        }
+
+        try { dcel.splitVertexGeneral(vertexId, spliceHe, groupA, groupB, splitKind) }
+        catch (e) { console.warn(`[confluence-splice] splitVertexGeneral failed at vertex ${vertexId}: ${e.message} — falling back to single-position split`) }
       }
-
-      try { dcel.splitVertexGeneral(vertexId, spliceHe, groupA, groupB, splitKind) }
-      catch (e) { console.warn(`[confluence-splice] splitVertexGeneral failed at vertex ${vertexId}: ${e.message} — falling back to single-position split`) }
     }
 
     for (const vertexId of allVertexIds) {
@@ -1675,86 +1671,6 @@ export default class SetupPhase {
       )
     }
 
-    const riverCliffFaces = []
-
-    // N-way (3+) river/cliff confluence face insertion (plan "typed-giggling-giraffe"
-    // addendum, generalizing the 2-bank water-splice above to the ALL-OWN-VOTE land
-    // case — e.g. three River chains meeting at one point, with no Lake/Sea/no-vote
-    // face involved at all). Confirmed live as the structural NORM for a dense river
-    // network, not a rare edge case: every interior vertex of the coarse-region Voronoi
-    // graph is a 3-way corner by construction, so wherever all 3 incident edges happen
-    // to be typed River/Cliff, this is exactly what happens (13/13 of one real map's
-    // multi-chain corners were this case, zero were the 2-chain/no-vote case). The
-    // water-splice loop above never sees these — every incident face has its OWN vote,
-    // so _computeRiverCliffDeltas' own no-vote fallback (the only thing that used to
-    // populate `ambiguous`) never fires here; `ambiguous` is now populated for every
-    // 2+-group vertex regardless of vote status (see that function's doc comment) so
-    // this loop can find them. splitVertexSimple above already moved each incident
-    // face's own corner to its own group's split point independently — nothing yet
-    // connects them, so _buildRiverCliffFaces' bank-path walker sees a topological gap
-    // (branch/closed loop) at every such vertex. Insert a small closing face here,
-    // connecting each adjacent pair of split points with a real edge — exactly the
-    // "closing edge" _buildRiverCliffFaces' termini-closing check (closes(), via
-    // findHalfEdge) already looks for, so NO changes are needed there: each individual
-    // chain's own 2-bank assembly just finds a real edge where before it found nothing.
-    for (const [vertexId, groups] of ambiguous) {
-      if (groups.length < 3) continue   // 2-way is the water-splice loop above's job
-      const base = dcel.points.get(vertexId)
-      if (!base) continue
-      const splitPts = groups.map(group => {
-        const v = dcel.getOrCreateSplitVertex(vertexId, group, base.x + group.dx, base.y + group.dy, base.z ?? 0, splitKind)
-        return { id: v.id, x: v.x, y: v.y, group }
-      })
-      // Each split point's own pull direction (group.dx/dy) points roughly outward
-      // from the vertex into its own face — sorting by that angle reconstructs the
-      // same rotational order the faces themselves actually surround the vertex in.
-      splitPts.sort((a, b) => Math.atan2(a.group.dy, a.group.dx) - Math.atan2(b.group.dy, b.group.dx))
-      let orderedIds = splitPts.map(p => p.id)
-      let orderedPts = splitPts.map(p => ({ x: p.x, y: p.y }))
-      if (this._polygonSelfIntersects(orderedPts)) {
-        const revIds = [...orderedIds].reverse(), revPts = [...orderedPts].reverse()
-        if (this._polygonSelfIntersects(revPts)) {
-          console.warn(`[river-cliff-confluence] vertex ${vertexId}: neither winding of a ${groups.length}-way confluence face is simple — skipped, its chains fall back to stroke here`)
-          continue
-        }
-        orderedIds = revIds; orderedPts = revPts
-      }
-      // Pick a visual type from whichever adjacent chain is actually tagged here — a
-      // cosmetic default only, since this face is typically a near-zero-area sliver;
-      // correctness of the LAND geometry around it doesn't depend on this choice.
-      // pendingChainTags is captured further below in raw-edge-index form, but built
-      // fully before this loop runs — safe to search here too.
-      let assignedType = 'River'
-      const idSet = new Set(orderedIds)
-      for (const { heId, sourceEdgeId } of pendingChainTags) {
-        const he = dcel.getHalfEdge(heId)
-        if (!he || !idSet.has(he.origin)) continue
-        const t = this.gameStateManager.worldTerrainData?.edges?.[sourceEdgeId]?.assignedType
-        if (t) { assignedType = t; break }
-      }
-      try {
-        const face = dcel.insertFace(orderedIds, 'river-cliff-confluence', { assignedType })
-        riverCliffFaces.push(face)
-      } catch (e) {
-        console.warn(`[river-cliff-confluence] insertFace failed at vertex ${vertexId}: ${e.message} — skipped, its chains fall back to stroke here`)
-      }
-    }
-
-    // Execute the tagging plan captured BEFORE any splitting (see pendingChainTags'
-    // construction above). It must be captured pre-split because splitVertexGeneral
-    // INSERTS a half-edge into the spliced face's loop — a post-split hes[i] walk no
-    // longer aligns with raw edge index i for any spliced face (confirmed on a real
-    // save: corner faces with their own tagged river edges got arbitrary boundary
-    // edges tagged instead, producing phantom bank fragments kilometres off the
-    // centreline and 3-5 paths per chain). Half-edge IDENTITIES are stable across both
-    // split operators (splits only reassign origins or add new half-edges, never
-    // delete or renumber), so tagging the recorded ids after splitting is safe — and
-    // tagging must still happen after, so _buildRiverCliffFaces sees final origins.
-    if (edgeSourceIds) {
-      for (const { heId, sourceEdgeId } of pendingChainTags) dcel.tagChain(heId, sourceEdgeId)
-      riverCliffFaces.push(...this._buildRiverCliffFaces(dcel))
-    }
-
     const results = new Array(rawPolys.length).fill(null)
     let matchedCount = 0
     for (let fi = 0; fi < rawPolys.length; fi++) {
@@ -1770,14 +1686,7 @@ export default class SetupPhase {
       results[fi] = { pointIds, polygon }
     }
 
-    const riverCliffResults = riverCliffFaces.map(face => {
-      const hes = dcel._faceHalfEdges(face.id)
-      const pointIds = hes.map(he => he.origin)
-      const polygon = pointIds.map(id => { const p = registry.get(id); return p ? { x: p.x, y: p.y } : null }).filter(Boolean)
-      return { id: face.id, sourceEdgeId: face.sourceEdgeId, assignedType: face.assignedType, pointIds, polygon }
-    })
-
-    return { results, matchedCount, riverCliffFaces: riverCliffResults }
+    return { results, matchedCount }
   }
 
   // ADR-0020 Stage C (District Edge face Surfaces) — NOT YET IMPLEMENTED, stub only.
@@ -1799,278 +1708,127 @@ export default class SetupPhase {
     throw new Error('_assembleDistrictEdgeFacePoints: not implemented yet (ADR-0020 Stage C, awaiting go-ahead after red tests)')
   }
 
-  // Assemble a real DCEL Face for every River/Cliff chain whose half-edges got tagged
-  // above, from the bank chains its land faces' own splitVertexSimple pullback already
-  // produced (see plan "typed-giggling-giraffe" addendum). Every boundary segment
-  // (interior AND the two end-cap transitions) is a freshly-minted half-edge — NOT a
-  // reclaim of the land faces' own void placeholders, even for the interior runs:
-  // splitVertexSimple only ever reassigns `.origin`, it never touches
-  // `_heByDirectedPair`, so a tagged half-edge's `.twin` goes stale (still pointer-
-  // linked to whatever the OTHER bank's own half-edge became, not a void placeholder)
-  // the moment the two banks split independently. insertFace still produces a correct
-  // polygon regardless (it just mints fresh half-edges instead of reclaiming stale
-  // ones) — the loop this hands it is built entirely from the SAME split-vertex ids the
-  // land faces already resolved to, so it's still exactly the gap boundary by
-  // construction, just not literally sharing half-edge identity with the land faces.
-  // Confluence chains (3+ banks meeting, or an internal anomaly — see
-  // _extractRiverBankPaths) are skipped this pass — deliberately deferred pending a fix
-  // to splitVertexGeneral's known self-intersection bug (see plan) — they simply fall
-  // back to stroke rendering, same as any other face-construction failure below.
-  _buildRiverCliffFaces(dcel) {
-    const terrainData = this.gameStateManager.worldTerrainData
+  // Assemble a real Face for every River/Cliff chain DIRECTLY from the same per-point
+  // left/right boundary corners the Terrain-mode stroke already renders (see
+  // riverCliffBoundary.js/shared/polylineGeometry.js) — NOT inferred by walking the
+  // DCEL and reverse-engineering which land faces belong to which bank (the previous
+  // approach, removed: see plan "typed-giggling-giraffe" Addendum 2 Stage B "KNOWN
+  // ISSUE" — it could never reliably tell a genuine N-way region-tripoint confluence
+  // apart from an ordinary T-junction tagging gap, and inherited the LAND pullback's
+  // per-cell effHw clamp, whose magnitude depends on each terrain plot's own local edge
+  // length — producing visibly uneven river width wherever tessellation density varied
+  // along the chain, confirmed live 2026-07-12). This ribbon is a pure function of the
+  // chain's own polyline + a FIXED half-width, entirely independent of terrain-plot
+  // geometry, so it's constant-width by construction and handles a map-boundary
+  // terminus (a lone end with no junction override — left/right simply cap the strip,
+  // "proceed to the edge of the map") and an ordinary 2-way junction (computeJunctionData
+  // mitres each incident chain's own corner to the SAME shared point, so two chains'
+  // ribbons meet with zero gap — see this method's own confirmation via _polygonSelfIntersects,
+  // and _buildRiverCliffJunctionCaps for the rarer beveled 3+-way case) with NO special-
+  // casing needed here at all.
+  //
+  // Every corner position here is byte-identical to whatever position _pullBackPolygon
+  // already snapped the adjacent LAND faces' own corners to (both ultimately read the
+  // SAME computeRiverCliffBoundaries output — see _computeRiverCliffBoundaryData) — so
+  // mintDeduped's reuseExisting finds and reuses those land faces' own split-vertex ids
+  // at these exact positions, giving real registry-id sharing (gap-free adjacency by
+  // construction) with zero DCEL dependency.
+  //
+  // boundaries: the Map _computeRiverCliffBoundaryData returned (chainId -> per-point
+  // corners). edges: that same call's `edges` (chainId -> the River/Cliff worldTerrainData
+  // edge, for assignedType).
+  _buildRiverCliffFacesDirect(boundaries, edges) {
+    const registry = this.gameStateManager.pointRegistry
     const built = []
-    const allChains = dcel.getAllChains()
-    console.log(`[river-cliff-face] ${allChains.length} distinct river/cliff chain(s) tagged (${allChains.map(c => `${c.id}:${c.halfEdges.length}`).join(', ')})`)
-    for (const chain of allChains) {
-      const heIds = chain.halfEdges
-      if (heIds.length === 0) continue
-
-      const te = terrainData?.edges?.[chain.id]
-      if (!te) { console.warn(`[river-cliff-face] chain ${chain.id}: no matching worldTerrainData.edges entry — skipped`); continue }
-
-      // A genuine gap in chain-tagging — a fine terrain-plot edge that lies along this
-      // chain but didn't itself pass _matchedRiverCliffEdgeId's tolerance test (common
-      // right at a T-junction, where three coarse regions meet and the fine tessellation
-      // doesn't line up as cleanly with the region-boundary polyline — see
-      // _riverCliffSegments' doc comment) fragments ONE physical bank into two disjoint
-      // paths, not a genuine extra bank. Bridge any such small gaps by merging paths
-      // whose nearest endpoints sit within ordinary matching tolerance BEFORE requiring
-      // exactly 2 — a true third bank (a real confluence) has its endpoints nowhere
-      // near this close to either fragment, so this doesn't risk conflating them.
-      let paths = this._extractRiverBankPaths(dcel, heIds)
-      if (paths && paths.length > 2) paths = this._mergeNearbyPathFragments(dcel, paths, SetupPhase.RIVER_CLIFF_MATCH_TOL)
-      if (!paths || paths.length !== 2) {
-        console.warn(`[river-cliff-face] chain ${chain.id} (${te.assignedType}, ${heIds.length} tagged edge(s)): got ${paths ? paths.length + ' path(s)' : 'an anomaly (branch/closed loop)'}, need exactly 2 — skipped, falls back to stroke`)
-        // TEMPORARY diagnostic (2026-07-11, plan Addendum 2 Stage B follow-up): the
-        // wrong-count case (extraction SUCCEEDED, just not into exactly 2 paths — e.g.
-        // real-save chain "10-12", "got 1 path(s)") isn't covered by
-        // _extractRiverBankPaths' own null-case dump, since it never returns null here.
-        // Print the actual resolved paths so a merge/miscount is visible directly.
-        // (The null case is already dumped inside _extractRiverBankPaths itself.)
-        if (paths) {
-          const pt = (id) => { const p = dcel.points.get(id); return p ? `${id}@(${p.x.toFixed(3)},${p.y.toFixed(3)})` : `${id}@MISSING` }
-          paths.forEach((p, i) => console.warn(`  path ${i} (${p.length} vertices): ${p.map(pt).join(' -> ')}`))
+    for (const [chainId, corners] of boundaries) {
+      const edge = edges[chainId]
+      if (!edge) continue
+      const ptIds = edge.pointIds || []
+      const idxs = []
+      const lefts = [], rights = []
+      for (let i = 0; i < corners.length; i++) {
+        if (!corners[i]) continue
+        idxs.push(i)
+        lefts.push({ x: corners[i].left.x, y: corners[i].left.y })
+        rights.push({ x: corners[i].right.x, y: corners[i].right.y })
+      }
+      if (lefts.length < 2) continue
+      let loopPts = [...lefts, ...[...rights].reverse()]
+      if (this._polygonSelfIntersects(loopPts)) {
+        // Confirmed live (2026-07-13): a chain can self-intersect at the SAME spot on
+        // EVERY pullback pass regardless of surrounding geometry — a fixed, local
+        // problem (segments short relative to the fixed half-width), not something
+        // more data will resolve. computeEdgeCorners' miterLimitDist bounds a single
+        // corner's own spike but doesn't account for TWO nearby corners' offset
+        // regions crossing each other across a short segment between them — the same
+        // class of bug _pullBackPolygon's own effHw already guards against for land
+        // polygons. Rather than drop the whole chain (a black gap — the stroke
+        // fallback doesn't exist in District mode), progressively shrink ONLY the
+        // INTERIOR corners (k=1..len-2) toward the chain's own raw centreline point —
+        // the first/last corners are left untouched since those are what neighbouring
+        // chains'/land faces' own already-committed corners are matched against
+        // (shrinking them would just move the gap to the junction instead of fixing it).
+        for (let attempt = 0; attempt < 4 && this._polygonSelfIntersects(loopPts); attempt++) {
+          const t = 0.5 ** (attempt + 1)
+          for (let k = 1; k < idxs.length - 1; k++) {
+            const raw = registry.get(ptIds[idxs[k]])
+            if (!raw) continue
+            const c = corners[idxs[k]]
+            lefts[k]  = { x: raw.x + (c.left.x  - raw.x) * t, y: raw.y + (c.left.y  - raw.y) * t }
+            rights[k] = { x: raw.x + (c.right.x - raw.x) * t, y: raw.y + (c.right.y - raw.y) * t }
+          }
+          loopPts = [...lefts, ...[...rights].reverse()]
         }
-        continue
-      }
-
-      const [bankA, bankB] = paths
-
-      const dist = (idA, idB) => {
-        const a = dcel.points.get(idA), b = dcel.points.get(idB)
-        if (!a || !b) return Infinity
-        return Math.hypot(a.x - b.x, a.y - b.y)
-      }
-      const aStart = bankA[0], aEnd = bankA[bankA.length - 1]
-      const bStart = bankB[0], bEnd = bankB[bankB.length - 1]
-      const tol = SetupPhase.RIVER_CLIFF_MATCH_TOL * 4
-      // A pairing "closes" either by ordinary coordinate proximity (a plain map-boundary
-      // terminus, where both banks independently clip to nearly the same point) OR by an
-      // already-existing direct half-edge between the two ids (a confluence terminus:
-      // splitVertexGeneral already spliced this exact vA/vB pair into the water/mountain/
-      // ice-sheet face's loop, joined by a real "mouth opening" edge — deliberately NOT
-      // coincident in space; see DCEL.splitVertexGeneral's doc comment). Checking both
-      // directions of findHalfEdge covers both the water face's own owned side (eIn) and
-      // the void placeholder side (eOut) this river face is meant to reclaim, whichever
-      // one a given pairing happens to hit. Previously this only accepted the coordinate-
-      // proximity case, so every genuine confluence — river meeting Sea/Lake/Ice-Sheet/
-      // Mountain — fell through to "skipped, falls back to stroke" even after
-      // splitVertexGeneral correctly spliced it; that stroke fallback doesn't exist in
-      // District mode, so the whole chain visibly disappeared there (plan Addendum 2,
-      // Stage B remaining-gap note).
-      const closes = (idA, idB) => dist(idA, idB) < tol
-        || !!dcel.findHalfEdge(idA, idB) || !!dcel.findHalfEdge(idB, idA)
-      let bankBOrdered = null
-      if (closes(aEnd, bStart) && closes(bEnd, aStart)) bankBOrdered = bankB
-      else if (closes(aEnd, bEnd) && closes(bStart, aStart)) bankBOrdered = [...bankB].reverse()
-      if (!bankBOrdered) {
-        console.warn(`[river-cliff-face] chain ${chain.id} (${te.assignedType}): 2 banks found (${bankA.length}/${bankB.length} vertices) but termini don't close (coord-proximity or confluence edge) within tol=${tol.toFixed(2)} — d(aEnd,bStart)=${dist(aEnd, bStart).toFixed(2)} d(bEnd,aStart)=${dist(bEnd, aStart).toFixed(2)} d(aEnd,bEnd)=${dist(aEnd, bEnd).toFixed(2)} d(bStart,aStart)=${dist(bStart, aStart).toFixed(2)} — skipped`)
-        continue
-      }
-
-      let loop = dedupeConsecutiveIds([...bankA, ...bankBOrdered])
-      if (loop.length < 3) continue
-
-      // insertFace only validates topology (no conflicting directed edges) — it does
-      // NOT check that the loop is a simple polygon. A bank-merge bridging a genuine
-      // gap (see _mergeNearbyPathFragments) could in principle produce a technically-
-      // valid-but-crossed loop; that would silently succeed here and render as exactly
-      // the black-wedge/bad-triangulation artifact this whole feature exists to
-      // eliminate. Reject it the same way _pullBackPolygon already does for the land
-      // faces' own pullback, rather than ship a broken mesh.
-      const loopPoly = loop.map(id => dcel.points.get(id)).filter(Boolean)
-      if (loopPoly.length !== loop.length || this._polygonSelfIntersects(loopPoly)) {
-        console.warn(`[river-cliff-face] chain ${chain.id} (${te.assignedType}): assembled loop self-intersects (or has an unresolved vertex) — skipped, falls back to stroke`)
-        continue
-      }
-
-      // Orientation: where a confluence splice happened (splitVertexGeneral), the
-      // directed pair vA→vB is OWNED by the corner face (eIn) and vB→vA is the void
-      // placeholder (eOut) deliberately left for this river face to reclaim. The bank
-      // concatenation above has no idea which rotational sense it produced — traversing
-      // the owned direction makes insertFace throw "directed edge already owned"
-      // (confirmed on a real save: 5/13 chains, always at split-vertex pairs, which
-      // only the splice ever registers). Count owned-direction traversals; if any,
-      // reverse the whole loop (which flips every traversal to the opposite direction)
-      // and only proceed if THAT direction is collision-free.
-      const ownedCollisions = (ids) => {
-        let n = 0
-        for (let i = 0; i < ids.length; i++) {
-          const he = dcel.findHalfEdge(ids[i], ids[(i + 1) % ids.length])
-          if (he && he.face !== null) n++
+        if (this._polygonSelfIntersects(loopPts)) {
+          console.warn(`[river-cliff-face] chain ${chainId}: ribbon still self-intersects after narrowing interior corners — skipped, no face built`)
+          continue
         }
-        return n
+        console.warn(`[river-cliff-face] chain ${chainId}: interior corners narrowed to avoid self-intersection (segments short relative to half-width there)`)
       }
-      // When BOTH orientations traverse owned directed pairs (two confluence splices
-      // of opposite local winding along the same chain), no single winding can reclaim
-      // both void placeholders — insert the face DETACHED instead (valid polygon,
-      // valid internal loop, just not stitched into the neighbours' pointer graph).
-      // Rendering is exactly right either way; the manifold stitching arrives with
-      // Stage C's topology-native generation.
-      let detached = false
-      if (ownedCollisions(loop) > 0) {
-        const reversed = [...loop].reverse()
-        if (ownedCollisions(reversed) === 0) loop = reversed
-        else detached = true
-      }
-
-      try {
-        const face = dcel.insertFace(loop, 'river-cliff-face', { assignedType: te.assignedType, sourceEdgeId: chain.id }, { detached })
-        built.push(face)
-      } catch (e) {
-        console.warn(`[river-cliff-face] insertFace failed for chain ${chain.id}: ${e.message}`)
-      }
+      // Small tolerance, not exact equality: guards against float noise between this
+      // call and the land faces' own use of the same corner values, without risking a
+      // false merge (river/cliff half-width is 0.35 — 0.01 is nowhere near that scale).
+      const pointIds = registry.mintDeduped(loopPts, 'terrain-split', 0.01, { reuseExisting: true })
+      built.push({ id: chainId, sourceEdgeId: chainId, assignedType: edge.assignedType, pointIds, polygon: loopPts })
     }
     return built
   }
 
-  // Bridge small gaps in path-extraction (see _buildRiverCliffFaces' call site) by
-  // repeatedly merging whichever pair of fragments has the closest pair of endpoints,
-  // as long as that distance is within tol — stops as soon as no pair qualifies, so a
-  // genuine third bank (whose endpoints are nowhere near this close to either fragment)
-  // is correctly left alone rather than wrongly stitched in. Tries all 4 end-to-end
-  // orientations (a fragment's own direction is arbitrary relative to its neighbor's).
-  _mergeNearbyPathFragments(dcel, paths, tol) {
-    const frags = paths.map(p => [...p])
-    const dist = (idA, idB) => {
-      const a = dcel.points.get(idA), b = dcel.points.get(idB)
-      if (!a || !b) return Infinity
-      return Math.hypot(a.x - b.x, a.y - b.y)
-    }
-    let progress = true
-    while (progress && frags.length > 2) {
-      progress = false
-      let bestI = -1, bestJ = -1, bestD = tol, bestMode = null
-      for (let i = 0; i < frags.length; i++) {
-        for (let j = i + 1; j < frags.length; j++) {
-          const a = frags[i], b = frags[j]
-          const combos = [
-            ['end-start', dist(a[a.length - 1], b[0])],
-            ['end-end', dist(a[a.length - 1], b[b.length - 1])],
-            ['start-start', dist(a[0], b[0])],
-            ['start-end', dist(a[0], b[b.length - 1])],
-          ]
-          for (const [mode, d] of combos) {
-            if (d < bestD) { bestD = d; bestI = i; bestJ = j; bestMode = mode }
-          }
-        }
-      }
-      if (bestI === -1) break
-      const a = frags[bestI], b = frags[bestJ]
-      let combined
-      if (bestMode === 'end-start') combined = [...a, ...b]
-      else if (bestMode === 'end-end') combined = [...a, ...[...b].reverse()]
-      else if (bestMode === 'start-start') combined = [...[...a].reverse(), ...b]
-      else combined = [...b, ...a]   // start-end: b's end meets a's start
-      frags.splice(bestJ, 1)
-      frags.splice(bestI, 1)
-      frags.push(combined)
-      progress = true
-    }
-    return frags
-  }
-
-  // Partition a chain's ENTIRE tagged half-edge set (both banks together — no
-  // pre-classification) into disjoint simple paths, purely by vertex connectivity:
-  // each half-edge contributes the step he.origin -> he.next.origin (its own current,
-  // post-split endpoints — the next vertex around the SAME land face's own loop, which
-  // for a lone matched edge is just its other endpoint; for a face with two consecutive
-  // matched edges, e.g. a bend, this naturally chains both without extra work). NOT via
-  // `.twin` — see _buildRiverCliffFaces' doc comment on why that pointer is stale here.
+  // Fill the small fan-shaped gap a BEVELED (narrow-angle) 3+-way junction leaves
+  // between adjacent chains' ribbons — see computeJunctionData's doc comment: a fully
+  // mitered junction needs no cap at all (adjacent ribbons already meet at the exact
+  // same point by construction, see _buildRiverCliffFacesDirect), this only ever
+  // produces a real, visible polygon at a genuinely narrow-angle corner.
   //
-  // This is deliberately NOT geometric (no axis/direction heuristic): bank-A's split
-  // vertices are NEVER shared with bank-B's (different push-group -> different
-  // getOrCreateSplitVertex id, even at the same original baseId — see
-  // GroundPointRegistry.getOrCreateSplit's reference-identity memoization), so the
-  // combined graph across BOTH banks' half-edges already decomposes into exactly one
-  // connected simple path per physical bank, with zero geometric reasoning needed —
-  // robust to arbitrarily winding/zigzagging chains, unlike an earlier version of this
-  // method that classified banks via a single fixed chain-axis cross-product and failed
-  // on sharp back-to-back bends (confirmed live: most chains fell back to stroke
-  // rendering instead of building a face).
-  //
-  // Returns an array of paths (each an ordered vertex-id array) — length 2 for a plain
-  // 2-bank stretch, 3+ at a confluence (not handled by the caller this pass), or null
-  // if any vertex has out-degree >1 (a genuine anomaly, not just "wrong bucket" — with
-  // banks never sharing vertices, this shouldn't happen for a well-formed chain) or if
-  // every vertex has an incoming edge (a closed loop, e.g. a river encircling an
-  // island — not handled this pass).
-  // TEMPORARY diagnostic (2026-07-11, plan Addendum 2 Stage B follow-up): dumps every
-  // tagged half-edge's origin -> next.origin step, with coordinates, whenever this
-  // returns null — to see the actual shape of a failing chain (e.g. real-save chain
-  // "6-9", Ice Sheet/City Cliff, consistently "anomaly (branch/closed loop)" with 10
-  // tagged edges) instead of guessing. Remove once that's root-caused.
-  _dumpBankPathDebug(dcel, heIds, reason) {
-    const pt = (id) => { const p = dcel.points.get(id); return p ? `${id}@(${p.x.toFixed(3)},${p.y.toFixed(3)})` : `${id}@MISSING` }
-    console.warn(`[bank-path-debug] ${reason} — ${heIds.length} tagged half-edge(s):`)
-    for (const heId of heIds) {
-      const he = dcel.getHalfEdge(heId)
-      const nextHe = he && dcel.getHalfEdge(he.next)
-      console.warn(`  he ${heId}: face=${he?.face} origin=${he ? pt(he.origin) : 'MISSING'} -> next.origin=${nextHe ? pt(nextHe.origin) : 'MISSING'}`)
-    }
-  }
-
-  _extractRiverBankPaths(dcel, heIds) {
-    const next = new Map()
-    const hasIncoming = new Set()
-    for (const heId of heIds) {
-      const he = dcel.getHalfEdge(heId)
-      const nextHe = he && dcel.getHalfEdge(he.next)
-      if (!he || !nextHe) return null
-      if (next.has(he.origin)) {
-        this._dumpBankPathDebug(dcel, heIds, `genuine branch at vertex ${he.origin}`)
-        return null   // genuine branch — bail on the whole chain
+  // fillsOut: the Map _computeRiverCliffBoundaryData returned (ptId -> {boundaryPts,
+  // edgeIds, center}). edges: chainId -> worldTerrainData edge, for a cosmetic
+  // assignedType pick (this face is typically a near-zero-area sliver; correctness of
+  // the surrounding LAND geometry never depends on this choice).
+  _buildRiverCliffJunctionCaps(fillsOut, edges) {
+    const registry = this.gameStateManager.pointRegistry
+    const built = []
+    for (const [ptId, data] of fillsOut) {
+      const pts = (data.boundaryPts || []).filter(p => p && isFinite(p.x))
+      // Drop consecutive near-duplicate points (a fully/partly mitered slot's capPt
+      // coincides with its neighbour's) — left as literal duplicates, these would
+      // otherwise read as zero-length edges to _polygonSelfIntersects.
+      const deduped = []
+      for (const p of pts) {
+        const last = deduped[deduped.length - 1]
+        if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 1e-6) deduped.push(p)
       }
-      next.set(he.origin, nextHe.origin)
-      hasIncoming.add(nextHe.origin)
-    }
-
-    const starts = [...next.keys()].filter(id => !hasIncoming.has(id))
-    if (starts.length === 0) {
-      this._dumpBankPathDebug(dcel, heIds, 'closed loop (every vertex has an incoming edge, no start found)')
-      return null   // every vertex has incoming — closed loop(s), not handled this pass
-    }
-
-    const paths = []
-    let totalSteps = 0
-    const guard = next.size + 1
-    for (const start of starts) {
-      const path = [start]
-      let cur = start
-      for (let i = 0; i < guard; i++) {
-        const dest = next.get(cur)
-        if (dest == null) break
-        path.push(dest)
-        cur = dest
+      if (deduped.length >= 2 && Math.hypot(deduped[0].x - deduped[deduped.length - 1].x, deduped[0].y - deduped[deduped.length - 1].y) < 1e-6) deduped.pop()
+      if (deduped.length < 3) continue   // fully mitered (or degenerate) — nothing to fill
+      if (this._polygonSelfIntersects(deduped)) {
+        console.warn(`[river-cliff-junction-cap] point ${ptId}: fan-cap polygon self-intersects — skipped`)
+        continue
       }
-      totalSteps += path.length - 1
-      paths.push(path)
+      const firstEdgeId = [...data.edgeIds][0]
+      const assignedType = edges[firstEdgeId]?.assignedType || 'River'
+      const pointIds = registry.mintDeduped(deduped, 'terrain-split', 0.01, { reuseExisting: true })
+      built.push({ id: `junction-${ptId}`, sourceEdgeId: firstEdgeId, assignedType, pointIds, polygon: deduped })
     }
-    if (totalSteps !== next.size) {
-      this._dumpBankPathDebug(dcel, heIds, `partial coverage: walked ${totalSteps}/${next.size} steps across ${paths.length} path(s) (starts: ${starts.join(',')})`)
-      return null
-    }
-    return paths   // every edge accounted for exactly once
+    return built
   }
 
   // A district's boundary is always a direct copy of its originating terrain plot's own
@@ -2457,7 +2215,7 @@ export default class SetupPhase {
     // its doc comment), this half-width is what districts get too — 0.35 keeps the same
     // block/plot-tracing clearance margin that value was originally tuned for.
     const RIVER_CLIFF_HALF_WIDTH = 0.35
-    const boundaryById = this._riverCliffBoundaryById(RIVER_CLIFF_HALF_WIDTH)
+    const { byId: boundaryById, boundaries, fillsOut, edges: riverCliffEdges } = this._computeRiverCliffBoundaryData(RIVER_CLIFF_HALF_WIDTH)
     const terrainPlots = this.gameStateManager.worldTerrainData?.terrainPlots || []
     const registry = this.gameStateManager.pointRegistry
 
@@ -2474,7 +2232,7 @@ export default class SetupPhase {
     const rawPolys = terrainPlots.map(c => c._rawPolygon)
     const rawIds = terrainPlots.map(c => c._rawPointIds)
     const rawRegionIds = terrainPlots.map(c => c.parentRegionId)
-    const { deltas, ambiguous, edgeSourceIds, hasOwnVote } = this._computeRiverCliffDeltas(rawPolys, rawIds, boundaryById, RIVER_CLIFF_HALF_WIDTH, rawRegionIds)
+    const { deltas, ambiguous, hasOwnVote } = this._computeRiverCliffDeltas(rawPolys, rawIds, boundaryById, RIVER_CLIFF_HALF_WIDTH, rawRegionIds)
 
     // Re-enabled (Stage B, plan Addendum 2): the second splitVertexGeneral failure —
     // after the fan-ordering fix — was root-caused as geometric overshoot (bank offsets
@@ -2488,7 +2246,7 @@ export default class SetupPhase {
       const t = terrainPlots[fi]?.assignedType
       return t === 'Lake' || t === 'Sea'
     }
-    const { results, matchedCount, riverCliffFaces } = this._dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, 'terrain-split', isWaterByIndex, edgeSourceIds, hasOwnVote)
+    const { results, matchedCount } = this._dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, 'terrain-split', isWaterByIndex, hasOwnVote)
 
     for (let ci = 0; ci < terrainPlots.length; ci++) {
       const result = results[ci]
@@ -2497,12 +2255,20 @@ export default class SetupPhase {
       terrainPlots[ci].polygon = result.polygon
     }
 
-    // Real, gap-free filled Faces (see plan "typed-giggling-giraffe" addendum) for
-    // every River/Cliff stretch that isn't a confluence — the client renders these like
-    // Lake/Sea (TerrainRenderer.buildRegionMesh) instead of stroking a polyline over the
-    // gap, which is what produced the black-spike mismatch bugs. A chain that couldn't
-    // be built (confluence, or any other skip in _buildRiverCliffFaces) just isn't in
+    // Real, gap-free filled Faces (see plan "typed-giggling-giraffe" addendum, and
+    // _buildRiverCliffFacesDirect's doc comment for why this is now built directly from
+    // the chain's own boundary corners instead of inferred from DCEL topology) for
+    // every River/Cliff stretch — the client renders these like Lake/Sea
+    // (TerrainRenderer.buildRegionMesh) instead of stroking a polyline over the gap,
+    // which is what produced the black-spike mismatch bugs. Built AFTER
+    // _dcelPullbackMaterialize (above), so mintDeduped's reuseExisting can find and
+    // reuse the LAND faces' own split-vertex ids at these exact corner positions. A
+    // chain whose ribbon self-intersects (or a junction cap that does) just isn't in
     // this array and falls back to stroke rendering, same as before this change.
+    const riverCliffFaces = [
+      ...this._buildRiverCliffFacesDirect(boundaries, riverCliffEdges),
+      ...this._buildRiverCliffJunctionCaps(fillsOut, riverCliffEdges),
+    ]
     if (this.gameStateManager.worldTerrainData) this.gameStateManager.worldTerrainData.riverCliffFaces = riverCliffFaces
 
     this._syncLinearFeatureRegions(riverCliffFaces)

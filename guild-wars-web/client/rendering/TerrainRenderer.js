@@ -27,11 +27,18 @@ export default class TerrainRenderer {
     this.scene = scene
     this.showDebug = false
     this.debugObjects = []
-    this._terrainCenterMeshes = []   // red spheres at region seed points
+    this._terrainCenterMeshes = []   // red spheres at (coarse) region seed points
     this._terrainVertexMeshes = []   // green boxes at polygon vertices
+    this._terrainPlotCenterMeshes = []   // orange spheres at raw terrain PLOT (fine cell) seed points
+    this._surfaceCornerMeshes = []   // magenta diamonds at every distinct terrain-plot/river-cliff-face Surface corner (post-pullback, exact registry ids)
 
     this._terrainCentersVisible = true
     this._terrainSeedsVisible   = true
+    this._terrainPlotCentersVisible = true
+    // Default OFF (2026-07-13, per explicit request) — every terrain plot corner is a
+    // LOT of markers (150 cells × ~6 corners each, largely overlapping neighbours'
+    // corners at shared edges) and would otherwise clutter the view by default.
+    this._surfaceCornersVisible = false
 
     this.terrainData = null
     this.worldSize = 50
@@ -96,6 +103,8 @@ export default class TerrainRenderer {
     this.showDebug = show
     for (const m of this._terrainCenterMeshes) m.visible = show && this._terrainCentersVisible
     for (const m of this._terrainVertexMeshes) m.visible = show && this._terrainSeedsVisible
+    for (const m of this._terrainPlotCenterMeshes) m.visible = show && this._terrainPlotCentersVisible
+    for (const m of this._surfaceCornerMeshes) m.visible = show && this._surfaceCornersVisible
   }
 
   setTerrainCentersVisible(on) {
@@ -108,9 +117,21 @@ export default class TerrainRenderer {
     for (const m of this._terrainVertexMeshes) m.visible = this.showDebug && on
   }
 
+  setTerrainPlotCentersVisible(on) {
+    this._terrainPlotCentersVisible = on
+    for (const m of this._terrainPlotCenterMeshes) m.visible = this.showDebug && on
+  }
+
+  setSurfaceCornersVisible(on) {
+    this._surfaceCornersVisible = on
+    for (const m of this._surfaceCornerMeshes) m.visible = this.showDebug && on
+  }
+
   clearDebugObjects() {
     this._clearDebugGroup(this._terrainCenterMeshes)
     this._clearDebugGroup(this._terrainVertexMeshes)
+    this._clearDebugGroup(this._terrainPlotCenterMeshes)
+    this._clearDebugGroup(this._surfaceCornerMeshes)
     for (const obj of this.debugObjects) this.scene.remove(obj)
     this.debugObjects = []
   }
@@ -234,16 +255,26 @@ export default class TerrainRenderer {
     // covered by a filled DCEL face — the face pipeline still has unresolved visual
     // artifacts at bends/confluences (see plan "typed-giggling-giraffe" Addendum 2 Stage
     // B notes) that the fixed-width stroke has always simply painted over. That revert
-    // is scoped to the stroke overlay only; the filled faces themselves are still built
-    // here so District mode (which tears down the stroke overlay entirely via
-    // setCityModeActive) has something to show for River/Cliff before GroundRenderer's
-    // own district-plot fill takes over (see deleteNonCityTerrainPlots, which retires
-    // these meshes the moment that handoff happens — a restored call here was
-    // accidentally dropped in the same edit that reverted the stroke overlay, leaving a
-    // gap where River/Cliff rendered as nothing at all during District Setup, before any
-    // district had a street graph).
-    this.renderRiverCliffFaces(riverCliffFaces)
+    // is scoped to the stroke overlay only; the filled faces are still built, but ONLY
+    // once District mode is active (_cityModeActive — see setCityModeActive), so District
+    // mode (which tears down the stroke overlay entirely) has something to show for
+    // River/Cliff before GroundRenderer's own district-plot fill takes over (see
+    // deleteNonCityTerrainPlots, which retires these meshes the moment that handoff
+    // happens). Gating this on _cityModeActive is itself a fix (2026-07-12): a prior
+    // restoration of this call ran it unconditionally, which meant Terrain Setup got the
+    // stroke AND the filled face simultaneously — two overlapping meshes at nearly the
+    // same position, confirmed live as a z-fighting/hatching artifact along every
+    // river/cliff edge during Terrain Setup, not just a District-mode gap.
+    // Still call renderRiverCliffFaces UNCONDITIONALLY (with [] outside city mode, not
+    // skipped outright) — it's the only place that clears this.riverCliffFaceMeshes, so
+    // skipping it entirely in Terrain mode left a PREVIOUS game's meshes (still in the
+    // scene) stranded forever, most visible right after New Game (confirmed live:
+    // disconnected river shards from the discarded game scattered over the freshly
+    // generated map).
+    this.renderRiverCliffFaces(this._cityModeActive ? riverCliffFaces : [])
     this.drawVoronoiCenters(regions)
+    this.drawTerrainPlotCenters(terrainPlots)
+    this.drawSurfaceCorners(terrainPlots, riverCliffFaces)
     if (edges && Object.keys(edges).length > 0) {
       this.renderEdges(edges)
     }
@@ -412,7 +443,14 @@ export default class TerrainRenderer {
   // it from silently re-creating the stroke meshes setCityModeActive just tore down.
   setCityModeActive(active) {
     this._cityModeActive = active
-    if (active) this.terrainPolylines?.dispose()
+    if (active) {
+      this.terrainPolylines?.dispose()
+      // Build river/cliff faces right away at the transition — the gated call in
+      // setTerrainData (see its doc comment) only fires on the NEXT full sync, which
+      // would otherwise leave District mode showing nothing for River/Cliff for one
+      // frame/sync gap right after Terrain Setup finishes.
+      this.renderRiverCliffFaces(this.terrainData?.riverCliffFaces || [])
+    }
   }
 
   renderEdges(edges) {
@@ -902,7 +940,17 @@ export default class TerrainRenderer {
     return closestEdge
   }
 
+  // Hoverable hit-test for the green vertex boxes drawVoronoiCenters renders — one per
+  // region-polygon vertex, i.e. every terrain edge point, not just corners shared by
+  // 2+ regions (see the relaxed regionIds.length check below; a map-boundary vertex
+  // legitimately belongs to only ONE region's polygon and used to be silently
+  // unhoverable despite being rendered — confirmed live, 2026-07-13). Respects the
+  // "Terrain Edge Points" debug-layer checkbox (_terrainSeedsVisible), same as every
+  // other mesh-backed debug hit-test, even though this one is a data scan rather than a
+  // mesh iteration (the dedup-by-coordinate + regionIds/vertexIndices grouping this
+  // already does is worth keeping over a flat per-mesh lookup).
   getTerrainCornerAtWorldPos(worldX, worldY, threshold = 0.5) {
+    if (!this.showDebug || !this._terrainSeedsVisible) return null
     if (!this.terrainData || !this.terrainData.regions) return null
     const cornerMap = new Map()
     for (let i = 0; i < this.terrainData.regions.length; i++) {
@@ -942,16 +990,29 @@ export default class TerrainRenderer {
 
   // ── Debug ───────────────────────────────────────────────────────────────────
 
+  // depthTest:false + a high renderOrder so these markers always draw on top of the
+  // (opaque) terrain/district fills regardless of Y-offset/z-fighting — confirmed live
+  // (2026-07-12) that terrain centre points were rendering but visually swallowed by
+  // whatever fill happened to be layered above them at Y=0.1; every other debug marker
+  // in this codebase (block/plot centres, GroundRenderer.js) already gets away with a
+  // plain depth-tested mesh only because it's never actually tested against a same-Y
+  // opaque neighbour in practice — belt-and-suspenders here since terrain centres sit
+  // over the densest, most contended fill layer (raw Voronoi cells + river/cliff faces).
+  _debugMarkerMaterial(color) {
+    return new THREE.MeshBasicMaterial({ color, depthTest: false })
+  }
+
   drawVoronoiCenters(regions) {
     this._clearDebugGroup(this._terrainCenterMeshes)
     this._clearDebugGroup(this._terrainVertexMeshes)
 
     const seedGeo = new THREE.SphereGeometry(0.075, 8, 8)
-    const seedMat = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    const seedMat = this._debugMarkerMaterial(0xff0000)
     regions.forEach(region => {
       const seed = new THREE.Mesh(seedGeo, seedMat)
       seed.position.set(region.seedPoint.x, 0.1, region.seedPoint.y)
-      seed.userData = { kind: 'terrainCenter', regionId: region.id, assignedType: region.assignedType, x: region.seedPoint.x, y: region.seedPoint.y }
+      seed.renderOrder = 999
+      seed.userData = { kind: 'terrainCenter', id: region.id, regionId: region.id, assignedType: region.assignedType, x: region.seedPoint.x, y: region.seedPoint.y }
       seed.visible = this.showDebug && this._terrainCentersVisible
       this.scene.add(seed)
       this.debugObjects.push(seed)
@@ -959,17 +1020,115 @@ export default class TerrainRenderer {
     })
 
     const vertGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05)
-    const vertMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+    const vertMat = this._debugMarkerMaterial(0x00ff00)
     regions.forEach(region => {
       region.polygon.forEach(vertex => {
         const vert = new THREE.Mesh(vertGeo, vertMat)
         vert.position.set(vertex.x, 0.1, vertex.y)
+        vert.renderOrder = 999
         vert.visible = this.showDebug && this._terrainSeedsVisible
         this.scene.add(vert)
         this.debugObjects.push(vert)
         this._terrainVertexMeshes.push(vert)
       })
     })
+  }
+
+  // Fine terrain PLOT (raw Voronoi cell, ~150 per map) centre points — distinct from
+  // drawVoronoiCenters' COARSE region seeds (~15 merged regions). Added (2026-07-12) so
+  // individual terrain-plot ids/positions can be read off directly in-game (hover — see
+  // WorldRenderer.getTerrainPlotCenterAtWorldPos/InputHandler) instead of guessing them
+  // from a screenshot, for diagnosing river/cliff chain-id-specific pullback bugs.
+  drawTerrainPlotCenters(terrainPlots) {
+    this._clearDebugGroup(this._terrainPlotCenterMeshes)
+    const geo = new THREE.SphereGeometry(0.045, 6, 6)
+    const mat = this._debugMarkerMaterial(0xff9900)
+    for (const cell of (terrainPlots || [])) {
+      if (!cell.seedPoint) continue
+      const m = new THREE.Mesh(geo, mat)
+      m.position.set(cell.seedPoint.x, 0.1, cell.seedPoint.y)
+      m.renderOrder = 999
+      m.userData = { kind: 'terrainPlotCenter', id: cell.id, parentRegionId: cell.parentRegionId, assignedType: cell.assignedType, x: cell.seedPoint.x, y: cell.seedPoint.y }
+      m.visible = this.showDebug && this._terrainPlotCentersVisible
+      this.scene.add(m)
+      this.debugObjects.push(m)
+      this._terrainPlotCenterMeshes.push(m)
+    }
+  }
+
+  getTerrainPlotCenterAtWorldPos(worldX, worldY, threshold = 0.08) {
+    const thrSq = threshold * threshold
+    for (const m of this._terrainPlotCenterMeshes) {
+      if (!m.visible) continue
+      const dx = worldX - m.position.x, dy = worldY - m.position.z
+      if (dx * dx + dy * dy < thrSq) return m.userData
+    }
+    return null
+  }
+
+  // Mesh-based hit test against the COARSE region centre markers (see drawVoronoiCenters)
+  // — distinct from getTerrainSeedAtWorldPos, which does its own data-based scan over
+  // this.terrainData.regions for Terrain mode's dedicated hover and returns a different
+  // shape ({regionId, position}); this one returns the mesh's userData directly
+  // ({kind, id, regionId, assignedType, x, y}), matching getTerrainPlotCenterAtWorldPos
+  // so city-mode's debug dot dispatch (InputHandler) can treat both uniformly.
+  getTerrainCenterAtWorldPos(worldX, worldY, threshold = 0.12) {
+    const thrSq = threshold * threshold
+    for (const m of this._terrainCenterMeshes) {
+      if (!m.visible) continue
+      const dx = worldX - m.position.x, dy = worldY - m.position.z
+      if (dx * dx + dy * dy < thrSq) return m.userData
+    }
+    return null
+  }
+
+  // Every distinct Surface CORNER currently in play — terrain-plot polygons (post-
+  // pullback) and river/cliff face ribbons — deduped by exact registry point id (not
+  // coordinate tolerance, matching this whole debugging pass's "use verbatim ids"
+  // direction), one marker per id regardless of how many Surfaces share it. Added
+  // (2026-07-13) specifically so a self-intersecting/degenerate chain's actual, exact
+  // corner positions and ids can be read off directly in-game (see
+  // _buildRiverCliffFacesDirect's self-intersection warnings, which name a chain id but
+  // not its individual corner ids/positions). Off by default — see _surfaceCornersVisible.
+  drawSurfaceCorners(terrainPlots, riverCliffFaces) {
+    this._clearDebugGroup(this._surfaceCornerMeshes)
+    const geo = new THREE.OctahedronGeometry(0.04, 0)
+    const plotMat = this._debugMarkerMaterial(0xff00ff)
+    const faceMat = this._debugMarkerMaterial(0x00ffff)
+    const seen = new Set()
+    const addCorners = (surfaces, mat, kindLabel) => {
+      for (const s of (surfaces || [])) {
+        const ids = s.pointIds, poly = s.polygon
+        if (!ids?.length || !poly?.length || ids.length !== poly.length) continue
+        for (let i = 0; i < ids.length; i++) {
+          const id = ids[i]
+          if (id == null || seen.has(id)) continue
+          seen.add(id)
+          const v = poly[i]
+          if (!v || !isFinite(v.x) || !isFinite(v.y)) continue
+          const m = new THREE.Mesh(geo, mat)
+          m.position.set(v.x, 0.12, v.y)
+          m.renderOrder = 999
+          m.userData = { kind: 'surfaceCorner', id, sourceKind: kindLabel, x: v.x, y: v.y }
+          m.visible = this.showDebug && this._surfaceCornersVisible
+          this.scene.add(m)
+          this.debugObjects.push(m)
+          this._surfaceCornerMeshes.push(m)
+        }
+      }
+    }
+    addCorners(terrainPlots, plotMat, 'terrainPlot')
+    addCorners(riverCliffFaces, faceMat, 'riverCliffFace')
+  }
+
+  getSurfaceCornerAtWorldPos(worldX, worldY, threshold = 0.06) {
+    const thrSq = threshold * threshold
+    for (const m of this._surfaceCornerMeshes) {
+      if (!m.visible) continue
+      const dx = worldX - m.position.x, dy = worldY - m.position.z
+      if (dx * dx + dy * dy < thrSq) return m.userData
+    }
+    return null
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────

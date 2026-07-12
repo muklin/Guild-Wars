@@ -8,6 +8,23 @@ const DOMAIN_ICONS = {
   Healing: '✨', Underworld: '🕳️', Ancestors: '👁️', Time: '⏳',
   Chaos: '🌀', Order: '🔷', Hunt: '🏹', Plague: '☣️', Wealth: '💰',
   Dreams: '💭', Fertility: '🌱', Madness: '🌀', Protection: '🛡️',
+  // Added when godDomains was tripled (shared/nameLibrary.js) — every entry there needs
+  // an icon or it silently falls back to the '✦' placeholder (confirmed live: most
+  // tiles showing the placeholder star instead of a real icon right after that change).
+  Air: '🌬️', Beauty: '🌸', Blood: '🩸', Bounty: '🎁', Change: '🔄',
+  Chance: '🎲', Craft: '🛠️', Creation: '🌟', Cunning: '🦊', Darkness: '⚫',
+  Dawn: '🌅', Deception: '🎭', Destiny: '🔮', Discord: '💢', Dusk: '🌆',
+  Endurance: '💪', Fear: '😱', Fortune: '🪙', Freedom: '🕊️', Frost: '🧊',
+  Glory: '🏆', Gluttony: '🍖', Greed: '🤑', Growth: '📈', Harmony: '☯️',
+  Honor: '🎖️', Illusion: '🪞', Ingenuity: '💡', Iron: '⚙️', Joy: '😊',
+  Judgement: '📜', Law: '🏛️', Life: '❇️', Light: '✨', Loyalty: '🤝',
+  Luck: '🍀', Lust: '💋', Memory: '🧠', Mercy: '🤲', Mischief: '🐍',
+  Mountains: '⛰️', Music: '🎵', Oaths: '🤞', Pain: '😣', Passion: '❤️‍🔥',
+  Patience: '🧘', Peace: '☮️', Pestilence: '🐀', Pride: '🦁', Rebirth: '🐣',
+  Renewal: '🔁', Revenge: '🗡️', Rivers: '🏞️', Ruin: '🏚️', Sacrifice: '🔪',
+  Secrets: '🤫', Silence: '🤐', Sleep: '😴', Sorrow: '😢', Stars: '⭐',
+  Stone: '🪨', Strength: '🏋️', Vengeance: '⚡', Victory: '🏅', Wanderers: '🧭',
+  Wind: '🍃', Winter: '☃️', Wisdom: '🦉',
 }
 
 const DOMAIN_CLUSTER_MAP = {
@@ -15,6 +32,14 @@ const DOMAIN_CLUSTER_MAP = {
   Sea: 'sea', Sky: 'sky', Sun: 'sky', Moon: 'sky', Fire: 'fire',
   Earth: 'nature', Nature: 'nature', Healing: 'nature', Fertility: 'nature',
   Knowledge: 'knowledge', Shadow: 'death', Underworld: 'death',
+  // Reasonable-fit additions for the tripled domain list — not exhaustive (many new
+  // domains have no strong phonetic-cluster fit and correctly fall back to properNames,
+  // same as several ORIGINAL domains — Fate/Love/Justice/Forge/Storm/etc — already did).
+  Air: 'sky', Wind: 'sky', Wanderers: 'sky', Freedom: 'sky', Dawn: 'sky', Dusk: 'sky', Stars: 'sky', Light: 'sky',
+  Blood: 'war', Vengeance: 'war', Revenge: 'war', Discord: 'war',
+  Darkness: 'death', Fear: 'death', Ruin: 'death', Sorrow: 'death', Pain: 'death', Sleep: 'death', Silence: 'death',
+  Beauty: 'nature', Harmony: 'nature', Peace: 'nature', Joy: 'nature', Growth: 'nature', Life: 'nature', Rebirth: 'nature', Renewal: 'nature', Bounty: 'nature', Gluttony: 'nature',
+  Cunning: 'knowledge', Deception: 'knowledge', Illusion: 'knowledge', Mischief: 'knowledge', Secrets: 'knowledge', Chance: 'knowledge', Luck: 'knowledge', Fortune: 'knowledge', Memory: 'knowledge', Wisdom: 'knowledge', Destiny: 'knowledge',
 }
 
 function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)] }
@@ -59,9 +84,12 @@ function pickWorldDomains() {
 }
 
 export default class GodDialog {
-  constructor({ worldDomains, onApply, onCancel }) {
+  constructor({ worldDomains, usedDomains, onApply, onCancel }) {
     this._worldDomains = worldDomains || null
     this._newWorldDomains = null
+    // Domains already claimed by an existing god — each domain is one god's alone, so
+    // these render disabled rather than just being a soft suggestion.
+    this._usedDomains = new Set(usedDomains || [])
     this.onApply = onApply
     this.onCancel = onCancel
     this._el = null
@@ -126,7 +154,7 @@ export default class GodDialog {
     box.appendChild(this._titleRow('Add God — Domains'))
 
     const hint = document.createElement('div')
-    hint.textContent = 'Select up to 3 domains for this god. (Optional)'
+    hint.textContent = 'Select 1–3 domains for this god.'
     hint.style.cssText = 'font-size:12px;color:#888;margin-bottom:12px;line-height:1.4'
     box.appendChild(hint)
 
@@ -139,31 +167,39 @@ export default class GodDialog {
     domains.forEach((domain, i) => {
       const tile = document.createElement('button')
       const icon = DOMAIN_ICONS[domain] || '✦'
+      const taken = this._usedDomains.has(domain)
       tile.innerHTML = `<div style="font-size:18px;margin-bottom:3px">${icon}</div><div style="font-size:10px;line-height:1.2">${domain}</div>`
       const isSelected = selected.has(domain)
+      tile.disabled = taken
+      tile.title = taken ? `${domain} is already claimed by another god` : ''
       tile.style.cssText = [
-        'padding:8px 4px', 'border-radius:6px', 'cursor:pointer',
+        'padding:8px 4px', 'border-radius:6px',
+        `cursor:${taken ? 'not-allowed' : 'pointer'}`,
         'font-family:Arial', 'text-align:center',
         `background:${isSelected ? '#2c4f6b' : '#2a2a2a'}`,
         `border:2px solid ${isSelected ? '#4a9bdc' : '#444'}`,
-        'color:#ddd', 'transition:background 0.1s',
+        `color:${taken ? '#555' : '#ddd'}`, `opacity:${taken ? '0.5' : '1'}`,
+        'transition:background 0.1s',
       ].join(';')
-      tile.addEventListener('click', () => {
-        if (selected.has(domain)) {
-          selected.delete(domain)
-          tile.style.background = '#2a2a2a'; tile.style.borderColor = '#444'
-        } else {
-          if (selected.size >= 3) {
-            const first = [...selected][0]
-            selected.delete(first)
-            const firstTile = tiles.find(t => t._domain === first)
-            if (firstTile) { firstTile.style.background = '#2a2a2a'; firstTile.style.borderColor = '#444' }
+      if (!taken) {
+        tile.addEventListener('click', () => {
+          if (selected.has(domain)) {
+            selected.delete(domain)
+            tile.style.background = '#2a2a2a'; tile.style.borderColor = '#444'
+          } else {
+            if (selected.size >= 3) {
+              const first = [...selected][0]
+              selected.delete(first)
+              const firstTile = tiles.find(t => t._domain === first)
+              if (firstTile) { firstTile.style.background = '#2a2a2a'; firstTile.style.borderColor = '#444' }
+            }
+            selected.add(domain)
+            tile.style.background = '#2c4f6b'; tile.style.borderColor = '#4a9bdc'
           }
-          selected.add(domain)
-          tile.style.background = '#2c4f6b'; tile.style.borderColor = '#4a9bdc'
-        }
-        selLabel.textContent = selected.size > 0 ? `Selected: ${[...selected].join(', ')}` : 'No domains selected'
-      })
+          selLabel.textContent = selected.size > 0 ? `Selected: ${[...selected].join(', ')}` : 'No domains selected'
+          errorEl.textContent = ''
+        })
+      }
       tile._domain = domain
       tiles.push(tile)
       grid.appendChild(tile)
@@ -171,9 +207,13 @@ export default class GodDialog {
     box.appendChild(grid)
 
     const selLabel = document.createElement('div')
-    selLabel.style.cssText = 'font-size:11px;color:#888;margin-bottom:12px;min-height:16px'
+    selLabel.style.cssText = 'font-size:11px;color:#888;margin-bottom:6px;min-height:16px'
     selLabel.textContent = 'No domains selected'
     box.appendChild(selLabel)
+
+    const errorEl = document.createElement('div')
+    errorEl.style.cssText = 'color:#f66;font-size:11px;margin-bottom:8px;min-height:14px'
+    box.appendChild(errorEl)
 
     const btnRow = document.createElement('div')
     btnRow.style.cssText = 'display:flex;gap:8px'
@@ -185,6 +225,7 @@ export default class GodDialog {
     nextBtn.textContent = 'Next →'
     nextBtn.style.cssText = 'flex:2;padding:8px;background:#2471a3;border:1px solid #4a9bdc;border-radius:5px;color:#fff;font-size:13px;font-weight:bold;cursor:pointer;font-family:Arial'
     nextBtn.addEventListener('click', () => {
+      if (selected.size === 0) { errorEl.textContent = 'Select at least one domain.'; return }
       this._selectedDomains = [...selected]
       this.close()
       this._renderPage2()
@@ -209,23 +250,36 @@ export default class GodDialog {
       : 'No domains selected'
     box.appendChild(domainDisplay)
 
-    const suggestions = generateGodNames(this._selectedDomains)
-
+    const chipsLabelRow = document.createElement('div')
+    chipsLabelRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'
     const chipsLabel = document.createElement('div')
     chipsLabel.textContent = 'Name Suggestions'
-    chipsLabel.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px'
-    box.appendChild(chipsLabel)
+    chipsLabel.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px'
+    chipsLabelRow.appendChild(chipsLabel)
 
     const nameInput = document.createElement('input')
     const chipsRow = document.createElement('div')
     chipsRow.style.cssText = 'display:flex;flex-direction:column;gap:5px;margin-bottom:12px'
-    suggestions.forEach(s => {
-      const chip = document.createElement('button')
-      chip.textContent = s
-      chip.style.cssText = 'text-align:left;padding:6px 10px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#ccc;font-size:12px;cursor:pointer;font-family:Arial'
-      chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
-      chipsRow.appendChild(chip)
-    })
+    const renderChips = (suggestions) => {
+      chipsRow.innerHTML = ''
+      suggestions.forEach(s => {
+        const chip = document.createElement('button')
+        chip.textContent = s
+        chip.style.cssText = 'text-align:left;padding:6px 10px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#ccc;font-size:12px;cursor:pointer;font-family:Arial'
+        chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
+        chipsRow.appendChild(chip)
+      })
+    }
+
+    const regenBtn = document.createElement('button')
+    regenBtn.textContent = '🔄 Regenerate'
+    regenBtn.title = 'Generate new suggestions'
+    regenBtn.style.cssText = 'background:none;border:none;color:#7ab;font-size:11px;cursor:pointer;font-family:Arial;padding:0'
+    regenBtn.addEventListener('click', e => { e.preventDefault(); renderChips(generateGodNames(this._selectedDomains)) })
+    chipsLabelRow.appendChild(regenBtn)
+    box.appendChild(chipsLabelRow)
+
+    renderChips(generateGodNames(this._selectedDomains))
     box.appendChild(chipsRow)
 
     const nameLabel = document.createElement('div')

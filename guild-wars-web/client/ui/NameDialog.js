@@ -22,9 +22,9 @@ function pickUnique(arr, exclude = []) {
   return pool.length ? pick(pool) : pick(arr)
 }
 
-function validateName(raw) {
+function validateName(raw, optional = false) {
   const val = raw.trim()
-  if (!val) return 'Please enter a name.'
+  if (!val) return optional ? null : 'Please enter a name.'
   if (/^\d+$/.test(val)) return 'Name cannot be all numbers.'
   const lower = val.toLowerCase().replace(/\s+/g, '')
   if (BLOCKLIST.has(lower)) return 'That doesn\'t look like a real name.'
@@ -84,6 +84,15 @@ function generateNames(entityKind, subType, producedResource) {
       const suffix = pick(suffixes)
       return `${producedResource} ${suffix}`
     }
+    // Terrain/edge/cityEdge entities have no populace, so "Occupation" (Blacksmiths,
+    // Farmers, ...) never makes sense for them — fall back to [GlobalAdj] [Suffix]
+    // instead, using the same suffix pool as the resource branch above (terrainSuffixes
+    // for terrain/edge, districtSuffixes for cityEdge — see `suffixes` above).
+    if (entityKind === 'terrain' || entityKind === 'edge' || entityKind === 'cityEdge') {
+      const adj    = pickUnique(g.adjectives, used)
+      const suffix = pick(suffixes)
+      return `${adj} ${suffix}`
+    }
     // [GlobalAdj] [Occupation]  (fallback)
     const adj  = pickUnique(g.adjectives, used)
     const occ  = pick(g.occupations)
@@ -125,7 +134,7 @@ export default class NameDialog {
   static closeAll() {
     document.querySelectorAll('.name-dialog-overlay').forEach(el => el.remove())
   }
-  constructor({ entityKind, entityLabel, subType, producedResource, onApply, onCancel, prefillName, hideSuggestions }) {
+  constructor({ entityKind, entityLabel, subType, producedResource, onApply, onCancel, prefillName, hideSuggestions, nameOptional }) {
     this.entityKind       = entityKind
     this.entityLabel      = entityLabel || subType || 'Entity'
     this.subType          = subType
@@ -134,6 +143,7 @@ export default class NameDialog {
     this.onCancel         = onCancel
     this.prefillName      = prefillName || null
     this.hideSuggestions  = !!hideSuggestions
+    this.nameOptional     = !!nameOptional
     this._el              = null
   }
 
@@ -184,39 +194,43 @@ export default class NameDialog {
     // Suggestion chips — omitted when hideSuggestions is set (e.g. FP Threat/Trade flow
     // where the entity is already named and we just want the player to confirm/edit).
     if (!this.hideSuggestions && suggestions.length > 0) {
+      const chipsLabelRow = document.createElement('div')
+      chipsLabelRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'
       const chipsLabel = document.createElement('div')
       chipsLabel.textContent = 'Suggestions'
-      chipsLabel.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px'
-      box.appendChild(chipsLabel)
+      chipsLabel.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px'
+      chipsLabelRow.appendChild(chipsLabel)
+
+      const regenBtn = document.createElement('button')
+      regenBtn.textContent = '🔄 Regenerate'
+      regenBtn.title = 'Generate new suggestions'
+      regenBtn.style.cssText = [
+        'background:none', 'border:none', 'color:#7ab', 'font-size:11px',
+        'cursor:pointer', 'font-family:Arial', 'padding:0',
+      ].join(';')
+      regenBtn.addEventListener('click', (e) => {
+        e.preventDefault()
+        const fresh = generateNames(this.entityKind, this.subType, this.producedResource)
+        this._renderChips(chipsRow, fresh, nameInput)
+      })
+      chipsLabelRow.appendChild(regenBtn)
+      box.appendChild(chipsLabelRow)
 
       const chipsRow = document.createElement('div')
       chipsRow.style.cssText = 'display:flex;flex-direction:column;gap:5px;margin-bottom:14px'
-      suggestions.forEach(s => {
-        const chip = document.createElement('button')
-        chip.textContent = s
-        chip.style.cssText = [
-          'text-align:left', 'padding:6px 10px', 'background:#2a2a2a',
-          'border:1px solid #444', 'border-radius:4px', 'color:#ccc',
-          'font-size:12px', 'cursor:pointer', 'font-family:Arial',
-          'transition:background 0.1s,border-color 0.1s',
-        ].join(';')
-        chip.addEventListener('mouseenter', () => { chip.style.background = '#333'; chip.style.borderColor = '#666' })
-        chip.addEventListener('mouseleave', () => { chip.style.background = '#2a2a2a'; chip.style.borderColor = '#444' })
-        chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
-        chipsRow.appendChild(chip)
-      })
+      this._renderChips(chipsRow, suggestions, nameInput)
       box.appendChild(chipsRow)
     }
 
     // Name input
     const nameLabel = document.createElement('div')
-    nameLabel.textContent = 'Name'
+    nameLabel.textContent = this.nameOptional ? 'Name (optional)' : 'Name'
     nameLabel.style.cssText = 'font-size:11px;color:#777;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px'
     box.appendChild(nameLabel)
 
     nameInput.type = 'text'
     if (this.prefillName) nameInput.value = this.prefillName
-    nameInput.placeholder = 'Enter a name…'
+    nameInput.placeholder = this.nameOptional ? 'Enter a name (optional)…' : 'Enter a name…'
     nameInput.style.cssText = [
       'width:100%', 'box-sizing:border-box', 'padding:7px 10px',
       'background:#111', 'border:1px solid #555', 'border-radius:4px',
@@ -272,7 +286,7 @@ export default class NameDialog {
       'font-size:13px', 'font-weight:bold', 'cursor:pointer', 'font-family:Arial',
     ].join(';')
     applyBtn.addEventListener('click', () => {
-      const err = validateName(nameInput.value)
+      const err = validateName(nameInput.value, this.nameOptional)
       if (err) { errorEl.textContent = err; return }
       errorEl.textContent = ''
       this.close()
@@ -302,5 +316,25 @@ export default class NameDialog {
   _cancel() {
     this.close()
     this.onCancel()
+  }
+
+  // (Re)populates chipsRow with one chip button per suggestion — shared by the initial
+  // render and the "Regenerate" button so both build chips identically.
+  _renderChips(chipsRow, suggestions, nameInput) {
+    chipsRow.innerHTML = ''
+    suggestions.forEach(s => {
+      const chip = document.createElement('button')
+      chip.textContent = s
+      chip.style.cssText = [
+        'text-align:left', 'padding:6px 10px', 'background:#2a2a2a',
+        'border:1px solid #444', 'border-radius:4px', 'color:#ccc',
+        'font-size:12px', 'cursor:pointer', 'font-family:Arial',
+        'transition:background 0.1s,border-color 0.1s',
+      ].join(';')
+      chip.addEventListener('mouseenter', () => { chip.style.background = '#333'; chip.style.borderColor = '#666' })
+      chip.addEventListener('mouseleave', () => { chip.style.background = '#2a2a2a'; chip.style.borderColor = '#444' })
+      chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
+      chipsRow.appendChild(chip)
+    })
   }
 }

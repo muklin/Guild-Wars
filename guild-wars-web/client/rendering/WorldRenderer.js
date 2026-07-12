@@ -294,17 +294,44 @@ export default class WorldRenderer {
 
   setMode(mode) {
     this.clearHover()
+    // Only treat this as an actual MODE TRANSITION, not every redundant same-mode call
+    // — _applyState calls setMode('city') on EVERY live sync once past Terrain Setup,
+    // unconditionally, not just on the one real transition into it. clearDebugObjects()
+    // below used to run every single time regardless, wiping every terrain debug marker
+    // (region/plot centers, edge points, surface corners) that THIS SAME sync's
+    // setTerrainData call (which always runs first — see App.js._applyState) had just
+    // finished drawing, with nothing after this point to redraw them — confirmed live,
+    // 2026-07-13: District Setup's debug panel checkboxes stayed checked but nothing
+    // ever rendered, because they were destroyed within the same tick they were created.
+    // deleteCityTerrainCells() is NOT part of this gating — it must keep running every
+    // sync: renderTerrain() (inside setTerrainData, called just before this) rebuilds
+    // ALL terrain plot meshes fresh every time, including the City region's own cells,
+    // with no knowledge of city mode at all — deleteCityTerrainCells() is what retires
+    // those again each time so district geometry doesn't get an unwanted terrain fill
+    // showing through underneath it.
+    const modeChanged = this.mode !== mode
     this.mode = mode
     const inStreets = mode === 'streets'
     this.districtRenderer.setModeVisibility(inStreets)
     if (mode === 'city' || mode === 'streets') {
       this.terrainRenderer.deleteCityTerrainCells()
-      this.terrainRenderer.clearDebugObjects()
+      if (modeChanged) {
+        this.terrainRenderer.clearDebugObjects()
+        // Redraw immediately from whatever terrain data is already cached, rather than
+        // leaving every terrain debug layer blank until the next sync's setTerrainData
+        // call happens to come in.
+        const td = this.terrainRenderer.terrainData
+        if (td) {
+          this.terrainRenderer.drawVoronoiCenters(td.regions)
+          this.terrainRenderer.drawTerrainPlotCenters(td.terrainPlots)
+          this.terrainRenderer.drawSurfaceCorners(td.terrainPlots, td.riverCliffFaces)
+        }
+      }
       this.terrainRenderer.setCityModeActive(true)
     } else {
       this.terrainRenderer.setCityModeActive(false)
     }
-    if (mode === 'streets') {
+    if (mode === 'streets' && modeChanged) {
       this.districtRenderer.clearDistrictLayer()
       this.districtRenderer.clearDebugObjects()
     }
@@ -469,6 +496,18 @@ export default class WorldRenderer {
 
   getTerrainSeedAtWorldPos(worldX, worldY, threshold) {
     return this.terrainRenderer.getTerrainSeedAtWorldPos(worldX, worldY, threshold)
+  }
+
+  getTerrainPlotCenterAtWorldPos(worldX, worldY, threshold) {
+    return this.terrainRenderer.getTerrainPlotCenterAtWorldPos(worldX, worldY, threshold)
+  }
+
+  getTerrainCenterAtWorldPos(worldX, worldY, threshold) {
+    return this.terrainRenderer.getTerrainCenterAtWorldPos(worldX, worldY, threshold)
+  }
+
+  getSurfaceCornerAtWorldPos(worldX, worldY, threshold) {
+    return this.terrainRenderer.getSurfaceCornerAtWorldPos(worldX, worldY, threshold)
   }
 
   drawVoronoiCenters(regions) {
@@ -1004,6 +1043,9 @@ export default class WorldRenderer {
       case 'plotCenters':     this.groundRenderer.setPlotCentersVisible(on); break
       case 'districtCenters': this.districtRenderer.setDistrictCentersVisible(on); break
       case 'terrainCenters':  this.terrainRenderer.setTerrainCentersVisible(on); break
+      case 'terrainPlotCenters': this.terrainRenderer.setTerrainPlotCentersVisible(on); break
+      case 'terrainSeeds':    this.terrainRenderer.setTerrainSeedsVisible(on); break
+      case 'surfaceCorners':  this.terrainRenderer.setSurfaceCornersVisible(on); break
       case 'streetSeeds':     this.groundRenderer.setStreetSeedsVisible(on); break
     }
     this.markDirty()
@@ -1068,6 +1110,9 @@ export default class WorldRenderer {
       plotCenters:     this.groundRenderer._plotCentersVisible,
       districtCenters: this.districtRenderer._districtCentersVisible,
       terrainCenters:  this.terrainRenderer._terrainCentersVisible,
+      terrainPlotCenters: this.terrainRenderer._terrainPlotCentersVisible,
+      terrainSeeds:    this.terrainRenderer._terrainSeedsVisible,
+      surfaceCorners:  this.terrainRenderer._surfaceCornersVisible,
       streetSeeds:     this.groundRenderer._streetSeedsVisible,
     }
   }

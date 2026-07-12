@@ -361,6 +361,7 @@ export default class App {
     this.eventBus.on('ADD_GOD', () => {
       const dialog = new GodDialog({
         worldDomains: this.gameState?.worldDomains ?? null,
+        usedDomains: (this.gameState?.gods || []).flatMap(g => g.domains || []),
         onApply: async ({ domains, name, description, worldDomains }) => {
           try {
             const res = await GameAPI.createGod({ domains, name, description, worldDomains })

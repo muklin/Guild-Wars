@@ -55,7 +55,13 @@ export default class ForeignPowerDialog {
     this.onCancel  = onCancel
     this._el       = null
     this._chosenDirection = null
-    this._chosenColour    = COLOUR_SWATCHES[0].value
+    // Randomized, biased away from colours already claimed by another FP (see the
+    // swatch-disabling in _render) — falls back to the full palette if every swatch is
+    // already taken (more FPs than swatches).
+    const usedColours = new Set(existingForeignPowers.map(fp => fp.colour))
+    const availableSwatches = COLOUR_SWATCHES.filter(sw => !usedColours.has(sw.value))
+    const colourPool = availableSwatches.length ? availableSwatches : COLOUR_SWATCHES
+    this._chosenColour    = colourPool[Math.floor(Math.random() * colourPool.length)].value
     this._rafId           = null
     this._swatchRow       = null  // kept so colour change can repaint existing FP arcs
   }
@@ -205,38 +211,60 @@ export default class ForeignPowerDialog {
     const swatchRow = document.createElement('div')
     swatchRow.style.cssText = 'display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap'
     this._swatchRow = swatchRow
+    // A colour already claimed by another FP is shown but disabled (no new colours added
+    // to the palette — see COLOUR_SWATCHES) so two FPs can never share one.
+    const usedColours = new Set(this.existingForeignPowers.map(fp => fp.colour))
+    const swatchEls = []
     COLOUR_SWATCHES.forEach(sw => {
+      const taken = usedColours.has(sw.value)
       const swatch = document.createElement('div')
-      swatch.title = sw.label
-      swatch.style.cssText = `width:24px;height:24px;border-radius:4px;background:${sw.value};cursor:pointer;border:2px solid ${this._chosenColour === sw.value ? '#fff' : 'transparent'};box-sizing:border-box`
-      swatch.addEventListener('click', () => {
-        this._chosenColour = sw.value
-        swatchRow.querySelectorAll('div').forEach((s, i) => {
-          s.style.borderColor = COLOUR_SWATCHES[i].value === sw.value ? '#fff' : 'transparent'
+      swatch.title = taken ? `${sw.label} (already in use)` : sw.label
+      swatch.style.cssText = `width:24px;height:24px;border-radius:4px;background:${sw.value};cursor:${taken ? 'not-allowed' : 'pointer'};border:2px solid ${this._chosenColour === sw.value ? '#fff' : 'transparent'};box-sizing:border-box;opacity:${taken ? '0.25' : '1'}`
+      if (!taken) {
+        swatch.addEventListener('click', () => {
+          this._chosenColour = sw.value
+          swatchEls.forEach(({ el, value }) => { el.style.borderColor = value === sw.value ? '#fff' : 'transparent' })
+          if (this._chosenDirection !== null) {
+            updatePreviewColor(this._chosenColour, false)
+          }
         })
-        if (this._chosenDirection !== null) {
-          updatePreviewColor(this._chosenColour, false)
-        }
-      })
+      }
+      swatchEls.push({ el: swatch, value: sw.value })
       swatchRow.appendChild(swatch)
     })
     box.appendChild(swatchRow)
 
     // ── Name suggestions + editable input ────────────────────────────────────
-    box.appendChild(this._sectionLabel('Suggestions'))
     const nameInput = document.createElement('input')
-    const suggestions = generateForeignPowerNames()
     const chipsRow = document.createElement('div')
     chipsRow.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin-bottom:10px'
-    suggestions.forEach(s => {
-      const chip = document.createElement('button')
-      chip.textContent = s
-      chip.style.cssText = 'text-align:left;padding:5px 10px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#ccc;font-size:12px;cursor:pointer;font-family:Arial'
-      chip.addEventListener('mouseenter', () => { chip.style.background = '#333'; chip.style.borderColor = '#666' })
-      chip.addEventListener('mouseleave', () => { chip.style.background = '#2a2a2a'; chip.style.borderColor = '#444' })
-      chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
-      chipsRow.appendChild(chip)
-    })
+    const renderChips = (suggestions) => {
+      chipsRow.innerHTML = ''
+      suggestions.forEach(s => {
+        const chip = document.createElement('button')
+        chip.textContent = s
+        chip.style.cssText = 'text-align:left;padding:5px 10px;background:#2a2a2a;border:1px solid #444;border-radius:4px;color:#ccc;font-size:12px;cursor:pointer;font-family:Arial'
+        chip.addEventListener('mouseenter', () => { chip.style.background = '#333'; chip.style.borderColor = '#666' })
+        chip.addEventListener('mouseleave', () => { chip.style.background = '#2a2a2a'; chip.style.borderColor = '#444' })
+        chip.addEventListener('click', () => { nameInput.value = s; nameInput.focus() })
+        chipsRow.appendChild(chip)
+      })
+    }
+
+    const suggestionsLabelRow = document.createElement('div')
+    suggestionsLabelRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'
+    const suggestionsLabel = this._sectionLabel('Suggestions')
+    suggestionsLabel.style.marginBottom = '0'
+    suggestionsLabelRow.appendChild(suggestionsLabel)
+    const regenBtn = document.createElement('button')
+    regenBtn.textContent = '🔄 Regenerate'
+    regenBtn.title = 'Generate new suggestions'
+    regenBtn.style.cssText = 'background:none;border:none;color:#7ab;font-size:11px;cursor:pointer;font-family:Arial;padding:0'
+    regenBtn.addEventListener('click', e => { e.preventDefault(); renderChips(generateForeignPowerNames()) })
+    suggestionsLabelRow.appendChild(regenBtn)
+    box.appendChild(suggestionsLabelRow)
+
+    renderChips(generateForeignPowerNames())
     box.appendChild(chipsRow)
 
     box.appendChild(this._sectionLabel('Name'))

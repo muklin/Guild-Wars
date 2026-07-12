@@ -16,13 +16,18 @@ import { computeJunctionData, computeEdgeCorners } from '../../../shared/polylin
 // halfWidth: river/cliff half-width (the boundary sits halfWidth away from the chain on
 // each side).
 // miterLimitDist: same narrow-angle clamp/bevel threshold PolylineRenderer uses.
+// fillsOut: optional Map, passed straight through to computeJunctionData — populate it
+// (ptId -> {boundaryPts, edgeIds, center}) for every 3+-way junction, so a caller
+// building real filled River/Cliff FACES (not just a stroke) can also close the small
+// fan-shaped gap a beveled (narrow-angle) junction leaves between two chains' ribbons —
+// see SetupPhase._buildRiverCliffJunctionCaps. Omit if you only need boundaries.
 //
 // Returns: Map<chainId, Array<{left:{x,y}, right:{x,y}} | null>> — one entry per point
 // in that chain's own pointIds, in order. A null entry means that specific vertex's
 // corner couldn't be computed (missing/coincident point) — same convention
 // computeEdgeCorners itself uses.
-export function computeRiverCliffBoundaries(edges, pointsById, halfWidth, miterLimitDist) {
-  const overrides = computeJunctionData(edges, pointsById, halfWidth, miterLimitDist, new Map())
+export function computeRiverCliffBoundaries(edges, pointsById, halfWidth, miterLimitDist, fillsOut = new Map()) {
+  const overrides = computeJunctionData(edges, pointsById, halfWidth, miterLimitDist, fillsOut)
   const result = new Map()
   for (const [chainId, edge] of Object.entries(edges)) {
     result.set(chainId, computeEdgeCorners(edge, chainId, overrides, pointsById, halfWidth, miterLimitDist))

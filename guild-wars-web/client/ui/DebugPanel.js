@@ -7,6 +7,9 @@ const LAYERS = [
   { key: 'blockSeeds',      label: 'Block Seeds' },
   { key: 'plotCenters',     label: 'Plot Centre points' },
   { key: 'terrainCenters',  label: 'Terrain Centre points' },
+  { key: 'terrainPlotCenters', label: 'Terrain Plot Centre points' },
+  { key: 'terrainSeeds',    label: 'Terrain Edge points' },
+  { key: 'surfaceCorners',  label: 'Surface Corner points' },
   { key: 'districtCenters', label: 'District Centre points' },
   { key: 'streetSeeds',     label: 'Street Seeds (junctions)' },
 ]

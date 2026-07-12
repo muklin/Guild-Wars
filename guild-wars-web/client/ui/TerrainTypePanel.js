@@ -237,7 +237,7 @@ export default class TerrainTypePanel {
         applyBtn.style.opacity = '0.6'
         applyBtn.style.cursor = 'default'
         const dialog = new NameDialog({
-          entityKind: 'edge', entityLabel: pendingType, subType: pendingType,
+          entityKind: 'edge', entityLabel: pendingType, subType: pendingType, nameOptional: true,
           onApply: (name, description) => {
             this.eventBus.emit('EDGE_APPLY', { name, description })
           },
