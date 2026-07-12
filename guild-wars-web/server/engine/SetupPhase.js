@@ -1512,10 +1512,11 @@ export default class SetupPhase {
   // district and terrain-plot pullback. Builds a fresh DCEL every call (never
   // persisted — matches the existing "_rawPolygon, recomputed every call" philosophy),
   // inserts every face from its pristine ids, resolves the river-mouth/multi-bank case
-  // via splitVertexGeneral where _computeRiverCliffDeltas flagged it ambiguous (the
-  // common 2-group case only — a 3+-way confluence falls through to the existing
-  // single-group heuristic already baked into `deltas`, unchanged from before this
-  // cutover), then splitVertexSimple for every other corner. Returns one
+  // via splitVertexGeneral for EVERY no-vote face at an ambiguous vertex (not just a
+  // hardcoded 2-total-groups case — see the splice loop's own doc comment for the
+  // 2026-07-13 generalization to arbitrary group counts, resolved via true fan
+  // adjacency rather than a global group-list guess), then splitVertexSimple for every
+  // other corner. Returns one
   // {pointIds, polygon} per input face, parallel to rawPolys/rawIds — note a water
   // face's pointIds can come back LONGER than its raw input if splitVertexGeneral gave
   // it an extra vertex; callers that need a 1:1 remap (only districts do — terrain
