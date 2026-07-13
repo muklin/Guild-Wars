@@ -10,6 +10,8 @@ import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
 import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
+import { applyTerrainTypeZEffect, getRegionCornerIds, determineCliffSide, propagateFromPoints, CLIFF_Z_RULE } from './CityGenerator/TerrainZHeight.js'
+import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { getDistrictConfig } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
@@ -210,6 +212,38 @@ export default class SetupPhase {
     this.terrainFeaturePlots = []
   }
 
+  // Generates the world, then runs auditGroundplane (server/engine/CityGenerator/
+  // auditGroundplane.js) against the resulting terrain plots — user-confirmed
+  // 2026-07-13, prompted by a live-observed hole in the generated terrain. Only checks
+  // HOLE count (not OVERLAP/PINCH/AREA_OVERLAP — those are a separate, not-yet-
+  // requested concern): auditGroundplane's own onWorldBoundary check already excludes
+  // the map's outer edge from HOLE findings ("exclude the outside edges" — a genuine
+  // gap at the edge of the generated world is expected, not a bug), so any remaining
+  // HOLE finding is a real interior gap. Retries generation from scratch (fresh
+  // registry each time — clearKind('terrain') wipes the failed attempt's points, since
+  // nothing else has been built yet this early in initialize()) up to maxAttempts times;
+  // ships the last attempt's result with a warning if it never comes back clean rather
+  // than hanging New Game indefinitely.
+  _generateWorldWithHoleCheck(regionCount, worldSize, mergeDistance, manhattan, maxAttempts = 5) {
+    const registry = this.gameStateManager.pointRegistry
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (attempt > 1) registry.clearKind('terrain')
+      const worldData = this.worldGenerator.generate(regionCount, worldSize, mergeDistance, manhattan, registry)
+      const surfaces = [
+        ...worldData.terrainPlots.map(p => ({ id: `tp:${p.id}`, kind: 'terrain-plot', pointIds: p.pointIds })),
+        ...(worldData.hiddenTerrainPlots || []).map(p => ({ id: `htp:${p.id}`, kind: 'terrain-plot', pointIds: p.pointIds })),
+      ]
+      const groundplane = { points: registry.toJSON(), surfaces, terrain: { worldSize } }
+      const { counts } = auditGroundplane(groundplane)
+      if (counts.HOLE === 0) {
+        if (attempt > 1) this.log.push(`Terrain generation succeeded on attempt ${attempt} (hole-free)`)
+        return worldData
+      }
+      console.warn(`[SetupPhase] Terrain generation attempt ${attempt}/${maxAttempts} has ${counts.HOLE} hole(s) (excluding world boundary) — ${attempt < maxAttempts ? 'retrying' : 'giving up, shipping anyway'}`)
+      if (attempt === maxAttempts) return worldData
+    }
+  }
+
   initialize() {
     this.gameStateManager.clear()
     this.log = []
@@ -232,7 +266,7 @@ export default class SetupPhase {
     this.log.push('Initializing Setup Phase...')
 
     this.worldGenerator = new TerrainVoronoiGenerator()
-    const worldData = this.worldGenerator.generate(15, 50, 0, 0, this.gameStateManager.pointRegistry)
+    const worldData = this._generateWorldWithHoleCheck(15, 50, 0, 0)
     this.gameStateManager.worldTerrainData = worldData
     this.log.push(`Generated ${worldData.regions.length} terrain regions`)
 
@@ -564,6 +598,31 @@ export default class SetupPhase {
       }
     }
 
+    // Ice Sheet next to Ice Sheet: there are no valid edge types between two Ice Sheets
+    // (user-confirmed, plan "rustling-churning-finch" addendum) — clear whatever's
+    // there, same as Sea/Lake clearing River above, but ANY assignedType (not just
+    // River): the auto-cliff block just above unconditionally Cliffs every unassigned
+    // edge touching THIS region, including one that borders an ALREADY-placed Ice
+    // Sheet, and it never gets cleared afterwards on its own (only an unassigned edge
+    // qualifies for auto-cliffing, so once Cliffed it's permanently skipped by every
+    // later Ice Sheet's own auto-cliff pass too) — confirmed live 2026-07-13, "Sea to
+    // Sea reconnects after removing the edge, but Ice Sheet to Ice Sheet doesn't."
+    if (terrainType === 'Ice Sheet') {
+      const edges = this.gameStateManager.worldTerrainData.edges
+      for (const [edgeId, edge] of Object.entries(edges)) {
+        if (!edge.assignedType) continue
+        const otherId = edge.regionA === regionId ? edge.regionB : edge.regionB === regionId ? edge.regionA : null
+        if (otherId === null) continue
+        const other = regions.find(r => r.id === otherId)
+        if (other?.assignedType !== 'Ice Sheet') continue
+        edge.assignedType = null
+        edge.description = ''
+        this.edgePlacements = this.edgePlacements.filter(p => p.edgeId !== edgeId)
+        this.log.push(`Cleared ${edgeId}'s edge type — no valid edge type between two Ice Sheets`)
+        clearedEdgeIds.push(edgeId)
+      }
+    }
+
     // Restored (2026-07-11, after a same-day revert-and-re-revert): pullback runs here
     // again, during Terrain Setup, NOT deferred to District mode. The deferral (tried
     // earlier today) broke District-mode block/plot generation catastrophically: a
@@ -592,6 +651,26 @@ export default class SetupPhase {
     if (TERRAIN_REVEAL_TYPES.includes(terrainType)) {
       ;({ revealedRegionIds, newEdgeIds } = this._revealAdjacentHiddenTerrain(regionId, terrainType))
     }
+
+    // Terrain z-height (§3/§4 minus Cliff, plan "rustling-churning-finch", ADR-0021):
+    // runs on Apply, not on preview/selection — this IS Apply, `region.assignedType`
+    // above is the commit point. Deliberately placed AFTER the reveal-hidden-terrain
+    // block above, not right after `region.assignedType` is set: Sea/Mountains/Desert/
+    // Ice Sheet can absorb hidden terrain plots into this SAME region here, and Sea's
+    // whole-domain flatten-and-lock (see applyTerrainTypeZEffect) must see the region's
+    // FINAL plot membership, including anything just revealed/absorbed — running earlier
+    // would silently miss those plots' points (confirmed live: an edge-of-map Sea left
+    // its newly-revealed hidden water unflattened). "Adjust, don't freeze" still holds
+    // for every OTHER type: a later-Applied neighbour's own effect can still adjust this
+    // region's already-set corners afterward — nothing about this call prevents that,
+    // since it only ever touches `.z`, never `.assignedType`.
+    applyTerrainTypeZEffect(
+      this.gameStateManager.pointRegistry,
+      region,
+      getRegionCornerIds(this.gameStateManager.worldTerrainData.edges, regionId),
+      this.gameStateManager.worldTerrainData.terrainPlots || [],
+      this.gameStateManager.worldTerrainData.regions || []
+    )
 
     return { ok: true, clearedEdgeIds, autoCliffEdgeIds, revealedRegionIds, newEdgeIds, log: this.log }
   }
@@ -630,7 +709,13 @@ export default class SetupPhase {
       const clipped = clipToPolygon(plot.polygon, worldRect)
       if (!clipped) continue
       plot.polygon = clipped
-      plot.pointIds = clipped.map(v => v.id !== undefined ? v.id : registry.create(v.x, v.y, 0, 'terrain').id)
+      // z: the revealing region's current z rather than a hardcoded 0 — Sea/Lake
+      // immediately overwrite every domain point's z below regardless (see
+      // applyTerrainTypeZEffect), but Mountains/Desert/Ice Sheet only ever write
+      // boundary-corner z, so a freshly-minted INTERIOR vertex here would otherwise be
+      // stuck at 0 forever (a flat pit inside e.g. a revealed Mountains plot).
+      const revealZ = wt.regions.find(r => r.id === regionId)?.seedPoint?.z ?? 0
+      plot.pointIds = clipped.map(v => v.id !== undefined ? v.id : registry.create(v.x, v.y, revealZ, 'terrain').id)
       plot.parentRegionId = regionId
       plot.assignedType = terrainType
       wt.terrainPlots.push(plot)
@@ -648,16 +733,32 @@ export default class SetupPhase {
     region.polygon = this.worldGenerator.convexHull(allVerts)
 
     // Recompute boundary edges fresh over the CURRENT plot set (kept + still-hidden)
-    // — the exact same adjacency scan generate() used initially. Only ADD brand-new
-    // edge keys; an edge that already exists is left completely untouched (it may
-    // already carry a player-assigned type/name/description).
+    // — the exact same adjacency scan generate() used initially. generateBoundaryEdges
+    // now builds the FULL edge graph unconditionally (TerrainVoronoiGenerator.js,
+    // 2026-07-13), so an edge between regionId and this hidden neighbour — or between
+    // two still-hidden regions — likely already exists in `wt.edges`, but with STALE
+    // geometry: hidden plots are never clipped to the world square until revealed
+    // (just above), so their pre-generated edge pointIds can reference vertices well
+    // outside [0,worldSize]. Refresh any edge whose BOTH sides just became shown
+    // (kept) with this fresh post-clip computation — but never touch one the player
+    // has already assigned a type to. An edge with at least one side still hidden is
+    // stored if missing (keeps the full graph complete for a future reveal) and
+    // otherwise left alone.
     const keptSet = new Set(wt.regions.map(r => r.id))
     const allPlots = [...wt.terrainPlots, ...wt.hiddenTerrainPlots]
     const raw = this.worldGenerator.generateBoundaryEdges(allPlots, keptSet)
 
     const newEdgeIds = []
     for (const [key, edge] of Object.entries(raw.edges)) {
-      if (!wt.edges[key]) { wt.edges[key] = edge; newEdgeIds.push(key) }
+      const bothShown = keptSet.has(edge.regionA) && keptSet.has(edge.regionB)
+      const existing = wt.edges[key]
+      if (!existing) {
+        wt.edges[key] = edge
+        if (bothShown) newEdgeIds.push(key)
+      } else if (bothShown && !existing.assignedType) {
+        wt.edges[key] = edge
+        newEdgeIds.push(key)
+      }
     }
 
     // Only regionId's own adjacency changed (its footprint grew) — every other
@@ -1571,6 +1672,56 @@ export default class SetupPhase {
     return { [ra]: sideA, [rb]: sideB }
   }
 
+  // Region types that are permanently flat and locked (see TerrainZHeight.js's
+  // applyTerrainTypeZEffect — Sea/Lake/Ice Sheet all set zLocked=true on their domain).
+  // A Cliff touching one of these must NEVER move that side's z, at all, ever — but the
+  // zLocked flag alone can't be trusted to enforce that here: it lives on the ephemeral
+  // 'terrain-split' point _applyRiverCliffPullbackToTerrainPlots wipes and re-mints from
+  // the pristine RAW ('terrain') point on EVERY pullback recompute (any later Cliff/
+  // River/reveal anywhere on the map re-triggers this whole file), and the raw point
+  // itself is never the one applyTerrainTypeZEffect actually locks (it locks whichever
+  // split copy existed at Apply time — see getRegionDomainPointIds's doc comment: it
+  // reads terrainPlots[].pointIds, which are already the post-split ids by the time
+  // Ice Sheet's Apply runs). So `base.zLocked` in posFor reads FALSE on every later
+  // rebuild even for a genuinely locked Ice Sheet edge, and the cliff delta silently
+  // re-applied itself every single time — confirmed live 2026-07-14 ("Ice Sheet edge
+  // pushed even further down" after the zLocked-respecting fix, which never actually
+  // fired because of this exact gap). The robust fix: key off the REGION's assignedType
+  // directly, which is not ephemeral and always known.
+  static ALWAYS_LOCKED_TERRAIN_TYPES = new Set(['Sea', 'Lake', 'Ice Sheet'])
+
+  // Cliff z-height (user-confirmed 2026-07-13, "fix cliffs — by definition, joins
+  // between significantly different z-heights"): for every currently-assigned Cliff
+  // edge, determines which of its two regions is HIGH vs LOW (TerrainZHeight.js's
+  // determineCliffSide) and records that against every one of the edge's own pointIds.
+  // Returns Map<vertexId, Map<regionId, 'high'|'low'>> — a vertexId maps to a region map
+  // rather than a single side because a vertex can be a corner of MULTIPLE Cliff edges
+  // (different chains meeting at a point), each with its own two regions/sides. A region
+  // whose type is permanently flat/locked (see ALWAYS_LOCKED_TERRAIN_TYPES above) gets
+  // NO entry at all — its own side of the split stays at the shared corner's raw z,
+  // unconditionally, on every rebuild, not just the first one.
+  // Consumed by _dcelPullbackMaterialize's posFor (its z hook) — this only ever decides
+  // WHICH side a split copy is on; the actual z delta is applied there.
+  _computeCliffSideAtVertex() {
+    const wt = this.gameStateManager.worldTerrainData
+    const regions = wt?.regions || []
+    const regionById = new Map(regions.map(r => [r.id, r]))
+    const sideAtVertex = new Map()
+    for (const edge of Object.values(wt?.edges || {})) {
+      if (edge.assignedType !== 'Cliff') continue
+      const regionA = regionById.get(edge.regionA), regionB = regionById.get(edge.regionB)
+      if (!regionA || !regionB) continue
+      const sides = determineCliffSide(regionA, regionB)
+      for (const pid of edge.pointIds || []) {
+        if (!sideAtVertex.has(pid)) sideAtVertex.set(pid, new Map())
+        const m = sideAtVertex.get(pid)
+        if (!SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionA.assignedType)) m.set(regionA.id, sides[regionA.id])
+        if (!SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionB.assignedType)) m.set(regionB.id, sides[regionB.id])
+      }
+    }
+    return sideAtVertex
+  }
+
   _inwardNormal(a, b, cx, cy) {
     const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1
     let nx = -dy / L, ny = dx / L
@@ -1683,7 +1834,13 @@ export default class SetupPhase {
   // chain (confirmed live, 2026-07-12). The direct approach builds each chain's ribbon
   // from ONLY its own polyline + a fixed half-width (see riverCliffBoundary.js), fully
   // independent of terrain-plot geometry or DCEL topology.
-  _dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, splitKind, isWaterByIndex, hasOwnVote = null) {
+  // rawRegionIds/cliffSideAtVertex (Cliff z-height, user-confirmed 2026-07-13): optional
+  // — when supplied, every split copy this materializes also gets a differential z if
+  // its owning face's region is on the high or low side of a Cliff at that vertex (see
+  // _computeCliffSideAtVertex). Omitted entirely by callers that don't need it (there
+  // are none left as of this change, but kept optional rather than required since this
+  // method's job is the X,Y split — z is a bolt-on, not its core purpose).
+  _dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, splitKind, isWaterByIndex, hasOwnVote = null, rawRegionIds = null, cliffSideAtVertex = null) {
     const registry = this.gameStateManager.pointRegistry
     const dcel = new DCEL(registry)
 
@@ -1696,6 +1853,22 @@ export default class SetupPhase {
       try { dcelFaces[fi] = dcel.insertFace(ids, 'pullback', { water: isWaterByIndex(fi) }) }
       catch (e) { console.warn(`[river-cliff-pullback] insertFace failed for face #${fi}: ${e.message}`) }
     }
+
+    // Cliff z-height: DCEL face id -> owning terrain plot's parentRegionId, so posFor
+    // (below) can look up "which side of a Cliff is THIS split copy on" from the face a
+    // given outgoing half-edge belongs to.
+    const regionIdByFaceId = new Map()
+    if (rawRegionIds) {
+      for (let fi = 0; fi < rawPolys.length; fi++) {
+        if (dcelFaces[fi]) regionIdByFaceId.set(dcelFaces[fi].id, rawRegionIds[fi])
+      }
+    }
+    // Collects {side, heOut} for every split copy that landed on a Cliff's high/low
+    // side — heOut.origin isn't the final split id yet at collection time (posFor runs
+    // BEFORE splitVertexSimple reassigns it), so this is resolved into real ids only
+    // after the whole split loop below finishes. Returned to the caller so it can
+    // propagate each side's new height into its own surrounding terrain.
+    const cliffSplitEntries = []
 
     const deltaByFaceVertex = new Map()
     const hasOwnVoteByFaceVertex = new Map()
@@ -1816,19 +1989,63 @@ export default class SetupPhase {
       }
     }
 
+    // Every split copy of an already-zLocked base point (Sea/Lake/Ice Sheet) must stay
+    // locked too — resolved into real ids and marked after the split loop below, same
+    // deferred-resolution reason as cliffSplitEntries.
+    const lockedSplitHeOuts = []
+
     for (const vertexId of allVertexIds) {
+      const vertexCliffSides = cliffSideAtVertex?.get(vertexId)
       dcel.splitVertexSimple(
         vertexId,
         (heOut) => {
           const d = deltaByFaceVertex.get(`${heOut.face},${vertexId}`)
           return (!d || (d.dx === 0 && d.dy === 0)) ? null : d
         },
-        (group) => {
+        (group, heOut) => {
           const base = dcel.points.get(vertexId)
-          return { x: base.x + group.dx, y: base.y + group.dy, z: base.z ?? 0 }
+          let z = base.z ?? 0
+          // Sea/Lake/Ice Sheet's permanent lock must hold here too — enforced by
+          // _computeCliffSideAtVertex simply never recording a side for an
+          // ALWAYS_LOCKED_TERRAIN_TYPES region (so `side` below comes back null/
+          // undefined for it on every rebuild, not just the first), not by trusting
+          // base.zLocked — see that constant's doc comment for why the flag itself
+          // can't be: it lives on the ephemeral split copy this whole pass wipes and
+          // re-mints from the pristine raw point on every later Cliff/River recompute
+          // anywhere on the map, so it reads false again next time regardless.
+          // base.zLocked is still checked as a second, harmless layer in case it's
+          // ever true for some other reason.
+          if (vertexCliffSides && !base.zLocked) {
+            const regionId = regionIdByFaceId.get(heOut.face)
+            const side = regionId != null ? vertexCliffSides.get(regionId) : null
+            if (side === 'high') {
+              z += CLIFF_Z_RULE.magnitude
+              cliffSplitEntries.push({ side, heOut })
+              console.log(`[TerrainZHeight] cliff split: vertex ${vertexId} region ${regionId} side high z ${(base.z ?? 0).toFixed(4)} -> ${z.toFixed(4)}`)
+            } else if (side === 'low') {
+              z -= CLIFF_Z_RULE.magnitude
+              cliffSplitEntries.push({ side, heOut })
+              console.log(`[TerrainZHeight] cliff split: vertex ${vertexId} region ${regionId} side low z ${(base.z ?? 0).toFixed(4)} -> ${z.toFixed(4)}`)
+            }
+          }
+          if (base.zLocked) lockedSplitHeOuts.push(heOut)
+          return { x: base.x + group.dx, y: base.y + group.dy, z }
         },
         splitKind
       )
+    }
+
+    // Resolve cliffSplitEntries into real ids now — heOut.origin only became the final
+    // split-vertex id partway through the splitVertexSimple call above (posFor runs
+    // before the reassignment), so this has to happen after every vertex's split loop
+    // has fully finished.
+    const cliffHighIds = [], cliffLowIds = []
+    for (const { side, heOut } of cliffSplitEntries) {
+      (side === 'high' ? cliffHighIds : cliffLowIds).push(heOut.origin)
+    }
+    for (const heOut of lockedSplitHeOuts) {
+      const p = registry.get(heOut.origin)
+      if (p) p.zLocked = true
     }
 
     const results = new Array(rawPolys.length).fill(null)
@@ -1846,7 +2063,7 @@ export default class SetupPhase {
       results[fi] = { pointIds, polygon }
     }
 
-    return { results, matchedCount }
+    return { results, matchedCount, cliffHighIds, cliffLowIds }
   }
 
   // ADR-0020 Stage C (District Edge face Surfaces) — NOT YET IMPLEMENTED, stub only.
@@ -2437,13 +2654,31 @@ export default class SetupPhase {
       const t = terrainPlots[fi]?.assignedType
       return t === 'Lake' || t === 'Sea'
     }
-    const { results, matchedCount } = this._dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, 'terrain-split', isWaterByIndex, hasOwnVote)
+    const cliffSideAtVertex = this._computeCliffSideAtVertex()
+    const { results, matchedCount, cliffHighIds, cliffLowIds } = this._dcelPullbackMaterialize(rawPolys, rawIds, deltas, ambiguous, 'terrain-split', isWaterByIndex, hasOwnVote, rawRegionIds, cliffSideAtVertex)
 
     for (let ci = 0; ci < terrainPlots.length; ci++) {
       const result = results[ci]
       if (!result) continue
       terrainPlots[ci].pointIds = result.pointIds
       terrainPlots[ci].polygon = result.polygon
+    }
+
+    // Cliff z-height (user-confirmed 2026-07-13, "both sides of the cliff connect to
+    // their adjacent terrain"): the split above already gave each side's own corner
+    // copies a differential z (posFor, inside _dcelPullbackMaterialize); this blends
+    // that new height outward into each side's own surrounding fine terrain, same
+    // hop-bounded/Euclidean-falloff shape every other terrain-type effect uses
+    // (TerrainZHeight.js's propagateFromPoints), clamped to only ever raise the high
+    // side and only ever lower the low side.
+    if (cliffHighIds.length || cliffLowIds.length) {
+      const targetZById = new Map()
+      for (const id of [...cliffHighIds, ...cliffLowIds]) {
+        const p = registry.get(id)
+        if (p) targetZById.set(id, p.z)
+      }
+      if (cliffHighIds.length) propagateFromPoints(registry, terrainPlots, cliffHighIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'up')
+      if (cliffLowIds.length) propagateFromPoints(registry, terrainPlots, cliffLowIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'down')
     }
 
     // Real, gap-free filled Faces (see plan "typed-giggling-giraffe" addendum, and
@@ -3019,7 +3254,16 @@ export default class SetupPhase {
 
     const newDistrict = {
       id: newId,
-      seedPoint: plot.seedPoint ? { x: plot.seedPoint.x, y: plot.seedPoint.y } : { x: polygon[0].x, y: polygon[0].y },
+      // z adopted from the originating terrain plot's own seedPoint (TODO.md
+      // "Groundplane Z-height implementation", plan "rustling-churning-finch",
+      // user-confirmed 2026-07-12: "Districts must adopt the City terrain plots'
+      // z-heights that spawned them"). The district's boundary corners (pointIds,
+      // below) already share the terrain plot's exact registry point ids, so THEIR z
+      // is inherited automatically by construction — only seedPoint needed an explicit
+      // copy, since it's a bare object, not a shared registry id (see §2).
+      seedPoint: plot.seedPoint
+        ? { x: plot.seedPoint.x, y: plot.seedPoint.y, z: plot.seedPoint.z ?? 0 }
+        : { x: polygon[0].x, y: polygon[0].y, z: 0 },
       polygon,
       pointIds: [...rawSourceIds],
       assignedType: null,
@@ -3427,7 +3671,7 @@ export default class SetupPhase {
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [])
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.gameStateManager.pointRegistry)
     cityData.plots = [...cityData.plots, ...terrainPlots]
     console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${terrainPlots.length} plots)`)
     if (terrainPlots.length > 0) {
@@ -3484,7 +3728,7 @@ export default class SetupPhase {
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [])
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.gameStateManager.pointRegistry)
     cityData.plots = [...(cityData.plots || []).filter(p => p.type !== 'terrain'), ...terrainPlots]
     if (terrainPlots.length > 0) {
       const junctions = cityData.streetGraph?.junctions || []
@@ -3516,7 +3760,7 @@ export default class SetupPhase {
     const tradeRoadWaypoints = (this.tradingDestinations || [])
       .map(td => this._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [])
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.gameStateManager.pointRegistry)
 
     cityData.plots = [...plots, ...terrainPlots]
 

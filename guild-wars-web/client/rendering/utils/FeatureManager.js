@@ -25,10 +25,11 @@ const FEATURES = {
       '/resources/Models/tree3.glb',
     ],
     strategy: 'scatter',
-    count: 30,
+    count: 60,              // doubled (user-confirmed 2026-07-14, was 30)
     baseScale: 0.104,
     scaleVariation: 0.064,
     minScale: 0.08,
+    heightScale: 2,         // Y-axis only (user-confirmed 2026-07-14, "increase tree heights by 2x") — footprint/count are separate knobs
     leanMax: 0.03,
   },
   bridge: {
@@ -128,13 +129,41 @@ export default class FeatureManager {
     while (pts.length < count && attempts < count * 40) {
       const x = minX + rng() * (maxX - minX)
       const y = minY + rng() * (maxY - minY)
-      if (pointInPolygon(x, y, polygon)) pts.push({ x, z: y })
+      if (pointInPolygon(x, y, polygon)) pts.push({ x, z: y, worldY: this._polygonHeightAt(polygon, x, y) })
       attempts++
     }
     return pts
   }
 
-  _spawnOne(gltf, x, z, scale, rotY, rotX = 0, rotZ = 0, billboard = false, loop = false, skipAnimation = false) {
+  // Real per-vertex terrain height (see TODO.md "Groundplane Z-height implementation")
+  // interpolated at (x,y) — fan-triangulated from polygon[0], barycentric-weighted
+  // across whichever fan triangle contains the point (user-confirmed 2026-07-14: trees
+  // were always spawning at Y=0 regardless of the terrain height they landed on). Falls
+  // back to the nearest vertex's own z if the point lands in no fan triangle at all
+  // (float-precision edge case at a concave polygon's boundary).
+  _polygonHeightAt(polygon, x, y) {
+    if (!polygon?.length) return 0
+    const z0 = polygon[0].z ?? 0
+    for (let i = 1; i < polygon.length - 1; i++) {
+      const a = polygon[0], b = polygon[i], c = polygon[i + 1]
+      const d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y)
+      if (Math.abs(d) < 1e-9) continue
+      const w1 = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / d
+      const w2 = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / d
+      const w3 = 1 - w1 - w2
+      if (w1 >= -1e-6 && w2 >= -1e-6 && w3 >= -1e-6) {
+        return w1 * z0 + w2 * (b.z ?? 0) + w3 * (c.z ?? 0)
+      }
+    }
+    let nearest = polygon[0], bestD = Infinity
+    for (const v of polygon) {
+      const d = (v.x - x) ** 2 + (v.y - y) ** 2
+      if (d < bestD) { bestD = d; nearest = v }
+    }
+    return nearest.z ?? 0
+  }
+
+  _spawnOne(gltf, x, z, scale, rotY, rotX = 0, rotZ = 0, billboard = false, loop = false, skipAnimation = false, worldY = 0, scaleY = null) {
     // Wrapper holds world position/rotation/scale so the animation on the inner
     // scene cannot displace the prop from its terrain plot seed point.
     const inner = skeletonClone(gltf.scene)
@@ -142,8 +171,12 @@ export default class FeatureManager {
 
     const wrapper = new THREE.Group()
     wrapper.rotation.set(rotX, rotY, rotZ)
-    wrapper.scale.setScalar(scale)
-    wrapper.position.set(x, 0, z)
+    // scaleY (user-confirmed 2026-07-14, forest's heightScale): non-uniform scale so a
+    // feature can be made taller without also widening its footprint — omitted (null)
+    // keeps every other caller's existing uniform-scale behaviour unchanged.
+    if (scaleY != null) wrapper.scale.set(scale, scaleY, scale)
+    else wrapper.scale.setScalar(scale)
+    wrapper.position.set(x, worldY, z)
     wrapper.add(inner)
     this.scene.add(wrapper)
     this._objects.push(wrapper)
@@ -195,19 +228,20 @@ export default class FeatureManager {
       if (cfg.strategy === 'fixed') {
         const scale = Math.max(cfg.minScale, cfg.baseScale + (rng() - 0.5) * 2 * cfg.scaleVariation)
         const rotY = rng() * Math.PI * 2
-        this._spawnOne(gltf, cell.seedPoint.x, cell.seedPoint.y, scale, rotY, 0, 0, false, cfg.loop ?? false)
+        this._spawnOne(gltf, cell.seedPoint.x, cell.seedPoint.y, scale, rotY, 0, 0, false, cfg.loop ?? false, false, cell.seedPoint.z ?? 0)
       } else if (cfg.strategy === 'scatter') {
         const points = (cell.polygon?.length >= 3)
           ? this._samplePolygon(cell.polygon, cfg.count, rng)
-          : [{ x: cell.seedPoint.x, z: cell.seedPoint.y }]
+          : [{ x: cell.seedPoint.x, z: cell.seedPoint.y, worldY: cell.seedPoint.z ?? 0 }]
 
         for (const pt of points) {
           const rotY = cfg.billboardY ? 0 : rng() * Math.PI * 2
           const rotX = (rng() - 0.5) * 2 * (cfg.leanMax ?? 0)
           const rotZ = (rng() - 0.5) * 2 * (cfg.leanMax ?? 0)
           const scale = Math.max(cfg.minScale, cfg.baseScale + (rng() - 0.5) * 2 * cfg.scaleVariation)
+          const scaleY = cfg.heightScale ? scale * cfg.heightScale : null
           const model = gltfs ? gltfs[Math.floor(rng() * gltfs.length)] : gltf
-          this._spawnOne(model, pt.x, pt.z, scale, rotY, rotX, rotZ, cfg.billboardY ?? false)
+          this._spawnOne(model, pt.x, pt.z, scale, rotY, rotX, rotZ, cfg.billboardY ?? false, false, false, pt.worldY ?? 0, scaleY)
         }
       } else if (cfg.strategy === 'absolute') {
         const scale = Math.max(cfg.minScale, cfg.baseScale + (rng() - 0.5) * 2 * cfg.scaleVariation)

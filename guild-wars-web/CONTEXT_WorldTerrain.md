@@ -58,6 +58,18 @@ A flavour addition scoped to a specific ==plot== within a compatible parent Terr
 - Whirlpool → Sea, Lake only
   _Avoid_: terrain modifier, terrain overlay, special terrain
 
+**Apply** (Terrain Setup action):
+The action that commits a terrain type assignment to a region, running its z-height delta-and-propagation rule and locking that region's type. Distinct from selecting/previewing a type, which has no effect until Applied.
+_Avoid_: confirm, commit, finalize
+
+**Terrain centre**:
+A terrain ==plot=='s Voronoi seed coordinate `{x, y, z}`, stored directly on the plot rather than in the point registry, since it is never part of any Surface's boundary and never shared with another Surface.
+_Avoid_: seed, centroid
+
+**Waterfall**:
+The crossing point where a River's path passes through a Cliff Edge, producing a discrete vertical drop equal to the Cliff's own high/low z gap, rather than a continuous grade.
+_Avoid_: cascade, cataract
+
 ---
 
 ### Streets

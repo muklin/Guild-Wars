@@ -998,6 +998,14 @@ export default class BuildingRenderer {
     if (jettied) {
       for (const [wi, wing] of wings.entries()) {
         if (!(wing.jettyProjection > 0)) continue
+        // Fixed 2026-07-13: `canJetty`/`jettied` above only check the BUILDING-level
+        // `floors`, but each wing has its own independent wing.floors list (built at
+        // :983 from wing.floorCount, which can be shorter than the building's overall
+        // floor count). `fromFloor: 1` needs a real index-1 entry in THIS wing's own
+        // floors — skip wings that don't have one, or ParametricBuilding.assemble()
+        // throws reading .zHeight off undefined (confirmed live: "lots of these
+        // errors" once auto-regenerate-on-drag-stop made this roll far more often).
+        if (!(wing.floors.length > 1)) continue
         const rJ = this._rand(hash + 47 + wi * 5)
         wing.jetty = { amount: rJ * wing.jettyProjection, fromFloor: 1 }
       }

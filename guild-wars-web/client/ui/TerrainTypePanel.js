@@ -176,7 +176,12 @@ export default class TerrainTypePanel {
 
       const btn = document.createElement('button')
       btn.textContent = type
-      btn.style.cssText = `padding:6px 4px;background:${isActive ? hex : '#2a2a2a'};border:2px solid ${disabled ? '#444' : hex};color:${disabled ? '#555' : '#fff'};cursor:${disabled ? 'not-allowed' : 'pointer'};border-radius:3px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`
+      // Ice Sheet's near-white swatch (0xf4f8ff) made its disabled grid-button text
+      // (#555 on #2a2a2a) and its Apply button text (#fff on the pale hex itself)
+      // both hard to read (user-confirmed 2026-07-13, screenshot) — blue reads clearly
+      // against both the dark disabled background and a pale active background.
+      const textColor = disabled ? (type === 'Ice Sheet' ? '#4da6ff' : '#555') : '#fff'
+      btn.style.cssText = `padding:6px 4px;background:${isActive ? hex : '#2a2a2a'};border:2px solid ${disabled ? '#444' : hex};color:${textColor};cursor:${disabled ? 'not-allowed' : 'pointer'};border-radius:3px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`
       if (disabled) {
         _attachDisabledTooltip(btn, disabledReason)
       } else {
@@ -191,7 +196,10 @@ export default class TerrainTypePanel {
       const hex = '#' + color.toString(16).padStart(6, '0')
       const applyBtn = document.createElement('button')
       applyBtn.textContent = `Apply: ${pendingType}`
-      applyBtn.style.cssText = `width:100%;padding:8px;margin-top:6px;background:${hex};color:#fff;border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px`
+      // Ice Sheet's pale swatch (0xf4f8ff) made white Apply-button text nearly
+      // invisible (user-confirmed 2026-07-13, screenshot) — blue stays readable there.
+      const applyTextColor = pendingType === 'Ice Sheet' ? '#1a4d8f' : '#fff'
+      applyBtn.style.cssText = `width:100%;padding:8px;margin-top:6px;background:${hex};color:${applyTextColor};border:none;cursor:pointer;border-radius:3px;font-weight:bold;font-size:12px`
       applyBtn.addEventListener('click', () => {
         // Auto-inherit name if a neighbour already carries this terrain type
         const inheritFrom = adjacentRegions.find(r => r.type === pendingType && r.name)

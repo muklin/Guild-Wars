@@ -541,7 +541,8 @@ export default class App {
             response.terrainPlots || [],
             response.edgePoints || [],
             pointsById,
-            response.riverCliffFaces || []
+            response.riverCliffFaces || [],
+            response.hiddenRegions || []
           )
         }
 
@@ -814,16 +815,49 @@ export default class App {
     return null
   }
 
-  _isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap) {
-    // Map boundary: this point is a vertex of an edge region's own hull polygon — the
-    // organic-world equivalent of the old square-coordinate check (see
-    // TerrainVoronoiGenerator's void-adjacency isEdge; plan "federated-baking-dragon").
-    // Approximate (an edge region's convex hull can rarely include a genuinely-interior
-    // vertex at a concave dent) rather than a new exact-per-point server payload — close
-    // enough in practice since edge regions predominantly trace the true outer boundary.
-    for (const region of regionMap.values()) {
-      if (region.isEdge && region.polygon?.some(v => v.id === ptId)) return true
+  // Exact map-boundary point set (fixed 2026-07-13 — replaces the convex-hull
+  // approximation below, which could false-positive on any interior vertex an edge
+  // region's convex hull swept in at a concave dent, letting a river be defined with
+  // neither end near real Sea/Lake/Ice Sheet/Mountains/the map edge). Mirrors
+  // TerrainVoronoiGenerator.generateBoundaryEdges' own server-side shared-edge
+  // detection (reference-equality there; id-pair here, since the client only has ids):
+  // a fine terrain-plot boundary segment claimed by exactly one plot has no neighbour
+  // on the other side — void — so both its endpoints are TRUE boundary points,
+  // regardless of any coarse region's hull shape. Cached per terrainPlots array
+  // identity — recomputed only when a fresh terrainData snapshot arrives.
+  _getVoidBoundaryPointIds(terrainPlots) {
+    if (this._voidBoundaryCache?.source === terrainPlots) return this._voidBoundaryCache.ids
+    const segCount = new Map()
+    for (const plot of terrainPlots || []) {
+      // Prefer the PRISTINE pre-pullback ids (_rawPointIds, captured once server-side —
+      // see SetupPhase.js's river/cliff pullback) over the live (possibly split)
+      // pointIds: a River/Cliff already assigned between two plots splits their shared
+      // corner into two different ids, one per bank, which would otherwise make that
+      // internal boundary look "unshared" (void) to this id-pair-matching scan just
+      // like a genuine map edge — false-positiving every existing river/cliff bank as
+      // a valid new River endpoint too.
+      const ids = plot._rawPointIds || plot.pointIds
+      if (!ids || ids.length < 2) continue
+      for (let i = 0; i < ids.length; i++) {
+        const a = ids[i], b = ids[(i + 1) % ids.length]
+        if (a == null || b == null || a === b) continue
+        const key = a < b ? `${a}:${b}` : `${b}:${a}`
+        segCount.set(key, (segCount.get(key) || 0) + 1)
+      }
     }
+    const boundaryIds = new Set()
+    for (const [key, count] of segCount) {
+      if (count !== 1) continue
+      const [a, b] = key.split(':').map(Number)
+      boundaryIds.add(a); boundaryIds.add(b)
+    }
+    this._voidBoundaryCache = { source: terrainPlots, ids: boundaryIds }
+    return boundaryIds
+  }
+
+  _isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap) {
+    const terrainPlots = this.renderer.terrainData?.terrainPlots
+    if (terrainPlots && this._getVoidBoundaryPointIds(terrainPlots).has(ptId)) return true
 
     for (const [edgeId, edge] of Object.entries(edges)) {
       const pts = edge.pointIds || []
@@ -1127,7 +1161,7 @@ export default class App {
       const response = await GameAPI.regenerateDistrict(districtId, configOverrides)
       if (response.ok) {
         this._renderCityGeometry(response.cityDistrictData, { preserveTerrainPlots: true })
-        this._refreshDistrictPanel()
+        this._refreshDistrictPanel(true)   // keep the settings dialog open (user-confirmed 2026-07-13)
       } else this.uiManager.showError(response.error)
     } catch (error) { this.uiManager.showError(error.message) }
   }
@@ -1291,7 +1325,10 @@ export default class App {
     return [...fromCityDistricts, ...fromTerrainDistricts]
   }
 
-  _refreshDistrictPanel() {
+  // `preserveSettingsPanel`: true for a regenerate-triggered refresh (settings-dialog
+  // auto-regenerate-on-drag-stop, its own Regenerate button, or the toolbar Regenerate
+  // button) — user-confirmed 2026-07-13 these shouldn't interrupt an open edit session.
+  _refreshDistrictPanel(preserveSettingsPanel = false) {
     const panel = this.uiManager.districtTypePanel
     if (!panel) return
     const shared = {
@@ -1347,6 +1384,7 @@ export default class App {
         leadershipTaken: leadershipTaken(this.selectedDistrictId),
         configOverrides: district?.configOverrides || {},
         locked: !!district?.locked,
+        preserveSettingsPanel,
         ...shared
       })
     } else if (this.selectedCityEdgeIds.size > 0) {
@@ -1443,7 +1481,8 @@ export default class App {
       state.worldTerrainData.terrainPlots || [],
       state.worldTerrainData.edgePoints || [],
       pointsById,
-      state.worldTerrainData.riverCliffFaces || []
+      state.worldTerrainData.riverCliffFaces || [],
+      state.worldTerrainData.hiddenRegions || []
     )
 
     const cityData = state.cityDistrictData
@@ -1806,7 +1845,7 @@ export default class App {
         this.renderer.setMode('terrain')
         this.renderer.guildSetupActive = false
         this.renderer.setCityEdgesHidden(false)
-        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [])
+        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [], response.hiddenRegions || [])
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')
         // New Game: discard any saved camera view from the previous game first, so

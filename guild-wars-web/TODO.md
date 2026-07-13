@@ -1,7 +1,6 @@
 # Bugs:
-- Foreign Powers going around corners produces artifacts.  I still don't like the FP indication.  FP names are often not rendered.
+- I don't like the current FP indication.  FP names are often not rendered.
 - Archways are not appearing in game.  I've not yet found one.  
-
 
 
 # Features:
@@ -10,33 +9,6 @@
 - Sometime Edge definition panels are not in a logical place.  
 
 ## Terrain Mode
-
-
-
-### Groundplane Z-height implementation.  HUGE
-- the ground plane is currently a single plane at z=0.
-
-- Terrain centres, and edgepoints then District centres and boundaries, then Junctions, Gutter points, plotcorners will all render a z-height.  
-- when city and Terrain are terrain plots are generated z-heights of all points are randomized in a thin band.  
-- Terrain types set, and drag adjacent parts of the map up or down, proportional to the type, 
-  - sea - a lot, and all terrain plot z-heights are set to the same value.
-  - lake - a bit, and all terrain plot z-heights are set to the same value.
-  - swamp - same as lake, and all terrain plot z-heights are smoothed
-  - rivers set their z-heights so end point to end point is a consistent gradient.  
-  - plains and deserts are flat.
-  - Cliffs detect the direction of drop off, (if same then randomly select one.) 
-   - split the vertices, separate the adjacent terrain plot z-heights, add a cliff face geometry
-  - hills increase a bit and all terrain plot z-heights are multiplied.
-  - mountains increase a lot and all terrain plot z-heights are multiplied even more.  
-- during Terrain application, the z-heights of all 
-- District boundaries set, and drag adjacent parts of the map up or down, proportional to the type
- - Canals decrease slightly.  
-- Streets are rendered along z-heights.  
-- plots are unaffected and run along the z-heights too.  
-- buidings are generated in the same ways as currently, with wings, unaffected by z-height. 
-- Wings will will quantize their ground level height to be the first level where the highest vert is above ground.
-- wings merge to buidings as normal. 
-- When The difference between a gutter and the junction centre is above a certain value, the gutter and the Plot boundary are separated and a berm wall is added.  Some plots may also have a maximum gradient value, that also enforces that.
 
 
 
@@ -255,3 +227,32 @@ Do the work to correct the jittered terrain-plot color reverting to default on h
 
 - change the terrain generation away from a forced square World, to a circular-ish set of terrains.  still need to detect edge terrains.  
 - Change City selection (currently its the largest non-edge terrain) to the terrain region that is in the centre of the map (use the terrain that contains the center point.)
+
+
+
+### Groundplane Z-height implementation.  HUGE
+- the ground plane is currently a single plane at z=0.
+
+- Terrain centres, and edgepoints then District centres and boundaries, then Junctions, Gutter points, plotcorners will all render a z-height.  
+- when city and Terrain are terrain plots are generated z-heights of all points are randomized in a thin band.  
+- Terrain types set, and drag adjacent parts of the map up or down, proportional to the type, 
+  - sea - a lot, and all terrain plot z-heights are set to the same value.
+  - lake - a bit, and all terrain plot z-heights are set to the same value.
+  - swamp - same as lake, and all terrain plot z-heights are smoothed
+  - rivers set their z-heights so end point to end point is a consistent gradient.  
+  - plains and deserts are flat.
+  - Cliffs detect the direction of drop off, (if same then randomly select one.) 
+   - split the vertices, separate the adjacent terrain plot z-heights, add a cliff face geometry
+  - hills increase a bit and all terrain plot z-heights are multiplied.
+  - mountains increase a lot and all terrain plot z-heights are multiplied even more.  
+- during Terrain application, the z-heights of all 
+- District boundaries set, and drag adjacent parts of the map up or down, proportional to the type
+ - Canals decrease slightly.  
+- Streets are rendered along z-heights.  
+- plots are unaffected and run along the z-heights too.  
+- buidings are generated in the same ways as currently, with wings, unaffected by z-height. 
+- Wings will will quantize their ground level height to be the first level where the highest vert is above ground.
+- wings merge to buidings as normal. 
+- When The difference between a gutter and the junction centre is above a certain value, the gutter and the Plot boundary are separated and a berm wall is added.  Some plots may also have a maximum gradient value, that also enforces that.
+
+

@@ -21,14 +21,47 @@
 // zero overlaps for). AREA_OVERLAP findings below cover that gap.
 import GroundPointRegistry from './GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './DCEL.js'
+import { organicOuterRadius } from './TerrainVoronoiGenerator.js'
 
 const WORLD_EPS = 1e-6
 const NEAR_MISS_TOLERANCE = 0.05
+// Tolerance INSIDE organicOuterRadius (the outer ring's seed-selection cutoff) to start
+// treating a point as "possibly boundary". Buffer-zone follow-up (2026-07-13, "sunburst"
+// screenshot): the outer ring's rim cells are now naturally bounded by a throwaway
+// buffer-seed annulus (generate()'s bufferRadius) instead of an artificial clip circle —
+// which is what makes the boundary genuinely rough/jagged rather than a smooth circle,
+// but a genuinely rough boundary has real radial variance, not just clipPolygon's
+// sub-pixel sagitta. Empirically (10 live generations, worldSize=50, organicOuterRadius
+// ~28.2): the naturally-bounded rim's own polygon corners ranged as low as ~25.6 from
+// centre — a fixed 0.5 slack left dozens of perfectly normal rim edges below the
+// threshold, misreported as HOLE findings every single run. Proportional to worldSize
+// (not a fixed absolute) so the same ratio holds at any world size/density.
+const BOUNDARY_INNER_SLACK_RATIO = 0.15
 
-function onWorldBoundary(p, worldSize) {
+// Fixed 2026-07-13 (user-confirmed, prompted by a live-observed hole), REVISED same day
+// (outer-ring rewrite): the world's real boundary used to be a single organic clip
+// CIRCLE at organicClipRadius (the old single-ring design) — every rim point sat within
+// a tight tolerance of that one radius. Now that the inner ring's own rim clip has been
+// removed entirely (an inner-ring cell's real neighbours are ordinary outer-ring cells,
+// not void — see TerrainVoronoiGenerator.js generate()'s Step 5.5 doc comment) and the
+// outer ring's own clip was deliberately loosened (0.4×worldSize margin, so it only
+// catches genuinely wild spikes instead of forcing a smooth silhouette — user-confirmed
+// 2026-07-13, "just clipping the outer ring to a circle"), the true boundary is no
+// longer one exact circle: a genuine outer-rim edge can sit anywhere from
+// organicOuterRadius (the outer ring's seed-selection cutoff) out to
+// organicOuterClipRadius (the loose safety clip's max reach) — a BAND, not a rim. Any
+// point at or beyond organicOuterRadius-BOUNDARY_INNER_SLACK is treated as an expected
+// unpaired half-edge (nothing reliably exists beyond it), same role the literal world
+// edge / old single clip circle used to play.
+function onWorldBoundary(p, worldSize, minBoundaryRadius) {
   if (!p || worldSize == null) return false
-  return Math.abs(p.x) < WORLD_EPS || Math.abs(p.x - worldSize) < WORLD_EPS ||
-         Math.abs(p.y) < WORLD_EPS || Math.abs(p.y - worldSize) < WORLD_EPS
+  const onSquare = Math.abs(p.x) < WORLD_EPS || Math.abs(p.x - worldSize) < WORLD_EPS ||
+                    Math.abs(p.y) < WORLD_EPS || Math.abs(p.y - worldSize) < WORLD_EPS
+  if (onSquare) return true
+  if (minBoundaryRadius == null) return false
+  const cx = worldSize / 2, cy = worldSize / 2
+  const dist = Math.hypot(p.x - cx, p.y - cy)
+  return dist >= minBoundaryRadius
 }
 
 function bbox(poly) {
@@ -76,6 +109,10 @@ function polygonsOverlap(polyA, polyB) {
 export function auditGroundplane(groundplane) {
   const { points = [], surfaces = [], terrain = {} } = groundplane || {}
   const worldSize = terrain.worldSize
+  // The world's real boundary band (see onWorldBoundary's doc comment) — computed
+  // straight from worldSize so every caller gets this for free, no groundplane shape
+  // change needed.
+  const minBoundaryRadius = worldSize != null ? organicOuterRadius(worldSize) - worldSize * BOUNDARY_INNER_SLACK_RATIO : null
   const registry = new GroundPointRegistry(points)
   const dcel = new DCEL(registry)
 
@@ -118,7 +155,7 @@ export function auditGroundplane(groundplane) {
     const twin = dcel.getHalfEdge(he.twin)
     const originId = he.origin, otherId = twin?.origin
     const originPt = registry.get(originId), otherPt = registry.get(otherId)
-    if (originPt && otherPt && onWorldBoundary(originPt, worldSize) && onWorldBoundary(otherPt, worldSize)) continue
+    if (originPt && otherPt && onWorldBoundary(originPt, worldSize, minBoundaryRadius) && onWorldBoundary(otherPt, worldSize, minBoundaryRadius)) continue
     const borderingSurfaceId = otherId != null ? directedPairToSurfaceId.get(`${otherId},${originId}`) : undefined
     const finding = {
       category: 'HOLE',

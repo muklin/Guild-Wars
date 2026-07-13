@@ -31,8 +31,12 @@ export default class EdgeLineRenderer {
       if (pts.length < 2) continue
       const color = getColor(edge, edgeId)
 
+      // Real per-point height when available (TODO.md "Groundplane Z-height
+      // implementation") — District-scale z isn't populated yet (out of this session's
+      // scope), so this is currently a no-op everywhere this renderer is used, but reads
+      // through the same pointsById.z the Terrain-Setup PolylineRenderer now does.
       const verts = new Float32Array(pts.length * 3)
-      pts.forEach((p, i) => { verts[i * 3] = p.x; verts[i * 3 + 1] = this.y; verts[i * 3 + 2] = p.y })
+      pts.forEach((p, i) => { verts[i * 3] = p.x; verts[i * 3 + 1] = (p.z ?? 0) + this.y; verts[i * 3 + 2] = p.y })
       const geometry = new THREE.BufferGeometry()
       geometry.setAttribute('position', new THREE.BufferAttribute(verts, 3))
       const material = new THREE.LineBasicMaterial({ color })

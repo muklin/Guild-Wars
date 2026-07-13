@@ -272,10 +272,17 @@ export default class TerrainRenderer {
   // Lake/Sea (buildRegionMesh), replacing the stroked-polyline overlay for whichever
   // edges got a face — a chain that couldn't be built (confluence, etc) simply isn't in
   // this array and keeps stroke-rendering via PolylineRenderer, unchanged.
-  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = []) {
+  // hiddenRegions (outer-ring rewrite, 2026-07-13): stored on terrainData for a future
+  // "discover foreign lands" reveal, but currently inert — hover/click hit tests and
+  // renderEdges' "is this edge shown" gate deliberately only look at `regions` (kept),
+  // so the hidden ring stays invisible/non-interactive until that feature exists.
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], hiddenRegions = []) {
     this.clearMarkers()
     console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points,', riverCliffFaces.length, 'river/cliff faces')
     this.edgePointsById = new Map((edgePoints || []).map(p => [p.id, p]))
+    // Kept for z lookups against data this method doesn't itself resolve (e.g. a coarse
+    // region's convex-hull polygon, still {x,y,id} — see getTerrainCornerAtWorldPos).
+    this._pointsById = pointsById || this._pointsById
     if (pointsById) {
       for (const cell of (terrainPlots || [])) {
         cell.polygon = resolvePolygon(cell.pointIds, pointsById) ?? cell.polygon
@@ -284,7 +291,7 @@ export default class TerrainRenderer {
         face.polygon = resolvePolygon(face.pointIds, pointsById) ?? face.polygon
       }
     }
-    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces }
+    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces, hiddenRegions: hiddenRegions || [] }
     this.renderTerrain(regions, terrainPlots || [])
     // Reverted (2026-07-11): Terrain Setup mode's EDGE OVERLAY (renderEdges, below) goes
     // back to stroke rendering for every River/Cliff edge instead of skipping the ones
@@ -383,12 +390,33 @@ export default class TerrainRenderer {
       return null
     }
 
-    const polygon = clipPolygonToBox(region.polygon, 0, this.worldSize, 0, this.worldSize)
+    // Outer ring rewrite (user-confirmed 2026-07-13): this used to clip to the literal
+    // [0,worldSize] square. That never trimmed anything for the inner ring (its own
+    // clip circle — TerrainVoronoiGenerator's organicClipCircle — stays safely inside
+    // this square with margin to spare), so it silently did nothing and nobody noticed.
+    // But the outer ring's clip circle (outerRadius+margin) legitimately extends PAST
+    // this square on every cardinal side, so this square clip was re-truncating already
+    // circle-clipped outer-ring polygons back down to the square — visually flattening
+    // the outer ring into a chamfered-square/"circled square" shape and defeating the
+    // whole point of the organic outer clip circle. Confirmed live 2026-07-13 (user
+    // screenshot showed straight edges + cut corners, the square-∩-circle signature).
+    // Widened generously so it only ever catches genuinely-unbounded/sentinel-influenced
+    // artefacts (sentinels sit at worldSize*3 — see generateRawVoronoi), never legitimate
+    // outer-ring geometry (max extent ~1.15×worldSize from the origin corner).
+    const clipMargin = this.worldSize
+    const polygon = clipPolygonToBox(region.polygon, -clipMargin, this.worldSize + clipMargin, -clipMargin, this.worldSize + clipMargin)
     if (polygon.length < 3) return null
 
+    // Mesh relief (TODO.md "Groundplane Z-height implementation", plan "rustling-
+    // churning-finch"): Three.js Y is the vertical axis, so a vertex's data-model `z`
+    // becomes its mesh Y. `v.z` is already resolved for terrain-plot/river-cliff-face
+    // callers (setTerrainData runs every polygon through resolvePolygon); a bare
+    // {x,y,id} vertex (the coarse-hull fallback path, or a clip-synthesized boundary
+    // point with no id) falls back to a _pointsById lookup, then 0.
     const vertices = []
     for (const v of polygon) {
-      vertices.push(v.x || 0, 0, v.y || 0)
+      const z = v.z ?? this._pointsById?.get(v.id)?.z ?? 0
+      vertices.push(v.x || 0, z, v.y || 0)
     }
     if (vertices.some(v => !isFinite(v))) {
       console.warn(`Region ${region.id} has non-finite vertices after clip`)
@@ -412,6 +440,11 @@ export default class TerrainRenderer {
       geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(triangles), 1))
       geometry.computeVertexNormals()
       geometry.computeBoundingBox()
+      // Real per-vertex height, kept for top-down flatten/unflatten (see
+      // setGroundFlattened) — Top-down mode reinstates the floor-scroll clip plane,
+      // which only makes sense against a flat world (user-confirmed 2026-07-13); the
+      // real relief comes back the moment you leave top-down.
+      geometry.userData.realY = vertices.filter((_, i) => i % 3 === 1)
     } catch (e) {
       console.error(`Error creating geometry for region ${region.id}:`, e)
       return null
@@ -515,11 +548,19 @@ export default class TerrainRenderer {
       const a = regionsById.get(edge.regionA), b = regionsById.get(edge.regionB)
       return !!a && !!b && WATER_TYPES.has(a.assignedType) && WATER_TYPES.has(b.assignedType)
     }
-    const visibleEdges = Object.fromEntries(Object.entries(edges).filter(([, edge]) => !isWaterWaterEdge(edge)))
-    console.log(`Rendering ${Object.keys(visibleEdges).length} edges (${Object.keys(edges).length - Object.keys(visibleEdges).length} Sea/Lake<->Sea/Lake edges hidden)`)
+    // generateBoundaryEdges now builds the FULL edge graph, including edges touching
+    // (or between) still-hidden organic-world regions — "shown" is this downstream
+    // check, not a generation-time gate (see TerrainVoronoiGenerator.js's doc comment).
+    const isShown = (edge) => regionsById.has(edge.regionA) && regionsById.has(edge.regionB)
+    const visibleEdges = Object.fromEntries(Object.entries(edges).filter(([, edge]) => isShown(edge) && !isWaterWaterEdge(edge)))
+    console.log(`Rendering ${Object.keys(visibleEdges).length} edges (${Object.keys(edges).length - Object.keys(visibleEdges).length} hidden-region/Sea-Lake edges excluded)`)
+    // Prefer the registry-backed pointsById (real z, TODO.md "Groundplane Z-height
+    // implementation") over edgePointsById (a materialized {id,x,y} snapshot with no z,
+    // predating this session) — same underlying terrain point ids either way, so this is
+    // a strict upgrade, not a behavior change for x/y.
     this.terrainPolylines.render(
       visibleEdges,
-      this.edgePointsById,
+      this._pointsById || this.edgePointsById,
       (edge) => edge.assignedType ? TERRAIN_COLORS.get(edge.assignedType) : TERRAIN_COLORS.unassigned
     )
     console.log(`Successfully created ${this.edgeMeshes.size} edge meshes`)
@@ -619,6 +660,54 @@ export default class TerrainRenderer {
     }
   }
 
+  // Real raycast targets for InputHandler.screenToWorld (TODO.md "Groundplane Z-height
+  // implementation", plan "rustling-churning-finch"): the fine terrain-plot meshes are
+  // the only ones with real per-vertex height right now (buildRegionMesh) — prefer them;
+  // fall back to the coarse region-hull meshes (still flat) for the rare fallback-render
+  // path (setTerrainData's `else` branch, no terrainPlots data).
+  getPickableMeshes() {
+    if (this.terrainPlotMeshes.size) return [...this.terrainPlotMeshes.values()].filter(m => m.visible)
+    return [...this.regionMeshes.values()].filter(m => m.visible)
+  }
+
+  // Top-down mode reinstates the floor-scroll clip plane (user-confirmed 2026-07-13),
+  // which only behaves correctly against a flat world — every ground-fill mesh's Y
+  // channel gets swapped between its real per-vertex height (geometry.userData.realY,
+  // stashed at build time) and flat 0, in place, no rebuild. Reversible: leaving
+  // top-down restores the real relief from the same stashed array.
+  setGroundFlattened(flat) {
+    const apply = (mesh) => {
+      const geo = mesh?.geometry
+      const realY = geo?.userData?.realY
+      if (!realY) return
+      const pos = geo.attributes.position
+      for (let i = 0; i < realY.length; i++) pos.array[i * 3 + 1] = flat ? 0 : realY[i]
+      pos.needsUpdate = true
+      geo.computeVertexNormals()
+    }
+    this.terrainPlotMeshes.forEach(apply)
+    this.regionMeshes.forEach(apply)
+    this.riverCliffFaceMeshes?.forEach(apply)
+  }
+
+  // Debug-point markers (spheres/boxes, position-based rather than per-vertex
+  // geometry) — fixed 2026-07-13: these were never flattened, so top-down mode's now-
+  // active floor-scroll clip plane (calibrated for a flat world) silently clipped every
+  // marker sitting at its real, un-flattened elevation, making the whole debug layer
+  // disappear. Same realY/flatY stash-and-swap pattern as setGroundFlattened, just on
+  // mesh.position.y directly instead of a geometry buffer.
+  setDebugMarkersFlattened(flat) {
+    const apply = (mesh) => {
+      const u = mesh?.userData
+      if (!u || u.realY == null) return
+      mesh.position.y = flat ? (u.flatY ?? 0) : u.realY
+    }
+    this._terrainCenterMeshes.forEach(apply)
+    this._terrainVertexMeshes.forEach(apply)
+    this._terrainPlotCenterMeshes.forEach(apply)
+    this._surfaceCornerMeshes.forEach(apply)
+  }
+
   setTerrainPlotHover(cellId) {
     if (this.hoveredTerrainPlotId === cellId) return
     this.clearHover()
@@ -641,6 +730,24 @@ export default class TerrainRenderer {
       if (cell.polygon && pointInPolygon(worldX, worldY, cell.polygon)) return cell
     }
     return null
+  }
+
+  // Top-down z readout (TODO.md "Groundplane Z-height implementation", plan "rustling-
+  // churning-finch"): "project a ray at the mouse pointer, return the z-height of the
+  // first polygon intersected" — every ground-plane polygon still renders flat at Y=0
+  // (z-height rendering/displacement isn't implemented yet), so a real 3-D raycast
+  // against the rendered mesh would just hit Y=0 everywhere. This is the equivalent
+  // query against the DATA model instead: find which terrain plot's polygon contains
+  // the point (screenToWorld's existing flat-plane ray already gives worldX/worldY —
+  // "first polygon intersected" IS "the plot containing this XZ point" while every
+  // polygon sits at the same render height), then average that polygon's own corner z
+  // values (already resolved with real z via resolvePolygon in setTerrainData).
+  getZHeightAtWorldPos(worldX, worldY) {
+    const cell = this.getTerrainPlotAtWorldPos(worldX, worldY)
+    if (!cell?.polygon?.length) return null
+    let sum = 0, n = 0
+    for (const p of cell.polygon) { if (isFinite(p.z)) { sum += p.z; n++ } }
+    return n ? sum / n : null
   }
 
   setEdgeHover(edgeId) {
@@ -957,8 +1064,14 @@ export default class TerrainRenderer {
     const threshold = 0.375
     let closestEdge = null
     let closestDistance = threshold
+    // Same "both sides shown" gate as renderEdges — this hit-test scans
+    // terrainData.edges directly (proximity-based, not mesh raycasting), so it isn't
+    // automatically covered by renderEdges' filtering. A hidden region never appears in
+    // terrainData.regions, so regionsById simply won't have it.
+    const regionsById = new Map((this.terrainData?.regions || []).map(r => [r.id, r]))
     for (const edgeId in this.terrainData.edges) {
       const edge = this.terrainData.edges[edgeId]
+      if (!regionsById.has(edge.regionA) || !regionsById.has(edge.regionB)) continue
       const ids = edge.pointIds
       if (!ids || ids.length < 2) continue
       for (let i = 0; i < ids.length - 1; i++) {
@@ -993,7 +1106,11 @@ export default class TerrainRenderer {
       region.polygon.forEach((vertex, vertexIndex) => {
         const key = `${vertex.x.toFixed(4)},${vertex.y.toFixed(4)}`
         if (!cornerMap.has(key)) {
-          cornerMap.set(key, { point: vertex, regionIds: [], vertexIndices: [] })
+          // region.polygon is the coarse convex-hull copy sent as-is from the server
+          // ({x,y,id}, not run through resolvePolygon) — resolve z from the registry
+          // copy ourselves rather than leaving it undefined.
+          const z = this._pointsById?.get(vertex.id)?.z ?? 0
+          cornerMap.set(key, { point: { ...vertex, z }, regionIds: [], vertexIndices: [] })
         }
         const entry = cornerMap.get(key)
         entry.regionIds.push(i)
@@ -1045,9 +1162,9 @@ export default class TerrainRenderer {
     const seedMat = this._debugMarkerMaterial(0xff0000)
     regions.forEach(region => {
       const seed = new THREE.Mesh(seedGeo, seedMat)
-      seed.position.set(region.seedPoint.x, 0.1, region.seedPoint.y)
+      seed.position.set(region.seedPoint.x, (region.seedPoint.z ?? 0) + 0.1, region.seedPoint.y)
       seed.renderOrder = 999
-      seed.userData = { kind: 'terrainCenter', id: region.id, regionId: region.id, assignedType: region.assignedType, x: region.seedPoint.x, y: region.seedPoint.y }
+      seed.userData = { kind: 'terrainCenter', id: region.id, regionId: region.id, assignedType: region.assignedType, x: region.seedPoint.x, y: region.seedPoint.y, z: region.seedPoint.z ?? 0, realY: (region.seedPoint.z ?? 0) + 0.1, flatY: 0.1 }
       seed.visible = this.showDebug && this._terrainCentersVisible
       this.scene.add(seed)
       this.debugObjects.push(seed)
@@ -1059,8 +1176,10 @@ export default class TerrainRenderer {
     regions.forEach(region => {
       region.polygon.forEach(vertex => {
         const vert = new THREE.Mesh(vertGeo, vertMat)
-        vert.position.set(vertex.x, 0.1, vertex.y)
+        const vz = this._pointsById?.get(vertex.id)?.z ?? 0
+        vert.position.set(vertex.x, vz + 0.1, vertex.y)
         vert.renderOrder = 999
+        vert.userData = { realY: vz + 0.1, flatY: 0.1 }
         vert.visible = this.showDebug && this._terrainSeedsVisible
         this.scene.add(vert)
         this.debugObjects.push(vert)
@@ -1081,9 +1200,9 @@ export default class TerrainRenderer {
     for (const cell of (terrainPlots || [])) {
       if (!cell.seedPoint) continue
       const m = new THREE.Mesh(geo, mat)
-      m.position.set(cell.seedPoint.x, 0.1, cell.seedPoint.y)
+      m.position.set(cell.seedPoint.x, (cell.seedPoint.z ?? 0) + 0.1, cell.seedPoint.y)
       m.renderOrder = 999
-      m.userData = { kind: 'terrainPlotCenter', id: cell.id, parentRegionId: cell.parentRegionId, assignedType: cell.assignedType, x: cell.seedPoint.x, y: cell.seedPoint.y }
+      m.userData = { kind: 'terrainPlotCenter', id: cell.id, parentRegionId: cell.parentRegionId, assignedType: cell.assignedType, x: cell.seedPoint.x, y: cell.seedPoint.y, z: cell.seedPoint.z ?? 0, realY: (cell.seedPoint.z ?? 0) + 0.1, flatY: 0.1 }
       m.visible = this.showDebug && this._terrainPlotCentersVisible
       this.scene.add(m)
       this.debugObjects.push(m)
@@ -1142,9 +1261,9 @@ export default class TerrainRenderer {
           const v = poly[i]
           if (!v || !isFinite(v.x) || !isFinite(v.y)) continue
           const m = new THREE.Mesh(geo, mat)
-          m.position.set(v.x, 0.12, v.y)
+          m.position.set(v.x, (v.z ?? 0) + 0.12, v.y)
           m.renderOrder = 999
-          m.userData = { kind: 'surfaceCorner', id, sourceKind: kindLabel, x: v.x, y: v.y }
+          m.userData = { kind: 'surfaceCorner', id, sourceKind: kindLabel, x: v.x, y: v.y, z: v.z ?? 0, realY: (v.z ?? 0) + 0.12, flatY: 0.12 }
           m.visible = this.showDebug && this._surfaceCornersVisible
           this.scene.add(m)
           this.debugObjects.push(m)

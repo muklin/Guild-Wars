@@ -123,8 +123,15 @@ export default class DistrictTypePanel {
     // Close the settings panel whenever the main panel's context changes — this ensures
     // it closes on ✕, Apply, and when a new district is selected (which always calls
     // showContext again, resetting to that district's own overrides or defaults).
-    document.querySelector('.district-settings-panel')?.remove()
-    document.removeEventListener('mousedown', this._settingsOutsideClick)
+    // Skipped when `preserveSettingsPanel` is set (user-confirmed 2026-07-13) — a
+    // regenerate refresh (settings save, drag-stop auto-regenerate, or the toolbar
+    // regenerate button) re-renders this same district's context without the settings
+    // dialog actually needing to close; it was being clobbered as a side effect of a
+    // refresh that has nothing to do with dismissing it.
+    if (!options?.preserveSettingsPanel) {
+      document.querySelector('.district-settings-panel')?.remove()
+      document.removeEventListener('mousedown', this._settingsOutsideClick)
+    }
 
     if (type === 'none') {
       this._el.style.display = 'none'
@@ -478,7 +485,8 @@ export default class DistrictTypePanel {
     regenBtn.textContent = '↻ Regenerate streets'
     regenBtn.style.cssText = 'flex:1;padding:6px;background:#5a3a1a;color:#ffb84d;border:1px solid #8a5a2a;border-radius:3px;cursor:pointer;font-size:11px'
     regenBtn.addEventListener('click', () => {
-      document.querySelector('.district-settings-panel')?.remove()
+      // No longer closes the settings panel (user-confirmed 2026-07-13) — regenerating
+      // shouldn't interrupt an open edit session.
       this.eventBus.emit('DISTRICT_REGENERATE')
     })
 
@@ -610,6 +618,12 @@ export default class DistrictTypePanel {
       grid.appendChild(d)
     }
 
+    // Auto-regenerate on drag-stop (user-confirmed 2026-07-13): a slider's native
+    // `change` event fires once, on release — not on every `input` tick during the
+    // drag — so this fires exactly when the user stops dragging, same trigger as
+    // clicking the dialog's own "Regenerate streets" button below.
+    const triggerRegenerate = () => this.eventBus.emit('DISTRICT_SETTINGS_REGENERATE', { configOverrides: getOverrides() })
+
     // Single slider — one column
     const sliderRefs = {}   // key → { slider, valEl, lbl }
     const addSlider = (label, editKey, min, max, step, defaultVal, currentVal, normalizeGroup) => {
@@ -631,6 +645,7 @@ export default class DistrictTypePanel {
         else { edits[editKey]=v; lbl.style.color='#4ab'; valEl.style.color='#4ab' }
         if (normalizeGroup) normalizeGroup(editKey, v)
       })
+      sl.addEventListener('change', triggerRegenerate)
       sliderRefs[editKey] = { slider: sl, valEl, lbl, step }
       cell.appendChild(top); cell.appendChild(sl); grid.appendChild(cell)
     }
@@ -657,6 +672,8 @@ export default class DistrictTypePanel {
       const updateZIndex = () => { const atMax=parseFloat(slMin.value)>=parseFloat(slMax.value); slMin.style.zIndex=atMax?'2':'1'; slMax.style.zIndex=atMax?'1':'2' }
       slMin.addEventListener('input',()=>{ if(parseFloat(slMin.value)>parseFloat(slMax.value)) slMin.value=slMax.value; const v=parseFloat(slMin.value); if(v===defMin&&!(maxKey in edits)) delete edits[minKey]; else edits[minKey]=v; valEl.textContent=`${v} – ${parseFloat(slMax.value)}`; updateFill(); updateOv(); updateZIndex() })
       slMax.addEventListener('input',()=>{ if(parseFloat(slMax.value)<parseFloat(slMin.value)) slMax.value=slMin.value; const v=parseFloat(slMax.value); if(v===defMax&&!(minKey in edits)) delete edits[maxKey]; else edits[maxKey]=v; valEl.textContent=`${parseFloat(slMin.value)} – ${v}`; updateFill(); updateOv(); updateZIndex() })
+      slMin.addEventListener('change', triggerRegenerate)
+      slMax.addEventListener('change', triggerRegenerate)
       wrap.appendChild(bgTrack); wrap.appendChild(slMin); wrap.appendChild(slMax); updateFill(); updateZIndex()
       cell.appendChild(top); cell.appendChild(wrap); grid.appendChild(cell)
     }

@@ -37,8 +37,16 @@ function inferTerrainType(cell, regionTypeById, worldRegions) {
 // bare gap. `terrainPlotId`/`regionId`/`blockId`/`districtId` are all null — a
 // river/cliff face spans two regions and isn't a promotable, seed-having cell like a
 // normal terrain plot.
-export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = [], worldRegions = [], riverCliffFaces = []) {
+// registry: GroundPointRegistry (TODO.md "Groundplane Z-height implementation", plan
+// "rustling-churning-finch") — resolves each vertex's real z by id, since cell.polygon
+// itself never carries z (only the registry Point does). Without this, GroundRenderer
+// (which owns terrain-plot rendering from District Setup onward, taking over from
+// TerrainRenderer) rendered every terrain plot dead flat regardless of the Terrain
+// Setup z-height work — confirmed live 2026-07-12 ("assigning one district cleared all
+// z heights", actually a rendering-handoff gap, not a data wipe).
+export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = [], worldRegions = [], riverCliffFaces = [], registry = null) {
   const regionTypeById = new Map(worldRegions.map(r => [r.id, r.assignedType]))
+  const zOf = (v) => (v.id != null ? registry?.get(v.id)?.z : null) ?? 0
 
   // Flatten trade road waypoints into segments [{a,b}]
   const roadSegments = []
@@ -52,7 +60,7 @@ export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = []
   let plotId = 0
 
   for (const cell of terrainPlots) {
-    const poly = cell.polygon.map(v => ({ x: v.x, y: v.y }))
+    const poly = cell.polygon.map(v => ({ x: v.x, y: v.y, z: zOf(v) }))
     if (!poly || poly.length < 3) continue
 
     const hasRoad = roadSegments.some(seg => polygonCrossesSegment(poly, seg.a, seg.b))
@@ -72,7 +80,7 @@ export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = []
   }
 
   for (const face of riverCliffFaces) {
-    const poly = (face.polygon || []).map(v => ({ x: v.x, y: v.y }))
+    const poly = (face.polygon || []).map(v => ({ x: v.x, y: v.y, z: zOf(v) }))
     if (poly.length < 3) continue
     plots.push({
       id: `rcf${face.id}`,

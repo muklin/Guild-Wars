@@ -50,6 +50,15 @@ export default class WalkMode {
     // whenever the candidate position comes within FENCE_CLEARANCE of one.
     this._fenceSegments = fenceSegments ?? []
 
+    // Ground-following (TODO.md "Groundplane Z-height implementation", plan "rustling-
+    // churning-finch"): a straight-down raycast against the actual rendered scene, not
+    // the flat GROUND_Y=0 constant — so the character sits on the real ground plane
+    // wherever it has relief. Excludes the character's own meshes (added below) so it
+    // never hits itself. PgUp/PgDown (`this._py`) stays a RELATIVE offset applied on top
+    // of whatever this returns, not an absolute height.
+    this._raycaster = new THREE.Raycaster()
+    this._groundY = GROUND_Y
+
     // Spawn at the junction nearest to the current camera target
     const spawn = this._findSpawn(streetGraph, targetPos)
     this._px = spawn.x
@@ -119,9 +128,23 @@ export default class WalkMode {
     return { x: best.x, z: best.y }
   }
 
+  // Straight-down raycast at (x,z) against the rendered scene, excluding the character's
+  // own meshes. Returns the first hit's height, or GROUND_Y (0) if nothing is hit (no
+  // ground rendered under this spot, or ground still flat at 0 — same result either way).
+  _groundZAt(x, z) {
+    this._raycaster.set(new THREE.Vector3(x, 1000, z), new THREE.Vector3(0, -1, 0))
+    const hits = this._raycaster.intersectObjects(this._scene.children, true)
+    for (const hit of hits) {
+      if (hit.object === this._char || hit.object === this._head) continue
+      return hit.point.y
+    }
+    return GROUND_Y
+  }
+
   _placeCharacter() {
-    this._char.position.set(this._px, GROUND_Y + this._py + BODY_HEIGHT / 2, this._pz)
-    this._head.position.set(this._px, GROUND_Y + this._py + BODY_HEIGHT + HEAD_RADIUS, this._pz)
+    this._groundY = this._groundZAt(this._px, this._pz)
+    this._char.position.set(this._px, this._groundY + this._py + BODY_HEIGHT / 2, this._pz)
+    this._head.position.set(this._px, this._groundY + this._py + BODY_HEIGHT + HEAD_RADIUS, this._pz)
     this._head.rotation.y = this._yaw
   }
 
@@ -165,7 +188,7 @@ export default class WalkMode {
   _updateCamera() {
     // Camera orbits around the head centre. Pitch=+π/2 puts the camera directly
     // above the head looking straight down; pitch=0 is level behind the character.
-    const pivotY = GROUND_Y + this._py + BODY_HEIGHT + HEAD_RADIUS
+    const pivotY = this._groundY + this._py + BODY_HEIGHT + HEAD_RADIUS
     const camX = this._px - Math.sin(this._yaw) * Math.cos(this._pitch) * this._camDist
     const camY = pivotY + Math.sin(this._pitch) * this._camDist
     const camZ = this._pz - Math.cos(this._yaw) * Math.cos(this._pitch) * this._camDist

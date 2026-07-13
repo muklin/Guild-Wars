@@ -51,6 +51,25 @@ export default class PolylineRenderer {
 
   // ─── Public API ────────────────────────────────────────────────────────────
 
+  // Top-down mode reinstates the floor-scroll clip plane (user-confirmed 2026-07-13),
+  // which only behaves correctly against a flat world — see TerrainRenderer's/
+  // GroundRenderer's matching methods. Flat target is each mesh's own epsilon
+  // (stripY/fillY), not 0 — see the build-site comments for why.
+  setFlattened(flat) {
+    const apply = (mesh) => {
+      const geo = mesh?.geometry
+      const realY = geo?.userData?.realY
+      if (!realY) return
+      const pos = geo.attributes.position
+      const flatY = geo.userData.flatY ?? 0
+      for (let i = 0; i < realY.length; i++) pos.array[i * 3 + 1] = flat ? flatY : realY[i]
+      pos.needsUpdate = true
+      geo.computeVertexNormals()
+    }
+    this._edgeMeshes.forEach(apply)
+    this._junctionMeshes.forEach(apply)
+  }
+
   render(edges, pointsById, getColor) {
     this.dispose()
     const r = this.thickness / 2
@@ -84,12 +103,19 @@ export default class PolylineRenderer {
     // even when beveled corners make the boundary polygon non-convex.
     for (const [ptId, { boundaryPts, edgeIds, center }] of junctionFills) {
       if (boundaryPts.length < 3 || !center) continue
+      // Real height at the junction point itself (TODO.md "Groundplane Z-height
+      // implementation") — every boundaryPt is a small local offset off the same
+      // vertex, so one z for the whole fan is an acceptable approximation, same as the
+      // strip quads' per-corner (not per-offset-point) resolution above. `this.fillY`
+      // stays the small constant lift ABOVE stripY (its original purpose — sit visibly
+      // over the strip mesh), not the absolute height itself.
+      const fillY = (pointsById.get(ptId)?.z ?? 0) + this.fillY
       const n = boundaryPts.length
       const verts = new Float32Array((n + 1) * 3)
-      verts[0] = center.x; verts[1] = this.fillY; verts[2] = center.y
+      verts[0] = center.x; verts[1] = fillY; verts[2] = center.y
       for (let i = 0; i < n; i++) {
         verts[(i + 1) * 3]     = boundaryPts[i].x
-        verts[(i + 1) * 3 + 1] = this.fillY
+        verts[(i + 1) * 3 + 1] = fillY
         verts[(i + 1) * 3 + 2] = boundaryPts[i].y
       }
       const tris = []
@@ -98,6 +124,8 @@ export default class PolylineRenderer {
       geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
       geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1))
       geo.computeVertexNormals()
+      geo.userData.realY = Array.from({ length: n + 1 }, () => fillY)   // uniform fan — see setFlattened
+      geo.userData.flatY = this.fillY
       const color = this._junctionColor(edgeIds)
       // DoubleSide: the fan's boundaryPts aren't guaranteed convex (beveled/clamped
       // corners at sharp junctions can still locally reverse the polygon's winding for
@@ -182,12 +210,36 @@ export default class PolylineRenderer {
     const corners = computeEdgeCorners(edge, edgeId, overrides, pointsById, r, this.miterLimitDist)
     if (!corners) return null
     const n = corners.length
-    const Y = this.stripY
+    // Per-corner height (TODO.md "Groundplane Z-height implementation", plan "rustling-
+    // churning-finch"): the terrain the edge bounds, not a flat stripY everywhere —
+    // corners[i] is built 1:1 from edge.pointIds[i] (see computeEdgeCorners), so the
+    // same index resolves the real point's z. stripY stays a small constant lift above
+    // that real height (its original purpose: sit visibly above the ground fill,
+    // avoiding z-fighting), not the height itself. Falls back to flat stripY when a
+    // point has no z (pointsById unavailable/older save).
+    const ptIds = edge.pointIds || []
+    const zByIndex = ptIds.map(id => (pointsById.get(id)?.z ?? 0) + this.stripY)
+    // Safety clamp (user-confirmed 2026-07-14, "poly line should not do this" — a
+    // screenshot showing a single stroke ramping from ground level up into the sky):
+    // a wayward point's z can end up wildly wrong upstream (a stale/miscomputed value
+    // reaching a real registry point some edge chain still references) — no legitimate
+    // terrain height difference in this game is anywhere near this large, so rather
+    // than chase every possible upstream cause, cap how far one consecutive pair of
+    // polyline vertices is ever allowed to step in Y. Walked left-to-right so a single
+    // outlier gets pulled toward its neighbour instead of distorting the whole strip.
+    const MAX_Y_STEP = 3
+    for (let i = 1; i < zByIndex.length; i++) {
+      const delta = zByIndex[i] - zByIndex[i - 1]
+      if (delta > MAX_Y_STEP) zByIndex[i] = zByIndex[i - 1] + MAX_Y_STEP
+      else if (delta < -MAX_Y_STEP) zByIndex[i] = zByIndex[i - 1] - MAX_Y_STEP
+    }
+    const Y = this.stripY   // fallback when an index is out of range (shouldn't happen)
 
     const allVerts = [], allIdx = []
     for (let i = 0; i < n - 1; i++) {
       const c1 = corners[i], c2 = corners[i + 1]
       if (!c1 || !c2) continue
+      const y1 = zByIndex[i] ?? Y, y2 = zByIndex[i + 1] ?? Y
       const base = allVerts.length / 3
       // At a beveled interior vertex, the segment's own quad must reach its own local
       // offset endpoint (q2 for the segment starting here, q1 for the segment ending
@@ -198,8 +250,8 @@ export default class PolylineRenderer {
       const c1Left  = c1.leftBevel  ? c1.leftBevel.q2  : c1.left
       const c2Left  = c2.leftBevel  ? c2.leftBevel.q1  : c2.left
       const c2Right = c2.rightBevel ? c2.rightBevel.q1 : c2.right
-      allVerts.push(c1Right.x, Y, c1Right.y, c1Left.x, Y, c1Left.y,
-                    c2Left.x,  Y, c2Left.y,  c2Right.x, Y, c2Right.y)
+      allVerts.push(c1Right.x, y1, c1Right.y, c1Left.x, y1, c1Left.y,
+                    c2Left.x,  y2, c2Left.y,  c2Right.x, y2, c2Right.y)
       allIdx.push(base, base + 1, base + 2, base, base + 2, base + 3)
     }
     // Bevel join triangles at sharp interior bends — fan from the centreline vertex to
@@ -208,10 +260,11 @@ export default class PolylineRenderer {
     for (let i = 1; i < n - 1; i++) {
       const c = corners[i]
       if (!c) continue
+      const y = zByIndex[i] ?? Y
       for (const bevel of [c.leftBevel, c.rightBevel]) {
         if (!bevel) continue
         const base = allVerts.length / 3
-        allVerts.push(bevel.pt.x, Y, bevel.pt.y, bevel.q1.x, Y, bevel.q1.y, bevel.q2.x, Y, bevel.q2.y)
+        allVerts.push(bevel.pt.x, y, bevel.pt.y, bevel.q1.x, y, bevel.q1.y, bevel.q2.x, y, bevel.q2.y)
         allIdx.push(base, base + 1, base + 2)
       }
     }
@@ -223,6 +276,12 @@ export default class PolylineRenderer {
       geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allVerts), 3))
       geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(allIdx), 1))
       geometry.computeVertexNormals()
+      // Real per-vertex height, kept for top-down flatten/unflatten (see
+      // setFlattened) — the flat target is the constant stripY epsilon (every vertex
+      // shares it), not 0: that epsilon's whole job is sitting visibly above the
+      // ground fill, which top-down flattens to 0 too (TerrainRenderer/GroundRenderer).
+      geometry.userData.realY = allVerts.filter((_, i) => i % 3 === 1)
+      geometry.userData.flatY = this.stripY
     } catch (e) {
       console.error(`PolylineRenderer: geometry error for edge ${edgeId}:`, e)
       return null

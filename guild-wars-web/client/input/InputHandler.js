@@ -33,13 +33,35 @@ export default class InputHandler {
     this.terrainData = data
   }
 
+  // Real raycast against the ground meshes (TODO.md "Groundplane Z-height
+  // implementation", plan "rustling-churning-finch") — first plane actually intersected,
+  // not an analytic z=0 plane assumption, so hover/click land on the right spot now that
+  // terrain plots render with real relief (TerrainRenderer.buildRegionMesh). Falls back
+  // to the old flat y=0 plane intersection when nothing is hit (no terrain rendered yet,
+  // City mode's still-flat ground, empty space) so every existing 2-D containment test
+  // downstream (getRegionAtWorldPos etc.) keeps working unchanged either way — only HOW
+  // x/y get derived changed, not their meaning. `.z` is new: the actual hit height,
+  // straight from the mesh, more accurate than a data-average lookup.
   screenToWorld(screenX, screenY) {
     const rect = this.renderer.renderer.domElement.getBoundingClientRect()
     const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1
     const ndcY = -(((screenY - rect.top) / rect.height)) * 2 + 1
-
     const camera = this.renderer.camera
 
+    const meshes = this.renderer.getPickableMeshes?.() || []
+    if (meshes.length) {
+      if (!this._raycaster) this._raycaster = new THREE.Raycaster()
+      this._raycaster.setFromCamera({ x: ndcX, y: ndcY }, camera)
+      const hits = this._raycaster.intersectObjects(meshes, false)
+      if (hits.length) return { x: hits[0].point.x, y: hits[0].point.z, z: hits[0].point.y }
+    }
+    return this._screenToWorldFlatPlane(ndcX, ndcY, camera)
+  }
+
+  // Original analytic method — intersect the camera ray with the y=0 plane directly,
+  // without a raycaster or any mesh. Kept as the fallback for when no pickable mesh
+  // exists yet (or the ray misses every mesh, e.g. past the map edge).
+  _screenToWorldFlatPlane(ndcX, ndcY, camera) {
     // For an orthographic camera all rays are parallel (= camera look direction).
     // Offset the ray origin by the screen position along the camera's right/up axes,
     // then intersect with the y=0 ground plane.
@@ -57,12 +79,12 @@ export default class InputHandler {
 
     const rayDir = cameraBackward.clone().negate() // camera looks in local -Z
 
-    if (Math.abs(rayDir.y) < 0.0001) return { x: 0, y: 0 }
+    if (Math.abs(rayDir.y) < 0.0001) return { x: 0, y: 0, z: 0 }
     const t = -rayOrigin.y / rayDir.y
-    if (t < 0) return { x: 0, y: 0 }
+    if (t < 0) return { x: 0, y: 0, z: 0 }
 
     rayOrigin.addScaledVector(rayDir, t)
-    return { x: rayOrigin.x, y: rayOrigin.z }
+    return { x: rayOrigin.x, y: rayOrigin.z, z: 0 }
   }
 
   onMouseClick(e) {
@@ -125,7 +147,15 @@ export default class InputHandler {
     const isTopDown = this.renderer.cameraController?._topDown
     if (this._coordDisplay) {
       if (debug && isTopDown) {
-        this._coordDisplay.textContent = `X: ${worldPos.x.toFixed(3)}  Y: ${worldPos.y.toFixed(3)}`
+        // Top-down mode renders the ground flattened to z=0 (user-confirmed 2026-07-13,
+        // floor-scroll clip reinstatement), so worldPos.z (the raycast hit) is now
+        // always ~0 — not useful. Show what the height would be in iso mode instead:
+        // getZHeightAtWorldPos reads the original data polygon (cell.polygon[i].z),
+        // a separate copy from the flattened GPU vertex buffer, so it's unaffected by
+        // the flatten toggle.
+        const realZ = this.renderer.getZHeightAtWorldPos?.(worldPos.x, worldPos.y)
+        const zStr = realZ == null ? '—' : realZ.toFixed(3)
+        this._coordDisplay.textContent = `X: ${worldPos.x.toFixed(3)}  Y: ${worldPos.y.toFixed(3)}  Z: ${zStr}`
         this._coordDisplay.style.display = 'block'
       } else {
         this._coordDisplay.style.display = 'none'
@@ -166,7 +196,7 @@ export default class InputHandler {
           this._showTooltip(
             `<div style="font-weight:bold">${vid}</div>` +
             `<div style="font-size:0.9em;margin-top:2px">${regionList}</div>` +
-            `<div style="font-size:0.85em;opacity:0.85">(${terrainVertex.point.x.toFixed(3)}, ${terrainVertex.point.y.toFixed(3)})</div>`,
+            `<div style="font-size:0.85em;opacity:0.85">(${terrainVertex.point.x.toFixed(3)}, ${terrainVertex.point.y.toFixed(3)}) &nbsp;Z: ${(terrainVertex.point.z ?? 0).toFixed(3)}</div>`,
             e)
           return
         }
@@ -175,7 +205,7 @@ export default class InputHandler {
           this._showTooltip(
             `<div style="font-weight:bold">Surface Corner ${surfaceCorner.id}</div>` +
             `<div style="font-size:0.9em;margin-top:2px">source: ${surfaceCorner.sourceKind ?? '?'}</div>` +
-            `<div style="font-size:0.85em;opacity:0.85">(${surfaceCorner.x?.toFixed(3)}, ${surfaceCorner.y?.toFixed(3)})</div>`,
+            `<div style="font-size:0.85em;opacity:0.85">(${surfaceCorner.x?.toFixed(3)}, ${surfaceCorner.y?.toFixed(3)}) &nbsp;Z: ${(surfaceCorner.z ?? 0).toFixed(3)}</div>`,
             e)
           return
         }
@@ -209,13 +239,13 @@ export default class InputHandler {
             this._showTooltip(
               `<div style="font-weight:bold">Terrain Plot ${dot.id}</div>` +
               `<div style="font-size:0.9em;margin-top:2px">region: ${dot.parentRegionId ?? '?'} &nbsp;|&nbsp; type: ${dot.assignedType ?? 'unassigned'}</div>` +
-              `<div style="font-size:0.85em;opacity:0.85">(${dot.x?.toFixed(3)}, ${dot.y?.toFixed(3)})</div>`,
+              `<div style="font-size:0.85em;opacity:0.85">(${dot.x?.toFixed(3)}, ${dot.y?.toFixed(3)}) &nbsp;Z: ${(dot.z ?? 0).toFixed(3)}</div>`,
               e)
           } else if (dot.kind === 'terrainCenter') {
             this._showTooltip(
               `<div style="font-weight:bold">Region ${dot.id}</div>` +
               `<div style="font-size:0.9em;margin-top:2px">type: ${dot.assignedType ?? 'unassigned'}</div>` +
-              `<div style="font-size:0.85em;opacity:0.85">(${dot.x?.toFixed(3)}, ${dot.y?.toFixed(3)})</div>`,
+              `<div style="font-size:0.85em;opacity:0.85">(${dot.x?.toFixed(3)}, ${dot.y?.toFixed(3)}) &nbsp;Z: ${(dot.z ?? 0).toFixed(3)}</div>`,
               e)
           }
           return
@@ -311,7 +341,7 @@ export default class InputHandler {
         this._showTooltip(
           `<div style="font-weight:bold">Terrain Plot ${terrainPlotCenter.id}</div>` +
           `<div style="font-size:0.9em;margin-top:2px">region: ${terrainPlotCenter.parentRegionId ?? '?'} &nbsp;|&nbsp; type: ${terrainPlotCenter.assignedType ?? 'unassigned'}</div>` +
-          `<div style="font-size:0.85em;opacity:0.85">(${terrainPlotCenter.x?.toFixed(3)}, ${terrainPlotCenter.y?.toFixed(3)})</div>`,
+          `<div style="font-size:0.85em;opacity:0.85">(${terrainPlotCenter.x?.toFixed(3)}, ${terrainPlotCenter.y?.toFixed(3)}) &nbsp;Z: ${(terrainPlotCenter.z ?? 0).toFixed(3)}</div>`,
           e)
       } else { this._hideTooltip() }
       return
@@ -327,7 +357,7 @@ export default class InputHandler {
       if (debug) {
         this._showTooltip(
           `<div style="font-weight:bold">Region ${regionCenter.regionId} (terrainCenter)</div>` +
-          `<div style="margin-top:4px;font-size:0.9em">(${regionCenter.position.x.toFixed(2)}, ${regionCenter.position.y.toFixed(2)})</div>`,
+          `<div style="margin-top:4px;font-size:0.9em">(${regionCenter.position.x.toFixed(2)}, ${regionCenter.position.y.toFixed(2)}) &nbsp;Z: ${(regionCenter.position.z ?? 0).toFixed(3)}</div>`,
           e)
       } else {
         this._hideTooltip()
@@ -343,7 +373,7 @@ export default class InputHandler {
           .map((id, i) => `Region ${id} (v${corner.vertexIndices[i]})`).join(', ')
         const vid = corner.point.id !== undefined ? `Vertex ${corner.point.id}` : 'Vertex'
         this._showTooltip(
-          `<div style="font-weight:bold">${vid} (${corner.point.x.toFixed(2)}, ${corner.point.y.toFixed(2)})</div>` +
+          `<div style="font-weight:bold">${vid} (${corner.point.x.toFixed(2)}, ${corner.point.y.toFixed(2)}) Z: ${(corner.point.z ?? 0).toFixed(3)}</div>` +
           `<div style="margin-top:4px;font-size:0.9em">${regionList}</div>`,
           e)
       } else { this._hideTooltip() }

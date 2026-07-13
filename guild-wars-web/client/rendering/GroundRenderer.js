@@ -1303,6 +1303,23 @@ export default class GroundRenderer {
     return null
   }
 
+  // Top-down mode reinstates the floor-scroll clip plane (user-confirmed 2026-07-13),
+  // which only behaves correctly against a flat world — see TerrainRenderer's matching
+  // method. Only terrain-type fills (_terrainPlotMeshMap) ever carry real per-vertex
+  // relief; block/plot/street/square fills are already flat (GROUND_Y = 0), so this is
+  // a no-op for them.
+  setTerrainFlattened(flat) {
+    for (const mesh of this._terrainPlotMeshMap.values()) {
+      const geo = mesh?.geometry
+      const realY = geo?.userData?.realY
+      if (!realY) continue
+      const pos = geo.attributes.position
+      for (let i = 0; i < realY.length; i++) pos.array[i * 3 + 1] = flat ? 0 : realY[i]
+      pos.needsUpdate = true
+      geo.computeVertexNormals()
+    }
+  }
+
   // Switch plot bases between per-district colours (during setup) and uniform grassy brown.
   setFinishedGround(finished) {
     this.finishedGround = !!finished
@@ -1492,8 +1509,13 @@ export default class GroundRenderer {
     return 'Stone'
   }
 
-  // Build a triangulated flat polygon mesh. `overrideMat` skips colour-based material
+  // Build a triangulated polygon mesh. `overrideMat` skips colour-based material
   // creation — used when the caller has already built a textured material (e.g. squares).
+  // `Y` is the flat fallback height (every caller today: blocks/plots/streets/squares
+  // have no per-point z data yet). A poly whose vertices carry a real `.z` (terrain
+  // plots, once resolved through pointsById — see setTerrainWaterData/TODO.md
+  // "Groundplane Z-height implementation") gets real relief per vertex instead —
+  // additive, no existing flat caller is affected.
   _makeFill(poly, colorHex, Y, matOpts = PLOT_FILL_MAT, overrideMat = null) {
     if (!poly || poly.length < 3) return null
     const contour = poly.map(v => new THREE.Vector2(v.x, v.y))
@@ -1501,13 +1523,17 @@ export default class GroundRenderer {
     try { triangles = THREE.ShapeUtils.triangulateShape(contour, []) } catch { return null }
     if (!triangles?.length) return null
     const verts = []
-    for (const v of poly) verts.push(v.x, Y, v.y)
+    for (const v of poly) verts.push(v.x, v.z ?? Y, v.y)
     const indices = []
     for (const [a, b, c] of triangles) indices.push(a, b, c)
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
     geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1))
     geometry.computeVertexNormals()
+    // Real per-vertex height, kept for top-down flatten/unflatten (see
+    // setTerrainFlattened) — a no-op for every flat (block/plot/street) caller since Y
+    // already equals the flatten target (GROUND_Y = 0).
+    geometry.userData.realY = verts.filter((_, i) => i % 3 === 1)
     const mat = overrideMat ?? new THREE.MeshStandardMaterial({
       color: colorHex, roughness: matOpts.roughness, metalness: 0,
       emissive: colorHex, emissiveIntensity: matOpts.emissiveIntensity, side: THREE.DoubleSide,

@@ -62,15 +62,30 @@ export default class WorldRenderer {
     this.renderer.localClippingEnabled = true
     this._floorScrollClipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0)
     this._lastAppliedFloorScrollUnits = null
+    this._floorScrollClipActive = false   // tracks whether the floor-scroll plane (vs just world-boundary) is the live clippingPlanes state
     // World-boundary clip planes — trim all standard materials at the map edge so
-    // geometry (edge ribbons, region fills) never bleeds outside [0, worldSize]².
+    // geometry (edge ribbons, region fills) never bleeds outside the generated world.
     // ShaderMaterials with clipping:false (FP bands, sky quad) are exempt.
+    // Outer ring rewrite (user-confirmed 2026-07-13): this was hard-locked to the
+    // literal [0,worldSize] square — a GPU-level clip, applied to every standard
+    // material regardless of the underlying mesh geometry. That's the REAL "circling
+    // the square" bug: the outer ring's own clip circle (TerrainVoronoiGenerator's
+    // outerClipCircle) already extends past this square with margin to spare, and
+    // every earlier fix to the actual polygon/mesh DATA (buildRegionMesh's box clip,
+    // _clipEdgeChainsToWorldBounds) was correct but couldn't matter — this renderer-
+    // level clip re-cropped the result back down to the square on every frame,
+    // independent of what geometry existed. Confirmed live (2026-07-13): widening the
+    // data-side clips alone produced zero visible change, which only makes sense if
+    // something downstream of all of them was still clipping. Widened with the same
+    // generous margin as buildRegionMesh's box clip so it only ever catches genuinely
+    // unbounded/sentinel-influenced artefacts, never legitimate outer-ring geometry.
     const W = this.worldSize
+    const clipMargin = W
     this._worldBoundaryClipPlanes = [
-      new THREE.Plane(new THREE.Vector3( 1, 0,  0),  0),  // x ≥ 0
-      new THREE.Plane(new THREE.Vector3(-1, 0,  0),  W),  // x ≤ W
-      new THREE.Plane(new THREE.Vector3( 0, 0,  1),  0),  // z ≥ 0
-      new THREE.Plane(new THREE.Vector3( 0, 0, -1),  W),  // z ≤ W
+      new THREE.Plane(new THREE.Vector3( 1, 0,  0),  clipMargin),      // x ≥ -clipMargin
+      new THREE.Plane(new THREE.Vector3(-1, 0,  0),  W + clipMargin),  // x ≤ W+clipMargin
+      new THREE.Plane(new THREE.Vector3( 0, 0,  1),  clipMargin),      // z ≥ -clipMargin
+      new THREE.Plane(new THREE.Vector3( 0, 0, -1),  W + clipMargin),  // z ≤ W+clipMargin
     ]
     this.renderer.clippingPlanes = [...this._worldBoundaryClipPlanes]
     document.body.insertBefore(this.renderer.domElement, document.body.firstChild)
@@ -366,9 +381,27 @@ export default class WorldRenderer {
 
   // ── Terrain delegation ──────────────────────────────────────────────────────
 
-  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = []) {
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], hiddenRegions = []) {
     this.districtRenderer.setTerrainWaterData(regions, edges, edgePoints, terrainPlots, pointsById)
-    return this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces)
+    const result = this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces, hiddenRegions)
+    this._reapplyTopDownFlatten()
+    return result
+  }
+
+  // Every fresh mesh a renderer builds starts un-flattened (real relief) regardless of
+  // the current camera mode — toggleTopDownMode() only flattens what exists AT THE
+  // MOMENT it's called. A phase change (e.g. "Done" in District Setup, entering
+  // gameplay) rebuilds ground meshes on its own, independent of any camera toggle; if
+  // that happens while already in top-down, the fresh meshes render at real height
+  // against the (top-down-only) floor-scroll clip plane calibrated for a flat world —
+  // confirmed live (2026-07-13) as most of the map going black after clicking Done in
+  // top-down. Call this after any ground-mesh rebuild, not just from the T-key toggle.
+  _reapplyTopDownFlatten() {
+    if (!this.cameraController?._topDown) return
+    this.terrainRenderer.setGroundFlattened(true)
+    this.groundRenderer.setTerrainFlattened(true)
+    this.terrainRenderer.terrainPolylines?.setFlattened(true)
+    this.terrainRenderer.setDebugMarkersFlattened(true)
   }
 
   // Hide/show terrain plot meshes and exclude/include them from hit-testing based on
@@ -469,6 +502,14 @@ export default class WorldRenderer {
 
   getTerrainSetupPlotAtWorldPos(worldX, worldY) {
     return this.terrainRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
+  }
+
+  getZHeightAtWorldPos(worldX, worldY) {
+    return this.terrainRenderer.getZHeightAtWorldPos(worldX, worldY)
+  }
+
+  getPickableMeshes() {
+    return this.terrainRenderer.getPickableMeshes()
   }
 
   setTerrainPlotHover(plotId) {
@@ -737,7 +778,9 @@ export default class WorldRenderer {
     if (!opts?.preserveTerrainPlots && (plots || []).some(p => p.type === 'terrain')) {
       this.terrainRenderer.deleteNonCityTerrainPlots()
     }
-    return this.groundRenderer.renderPlots(plots, districtData, opts)
+    const result = this.groundRenderer.renderPlots(plots, districtData, opts)
+    this._reapplyTopDownFlatten()
+    return result
   }
 
   clearPlotLayer() {
@@ -889,6 +932,14 @@ export default class WorldRenderer {
     if (this._walkMode) this._exitWalkMode()   // T while walking switches straight to top-down
     const isTopDown = this.cameraController.toggleTopDown()
     this.groundRenderer.buildingRenderer.setInterbuildingWallsVisible(isTopDown)
+    // Flatten the whole ground to z=0 in top-down mode (user-confirmed 2026-07-13) —
+    // reinstates the floor-scroll clip plane's original assumption instead of fighting
+    // real terrain relief with a single world-space plane. Reversible: leaving top-down
+    // restores real relief from the realY stashed on each mesh at build time.
+    this.terrainRenderer.setGroundFlattened(isTopDown)
+    this.groundRenderer.setTerrainFlattened(isTopDown)
+    this.terrainRenderer.terrainPolylines?.setFlattened(isTopDown)
+    this.terrainRenderer.setDebugMarkersFlattened(isTopDown)
     this._lastAppliedFloorScrollUnits = null   // force _applyFloorScrollClip to re-sync next frame
     this._cameraMoveCallbacks.forEach(fn => fn())  // reposition DOM overlays immediately
     this.markDirty()
@@ -898,11 +949,30 @@ export default class WorldRenderer {
   // Floor-scroll (PageUp/PageDown, see CameraController): clips the whole scene —
   // including roofs — with a world-space horizontal plane at the scrolled-to level, so
   // everything above it disappears and the scrolled-to level + everything below renders
-  // normally (decision #10). Active in BOTH top-down and the normal iso view, each with
-  // its own default level. Only re-applies the (cheap) plane constant when the scroll
-  // level actually changed.
+  // normally (decision #10). Reinstated Top-down-mode-only (TODO.md "Groundplane
+  // Z-height implementation", plan "rustling-churning-finch", user-confirmed
+  // 2026-07-13): a world-space clip plane only makes sense against a flat world, and
+  // toggleTopDownMode now flattens the whole ground to z=0 whenever top-down is active
+  // — in the normal iso view, terrain keeps its real relief, so floor-scroll stays off
+  // there (the black-void bug this guard originally fixed). Only re-applies the (cheap)
+  // plane constant when the scroll level actually changed.
   _applyFloorScrollClip() {
     const cc = this.cameraController
+    if (!cc._topDown) {
+      // Bug fixed 2026-07-13: this used to gate the reset on `_lastAppliedFloorScrollUnits
+      // !== null`, but toggleTopDownMode() itself sets that field to null right before
+      // this runs next (to force a resync) — so the guard was always false at exactly
+      // the moment it needed to fire, and the stale top-down floor-scroll clip plane
+      // silently persisted into iso view, clipping away all but a sliver of the now-
+      // real (unflattened) terrain relief. Track the reset with its own flag instead.
+      if (this._floorScrollClipActive) {
+        this._floorScrollClipActive = false
+        this.renderer.clippingPlanes = [...this._worldBoundaryClipPlanes]
+      }
+      this._lastAppliedFloorScrollUnits = null
+      return
+    }
+    this._floorScrollClipActive = true
     if (cc.floorScrollUnits === this._lastAppliedFloorScrollUnits) return
     this._lastAppliedFloorScrollUnits = cc.floorScrollUnits
 
@@ -932,6 +1002,7 @@ export default class WorldRenderer {
     this.renderer.clippingPlanes = [...this._worldBoundaryClipPlanes]
     this._lastAppliedTopDown = false
     this._lastAppliedFloorScrollUnits = null
+    this._floorScrollClipActive = false
   }
 
   // Returns true if walk mode was entered, false if it was exited.

@@ -319,7 +319,22 @@ export default class PlotVoronoiGenerator {
       if (signedArea(poly) < 0) poly = [...poly].reverse()
       const ids = dedupeConsecutiveIds(registry.mintDeduped(poly, 'plot', 1e-4, { reuseExisting: true }))
       if (ids.length < 3) return { faceId: null, area: Math.abs(signedArea(poly)), alive: false }
-      const face = dcel.insertFace(ids, 'plot', {})
+      // Defensive (2026-07-13): insertFace throws if this cell's polygon claims a
+      // directed edge another cell already owns in the same direction — genuinely
+      // adjacent, consistently-CCW-wound cells always traverse a shared edge in
+      // OPPOSITE directions, so this means either a duplicate/overlapping cell from
+      // PlotVoronoiGenerator's own Voronoi computation, or mintDeduped's 1e-4 tolerance
+      // + reuseExisting cross-block point sharing (sharedRegistry's 'plot' kind persists
+      // across every block in one generate() call) picking up an unrelated point.
+      // Root cause not yet confirmed live — treat the offending cell like any other
+      // degenerate cell (dropped from output, same as ids.length < 3 above) rather than
+      // crashing the whole District preview.
+      let face
+      try { face = dcel.insertFace(ids, 'plot', {}) }
+      catch (e) {
+        console.warn(`[PlotVoronoiGenerator._mergeSmallPlots] insertFace failed for a plot cell — dropping it: ${e.message}`)
+        return { faceId: null, area: Math.abs(signedArea(poly)), alive: false }
+      }
       return { faceId: face.id, area: Math.abs(signedArea(poly)), alive: true }
     })
 
