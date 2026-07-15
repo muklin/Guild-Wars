@@ -65,6 +65,9 @@ export default class CameraController {
     // FLOOR_SCROLL_DEFAULT_* above) — active in both iso and top-down (onKeyDown).
     this.floorScrollUnits = FLOOR_SCROLL_DEFAULT_ISO
 
+    // Wired by WorldRenderer after construction to return actual terrain Y at (x,z).
+    this.getGroundY = (_x, _z) => 0
+
     this.setupEventListeners()
     this.updateCameraPosition()
 
@@ -211,7 +214,8 @@ export default class CameraController {
     if (!this._enabled) return
     if (e.button === 1 || e.button === 2) {
       this.isPanning = true
-      this.gazeLockWorldPoint = this.raycastToGroundPlane(e.clientX, e.clientY)
+      const groundY = this.getGroundY(this.targetPosition.x, this.targetPosition.z)
+      this.gazeLockWorldPoint = this.raycastToGroundPlane(e.clientX, e.clientY, groundY)
       e.preventDefault()
     }
   }
@@ -220,11 +224,12 @@ export default class CameraController {
     if (!this.isPanning || !this.gazeLockWorldPoint) return
 
     // Move target so the locked world point stays under the cursor.
-    const current = this.raycastToGroundPlane(e.clientX, e.clientY)
+    const planeY = this.gazeLockWorldPoint.y
+    const current = this.raycastToGroundPlane(e.clientX, e.clientY, planeY)
     if (current) {
-      this.targetPosition.add(
-        new THREE.Vector3().subVectors(this.gazeLockWorldPoint, current)
-      )
+      this.targetPosition.x += this.gazeLockWorldPoint.x - current.x
+      this.targetPosition.z += this.gazeLockWorldPoint.z - current.z
+      this.targetPosition.y = this.getGroundY(this.targetPosition.x, this.targetPosition.z)
       this.updateCameraPosition()
       this.enforceWorldBounds()
     }
@@ -238,8 +243,8 @@ export default class CameraController {
   }
 
   // Correct orthographic raycasting — matches InputHandler.screenToWorld exactly.
-  // Returns a THREE.Vector3 on the y=0 terrain plane, or null if no intersection.
-  raycastToGroundPlane(screenX, screenY) {
+  // planeY: world-space Y of the horizontal plane to intersect (default 0).
+  raycastToGroundPlane(screenX, screenY, planeY = 0) {
     const rect = this.renderer.domElement.getBoundingClientRect()
     const ndcX = ((screenX - rect.left) / rect.width)  * 2 - 1
     const ndcY = -(((screenY - rect.top)  / rect.height)) * 2 + 1
@@ -258,10 +263,10 @@ export default class CameraController {
     const rayDir = backward.clone().negate()
 
     if (Math.abs(rayDir.y) < 0.0001) return null
-    const t = -rayOrigin.y / rayDir.y
+    const t = (planeY - rayOrigin.y) / rayDir.y
     if (t < 0) return null
 
-    return rayOrigin.addScaledVector(rayDir, t) // y ≈ 0
+    return rayOrigin.addScaledVector(rayDir, t)
   }
 
   // Ground-plane hit points for a screen row (fixed screenY, both left/right edges),
@@ -420,6 +425,7 @@ export default class CameraController {
     if (this.keys['keyq']) { this.azimuth -= rotateSpeed * delta; rotated = true }
     if (this.keys['keye']) { this.azimuth += rotateSpeed * delta; rotated = true }
     if (rotated) {
+      this.targetPosition.y = this.getGroundY(this.targetPosition.x, this.targetPosition.z)
       this.updateCameraPosition()
       this.enforceWorldBounds()
     }

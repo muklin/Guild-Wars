@@ -377,7 +377,7 @@ export default class GroundRenderer {
 
     const junctionById = new Map(junctions.map(j => [j.id, j]))
     const fallback = STREET_COLORS.Mud
-    const Y = GROUND_Y, fillY = GROUND_Y
+    const gz = (x, y) => this.getZHeight?.(x, y) ?? GROUND_Y
 
     for (const j of junctions) {
       for (const conn of j.connections) {
@@ -394,8 +394,8 @@ export default class GroundRenderer {
         const { gutterLeft: aL, gutterRight: aR } = conn
         const { gutterLeft: bL, gutterRight: bR } = conn2
         const verts = new Float32Array([
-          aR.x, Y, aR.y,  aL.x, Y, aL.y,
-          bR.x, Y, bR.y,  bL.x, Y, bL.y,
+          aR.x, aR.z ?? gz(aR.x, aR.y), aR.y,  aL.x, aL.z ?? gz(aL.x, aL.y), aL.y,
+          bR.x, bR.z ?? gz(bR.x, bR.y), bR.y,  bL.x, bL.z ?? gz(bL.x, bL.y), bL.y,
         ])
         const geom = new THREE.BufferGeometry()
         geom.setAttribute('position', new THREE.BufferAttribute(verts, 3))
@@ -438,10 +438,10 @@ export default class GroundRenderer {
 
       const n = uniq.length
       const verts = new Float32Array((n + 1) * 3)
-      verts[0] = j.x; verts[1] = fillY; verts[2] = j.y
+      verts[0] = j.x; verts[1] = j.z ?? gz(j.x, j.y); verts[2] = j.y
       for (let i = 0; i < n; i++) {
         verts[(i + 1) * 3]     = uniq[i].x
-        verts[(i + 1) * 3 + 1] = fillY
+        verts[(i + 1) * 3 + 1] = uniq[i].z ?? gz(uniq[i].x, uniq[i].y)
         verts[(i + 1) * 3 + 2] = uniq[i].y
       }
       const tris = []
@@ -1581,7 +1581,7 @@ export default class GroundRenderer {
     try { triangles = THREE.ShapeUtils.triangulateShape(contour, []) } catch { return null }
     if (!triangles?.length) return null
     const verts = []
-    for (const v of poly) verts.push(v.x, v.z ?? Y, v.y)
+    for (const v of poly) verts.push(v.x, v.z ?? (this.getZHeight?.(v.x, v.y) ?? Y), v.y)
     const indices = []
     for (const [a, b, c] of triangles) indices.push(a, b, c)
     const geometry = new THREE.BufferGeometry()

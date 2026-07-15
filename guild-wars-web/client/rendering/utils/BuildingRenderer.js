@@ -1033,7 +1033,7 @@ export default class BuildingRenderer {
       seed: hash + 1000,
       floors,
       footprint: { type: 'wings', wings },
-      roof: { shape: 'gable', material: roofMat, pitch: 0.55 + r6 * 0.45, overhangMin: style.overhangMin ?? 0.14, overhangMax: style.overhangMax ?? 0.48, riseHalfUnits: roofRiseHalfUnits },
+      roof: { shape: 'gable', material: roofMat, color: style.roofColor ?? 0x7a8d95, pitch: 0.55 + r6 * 0.45, overhangMin: style.overhangMin ?? 0.14, overhangMax: style.overhangMax ?? 0.48, riseHalfUnits: roofRiseHalfUnits },
       suppressedFaces: [],
       buildingTypes,
       buildingSubtype,

@@ -12,7 +12,12 @@ export const STONE_GLSL = `
     for(int j=-2;j<=2;j++) for(int i=-2;i<=2;i++){ vec2 g=vec2(float(i),float(j)); vec2 r=g+hash2(n+g)-f; vec2 df=r-mr; if(dot(df,df)>1e-4) edge=min(edge, dot(0.5*(mr+r), normalize(df))); }
     float id = fract(sin(dot(n+mg, vec2(12.9898,78.233)))*43758.5453);
     float grey = 0.32 + 0.28*id;
-    return vec3(grey) * mix(0.45, 1.0, smoothstep(0.0, 0.045, edge));
+    // Near-black mortar; convex AO — stone darkens at its own edges, brightens at center
+    float t = smoothstep(0.0, 0.06, edge);
+    float ao = smoothstep(0.0, 0.25, edge);
+    float contrast = mix(0.30, 1.18, ao);
+    vec3 mortar = vec3(0.05, 0.045, 0.04);
+    return mix(mortar, vec3(grey) * contrast, t);
   }
 `
 
@@ -71,7 +76,8 @@ export function makeWallMaterial({ map = null, stone = false, density = 6.0, gri
       // (baseY) — darkest at the base, fading to nothing at the top of the ground level.
       `  float gGrime = smoothstep(${by}, ${by} + ${gh}, vWorldY);\n` +
       '  diffuseColor.rgb *= mix(0.45, 1.0, gGrime);\n' +
-      '  diffuseColor.rgb *= mix(vec3(0.68, 0.62, 0.5), vec3(1.0), gGrime);\n'
+      '  diffuseColor.rgb *= mix(vec3(0.68, 0.62, 0.5), vec3(1.0), gGrime);\n' +
+      '  { float hJ = (fract(sin(dot(modelMatrix[3].xz, vec2(127.1,311.7)))*43758.5) - 0.5) * 0.10; diffuseColor.rgb = clamp(diffuseColor.rgb + hJ, 0.0, 1.0); }\n'
     shader.fragmentShader = 'varying float vWorldY;\nuniform float uDensity;\nuniform vec3 uStoneOffset;\n' + stoneFns +
       shader.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n' + apply)
   }

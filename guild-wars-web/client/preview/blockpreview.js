@@ -62,8 +62,8 @@ camera.zoom = 14
 camera.updateProjectionMatrix()
 
 // Lighting (matches WorldRenderer)
-scene.add(new THREE.AmbientLight(0xffffff, 0.6))
-const sun = new THREE.DirectionalLight(0xffffff, 0.8)
+scene.add(new THREE.AmbientLight(0xffffff, 0.075))
+const sun = new THREE.DirectionalLight(0xffffff, 2.0)
 sun.position.set(50, 100, 50)
 scene.add(sun)
 

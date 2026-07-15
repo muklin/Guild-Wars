@@ -164,10 +164,10 @@ export default class WorldRenderer {
     this.camera.position.set(25, 60, 25)
     this.camera.lookAt(25, 0, 25)
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.05)
     this.scene.add(ambientLight)
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8)
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.50)
     directionalLight.position.set(50, 100, 50)
     directionalLight.castShadow = true
     directionalLight.shadow.mapSize.width = 2048
@@ -175,10 +175,12 @@ export default class WorldRenderer {
     this.scene.add(directionalLight)
 
     this.cameraController = new CameraController(this.camera, this.renderer, () => this.markDirty())
+    this.cameraController.getGroundY = (x, z) => this.getZHeightAtWorldPos(x, z) ?? 0
 
     this.terrainRenderer  = new TerrainRenderer(this.scene)
     this.districtRenderer = new DistrictRenderer(this.scene)
     this.groundRenderer   = new GroundRenderer(this.scene, this.originalMaterials)
+    this.groundRenderer.getZHeight = (x, y) => this.terrainRenderer.getZHeightAtWorldPos(x, y) ?? 0
     this.groundRenderer.buildingRenderer.setDirtyCallback(() => this.markDirty())
     this.minimap          = new Minimap()
     this.compass          = new Compass()

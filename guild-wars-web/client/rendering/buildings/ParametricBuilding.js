@@ -709,7 +709,13 @@ function texQuad(p0, p1, p2, p3, region, material, uvS) {
 }
 function trisMesh(tris, region, material, doubleSided = false) {
   const pos = [], uv = []
-  const add = (t) => { pos.push(...t[0], ...t[1], ...t[2]); uv.push(...regionUV(region, t[3][0], t[3][1]), ...regionUV(region, t[4][0], t[4][1]), ...regionUV(region, t[5][0], t[5][1])) }
+  const addUV = region
+    ? (u, v) => uv.push(...regionUV(region, u, v))
+    : (u, v) => uv.push(u, v)
+  const add = (t) => {
+    pos.push(...t[0], ...t[1], ...t[2])
+    addUV(t[3][0], t[3][1]); addUV(t[4][0], t[4][1]); addUV(t[5][0], t[5][1])
+  }
   for (const t of tris) { add(t); if (doubleSided) add([t[0], t[2], t[1], t[3], t[5], t[4]]) }
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
@@ -772,12 +778,11 @@ function addGableDecoration(group, pF, pB, topY, apexY, ht, nOut, gableStyle, ga
 // Verge along a gable rake p0→p1. Tile/wood roofs get a real wooden bargeboard sitting
 // proud above the rake; thatch/reed roofs instead get a band HANGING down from the rake,
 // in the roof's own material, to simulate the thick cut edge of the thatch/reed.
-function addVergeBoard(group, p0, p1, nOut, roofMat, lib) {
+function addVergeBoard(group, p0, p1, nOut, roofMat, lib, roofMaterial) {
   if (roofMat === 'thatch' || roofMat === 'reed') {
-    const region = roofMat === 'thatch' ? lib.regions.thatch : lib.regions.reed
     const hang = 0.16
     const b0 = [p0[0], p0[1] - hang, p0[2]], b1 = [p1[0], p1[1] - hang, p1[2]]
-    group.add(trisMesh(quadTris(p0, p1, b1, b0), region, lib.material, true))
+    group.add(trisMesh(quadTris(p0, p1, b1, b0), null, roofMaterial ?? lib.material, true))
   } else {
     group.add(flatBoard(p0, p1, 0.15, 0.05, nOut, lib.regions.woodtrim, lib.material))
   }
@@ -919,7 +924,10 @@ function addBuildingRoof(group, fwings, buildingFloors, roofSpec, overhang, matT
   } = frame
 
   const roofMat = roofSpec.material ?? 'slate'
-  const region = lib.regions[roofMat] || lib.regions.slate
+  const roofColor = roofSpec.color
+  const isProceduralRoof = roofMat === 'slate' || roofMat === 'thatch' || roofMat === 'reed'
+  const region = isProceduralRoof ? null : (lib.regions[roofMat] || lib.regions.slate)
+  const roofMaterial = isProceduralRoof ? lib.getRoofMaterial(roofMat, roofColor) : lib.material
   const wallReg = lib.regions[matTop] || lib.regions.plaster
   const wallMat = lib.materialFor(matTop)
   const eaveDrop = H * 0.06
@@ -930,9 +938,8 @@ function addBuildingRoof(group, fwings, buildingFloors, roofSpec, overhang, matT
 
   const addEaveFascia = (p0, p1) => {
     if (roofMat !== 'thatch' && roofMat !== 'reed') return
-    const fReg = roofMat === 'reed' ? lib.regions.reed : lib.regions.thatch
     const hang = 0.22
-    group.add(trisMesh(quadTris(p0, p1, [p1[0], p1[1] - hang, p1[2]], [p0[0], p0[1] - hang, p0[2]]), fReg, lib.material, true))
+    group.add(trisMesh(quadTris(p0, p1, [p1[0], p1[1] - hang, p1[2]], [p0[0], p0[1] - hang, p0[2]]), null, roofMaterial, true))
   }
 
   // Roof-footprint subtraction (avoid double-roofing): remove the area of any
@@ -1019,7 +1026,7 @@ function addBuildingRoof(group, fwings, buildingFloors, roofSpec, overhang, matT
       const ridgeB = lExtend(fromLW(Lb.L, midW, apexY), Lb.L)
       const eaveA = lExtend([ea.x, eaveY, ea.y], La.L)
       const eaveB = lExtend([eb.x, eaveY, eb.y], Lb.L)
-      group.add(trisMesh(tiledQuad(ridgeA, ridgeB, eaveB, eaveA, roofTile), region, lib.material, true))
+      group.add(trisMesh(tiledQuad(ridgeA, ridgeB, eaveB, eaveA, roofTile), region, roofMaterial, true))
       addEaveFascia(eaveA, eaveB)
     } else {
       // GABLE edge — suppressed (no infill, roof ends flush at the footprint edge) when
@@ -1032,8 +1039,8 @@ function addBuildingRoof(group, fwings, buildingFloors, roofSpec, overhang, matT
       const pA = [ga.x, topY, ga.y], pB = [gb.x, topY, gb.y]
       const nVec = [onx, 0, ony]
       group.add(trisMesh([[pA, pB, apex, [0, 0], [1, 0], [0.5, 1]]], wallReg, wallMat, true))
-      addVergeBoard(group, apex, pA, nVec, roofMat, lib)
-      addVergeBoard(group, apex, pB, nVec, roofMat, lib)
+      addVergeBoard(group, apex, pA, nVec, roofMat, lib, roofMaterial)
+      addVergeBoard(group, apex, pB, nVec, roofMat, lib, roofMaterial)
       if (gableDeco) addGableDecoration(group, pA, pB, topY, apexY, ht, nVec, gableDeco.gableStyle, gableDeco.gableBrace, gableDeco.B, lib)
     }
   }
@@ -1047,7 +1054,9 @@ function addBuildingRoof(group, fwings, buildingFloors, roofSpec, overhang, matT
 // Returns array of {x,z} world positions so chimneys can avoid them.
 function addDormers(group, R, roof, rand, lib) {
   const { minX, maxX, minZ, maxZ, ridgeAlongX, apexY, ht, halfSpan, topY, floorLevel } = R
-  const region = lib.regions[roof.material] || lib.regions.slate
+  const isProceduralDormer = ['slate', 'thatch', 'reed'].includes(roof.material)
+  const region = isProceduralDormer ? null : (lib.regions[roof.material] || lib.regions.slate)
+  const dormerRoofMat = isProceduralDormer ? lib.getRoofMaterial(roof.material, roof.color) : lib.material
   const ridgeSpan = ridgeAlongX ? maxX - minX : maxZ - minZ
   const pitch = ht / halfSpan
   const onMinSide = R.dormersOnMinSide !== false   // which slope to use
@@ -1088,11 +1097,11 @@ function addDormers(group, R, roof, rand, lib) {
     }
     const eaveX = dw / 2 + ov, eaveY = wallTop - pitch * ov
     // Panels extend FORWARD (eaveZ past the front face) AND laterally (eaveX past window corners).
-    g.add(texQuad([0, peakY, fz], [0, peakY, backRidge], [-eaveX, eaveY, backEave], [-eaveX, eaveY, eaveZ], region, lib.material, uvS))
-    g.add(texQuad([0, peakY, backRidge], [0, peakY, fz], [eaveX, eaveY, eaveZ], [eaveX, eaveY, backEave], region, lib.material, uvS))
+    g.add(texQuad([0, peakY, fz], [0, peakY, backRidge], [-eaveX, eaveY, backEave], [-eaveX, eaveY, eaveZ], region, dormerRoofMat, uvS))
+    g.add(texQuad([0, peakY, backRidge], [0, peakY, fz], [eaveX, eaveY, eaveZ], [eaveX, eaveY, backEave], region, dormerRoofMat, uvS))
     // Verge boards run along the actual rake edge: eave corner (forward) up to ridge (back at fz)
-    addVergeBoard(g, [-eaveX, eaveY, eaveZ ], [0, peakY, fz ], [0, 0, 1], roof.material, lib)
-    addVergeBoard(g, [eaveX, eaveY, eaveZ ], [0, peakY, fz ], [0, 0, 1], roof.material, lib)
+    addVergeBoard(g, [-eaveX, eaveY, eaveZ ], [0, peakY, fz ], [0, 0, 1], roof.material, lib, dormerRoofMat)
+    addVergeBoard(g, [eaveX, eaveY, eaveZ ], [0, peakY, fz ], [0, 0, 1], roof.material, lib, dormerRoofMat)
     g.position.set(cx, baseY + 0.01, cz)
     if (ridgeAlongX) g.rotation.y = onMinSide ? Math.PI : 0
     else g.rotation.y = onMinSide ? -Math.PI / 2 : Math.PI / 2

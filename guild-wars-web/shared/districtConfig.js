@@ -1,7 +1,7 @@
 // Single source of truth for every per-district-TYPE tunable in the game: street/
 // block/plot generation parameters, parametric building style + GLB model weights,
 // townhouse probability, square landmark buildings, and the UI/map colour. Used by
-// BOTH server (generation) and client (rendering) code — see shared/buildingCatalogue.js
+// BOTH server (generation) and client (rendering) code â€” see shared/buildingCatalogue.js
 // for the same cross-import pattern (ADR-0005).
 //
 // Formerly five separate tables that had drifted into three different key schemes:
@@ -14,7 +14,7 @@
 // so a district's whole profile is editable in one place. Leadership is split by ruling-
 // body subclass everywhere now too (previously only DISTRICT_PARAMETERS did this; the
 // others just had one shared 'Leadership' entry, which is what's been copied across all
-// six subclasses below as a starting point — tune them apart freely).
+// six subclasses below as a starting point â€” tune them apart freely).
 //
 // Keys: 'Residential-Slums' / '-Middle' / '-Noble', 'Leadership-Monarchy' / '-Republic' /
 // '-Tyrant' / '-Oligarchy' / '-Theocracy' / '-Anarchist', 'Market', 'Religious',
@@ -28,9 +28,9 @@
 //   street_width       Street half-width factor (1.0 = StreetVoronoiGenerator's
 //                  STREET_HALF_WIDTH baseline). See halfWidthForDistrict().
 //   street_spacing     Spacing (world units) of street seeds sampled along the
-//                  district boundary; also sets interior-seed clearance. Smaller →
+//                  district boundary; also sets interior-seed clearance. Smaller â†’
 //                  denser boundary-following streets.
-//   block_density      Interior street seeds per unit area. Higher → smaller blocks.
+//   block_density      Interior street seeds per unit area. Higher â†’ smaller blocks.
 //   xyRatio            Interior grid column/row spacing ratio: 1 = square blocks.
 //   jitter             Max interior-seed displacement as a fraction of grid spacing.
 //   street_alignment   Voronoi cell-vertex style: 'euclidean' / 'manhattan' / 'chebyshev'
@@ -39,12 +39,12 @@
 //                  of being subdivided into plots.
 //   plotSpacing        Spacing (world units) of plot seeds along a block perimeter.
 //   minPlotSize        Minimum plot area.
-//   landmarks      { modelName: count } — special models placed on this district's
+//   landmarks      { modelName: count } â€” special models placed on this district's
 //                  Square clusters before plots (was DISTRICT_MODEL_SQUARE).
 //   buildingStyle  Parametric building probability distributions + GLB model weights
 //                  for Custom Model buildings (was DISTRICT_BUILDING_STYLES). Every
 //                  roll below is per-building, client-side, seeded from the plot
-//                  (see ADR-0019) — there is no more block-level 'townhouse' flag:
+//                  (see ADR-0019) â€” there is no more block-level 'townhouse' flag:
 //     floors            Weighted floor-count options.
 //     woodChance        Probability a nonstone wall material is wood (vs plaster).
 //     stoneChance       Probability the ground floor uses stone (upper floors always
@@ -90,6 +90,7 @@ export const DISTRICTS = {
       graniteChance: 0.0,
       brickChance: 0.0,
       roof: { thatch: 0.7, reed: 0.25, slate: 0.05 },
+      roofColor: 0x8a9080,  // weathered gray-green, poor quality
       overhangMin: 0.06,
       overhangMax: 0.2,
       wingDepths: [2, 2, 4, 4],
@@ -126,12 +127,13 @@ export const DISTRICTS = {
     landmarks: { well1: 4 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
       brickChance: 0.12,
       roof: { thatch: 0.45, slate: 0.35, reed: 0.2 },
+      roofColor: 0x7a8d95,  // standard blue-gray slate
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [2, 4, 4, 5],
@@ -175,11 +177,12 @@ export const DISTRICTS = {
       graniteChance: 0.25,
       brickChance: 0.1,
       roof: { slate: 0.72, reed: 0.18, thatch: 0.1 },
+      roofColor: 0x4a5560,  // dark charcoal — high quality noble slate
       overhangMin: 0.22,
       overhangMax: 0.48,
       wingDepths: [3, 6, 6, 8],
       maxWingWidth: 6,
-      archChance: 0.80,
+      archChance: 1.0,
       customModelChance: 0.05,
       freestandingChance: 1.0,
       buildingTypeWeights: { Residential: 6, Public: 2, Commercial: 1 },
@@ -215,17 +218,18 @@ export const DISTRICTS = {
     landmarks: { castle: 1, hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
       brickChance: 0.12,
       roof: { thatch: 0.45, slate: 0.35, reed: 0.2 },
+      roofColor: 0x506070,  // refined dark blue-gray — royal
       overhangMin: 0.12,
       overhangMax: 0.42,
       wingDepths: [3, 5, 7],
       maxWingWidth: 6,
-      archChance: 0.15,
+      archChance: 0.30,
       customModelChance: 0.05,
       freestandingChance: 1.0,
       buildingTypeWeights: { Public: 6, Residential: 2, Military: 1 },
@@ -261,7 +265,7 @@ export const DISTRICTS = {
     landmarks: { hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -271,9 +275,10 @@ export const DISTRICTS = {
       overhangMax: 0.42,
       wingDepths: [2, 3, 3, 5],
       maxWingWidth: 6,
-      archChance: 0.15,
+      archChance: 0.50,
       customModelChance: 0.05,
       freestandingChance: 1.0,
+      roofColor: 0x607080,  // civic mid blue-gray
       buildingTypeWeights: { Public: 6, Residential: 2, Commercial: 1 },
       modelWeights: {
         m2: 3,
@@ -307,7 +312,7 @@ export const DISTRICTS = {
     landmarks: { castle: 1, hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -320,6 +325,7 @@ export const DISTRICTS = {
       archChance: 0.15,
       customModelChance: 0.05,
       freestandingChance: 1.0,
+      roofColor: 0x3a4550,  // very dark oppressive slate
       buildingTypeWeights: { Public: 5, Military: 3, Residential: 1 },
       modelWeights: {
         m2: 3,
@@ -353,7 +359,7 @@ export const DISTRICTS = {
     landmarks: { hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -366,6 +372,7 @@ export const DISTRICTS = {
       archChance: 0.15,
       customModelChance: 0.05,
       freestandingChance: 0.3,
+      roofColor: 0x5a6870,  // businesslike gray
       buildingTypeWeights: { Public: 5, Commercial: 3, Residential: 1 },
       modelWeights: {
         m2: 3,
@@ -399,7 +406,7 @@ export const DISTRICTS = {
     landmarks: { hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -412,6 +419,7 @@ export const DISTRICTS = {
       archChance: 0.15,
       customModelChance: 0.05,
       freestandingChance: 0.3,
+      roofColor: 0x7a8090,  // dignified cool gray
       buildingTypeWeights: { Public: 6, Residential: 2 },
       modelWeights: {
         m2: 3,
@@ -445,7 +453,7 @@ export const DISTRICTS = {
     landmarks: { hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -458,6 +466,7 @@ export const DISTRICTS = {
       archChance: 0.15,
       customModelChance: 0.05,
       freestandingChance: 0.05,
+      roofColor: 0x706050,  // rough weathered brown-gray
       buildingTypeWeights: { Public: 3, Residential: 3, Commercial: 2, Industrial: 1 },
       modelWeights: {
         m2: 3,
@@ -496,11 +505,12 @@ export const DISTRICTS = {
       graniteChance: 0.1,
       brickChance: 0.1,
       roof: { thatch: 0.1, reed: 0.25, slate: 0.65 },
+      roofColor: 0x85919a,  // clean commercial gray
       overhangMin: 0.06,
       overhangMax: 0.2,
       wingDepths: [2, 2, 2, 3],
       maxWingWidth: 6,
-      archChance: 0.15,
+      archChance: 0.30,
       customModelChance: 0.05,
       freestandingChance: 0.3,
       buildingTypeWeights: { Commercial: 7, Public: 2, Residential: 1 },
@@ -540,7 +550,7 @@ export const DISTRICTS = {
     landmarks: { church: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -550,9 +560,10 @@ export const DISTRICTS = {
       overhangMax: 0.42,
       wingDepths: [3, 3, 4, 5],
       maxWingWidth: 6,
-      archChance: 0.15,
+      archChance: 0.50,
       customModelChance: 0.05,
       freestandingChance: 1.0,
+      roofColor: 0x7070a0,  // cool blue-gray — spiritual
       buildingTypeWeights: { Public: 8, Residential: 1 },
       modelWeights: {
         m1: 3,
@@ -594,11 +605,12 @@ export const DISTRICTS = {
       graniteChance: 0.0,
       brickChance: 0.0,
       roof: { thatch: 0.7, reed: 0.25, slate: 0.05 },
+      roofColor: 0x6575a5,  // distinctly blue — magical slate
       overhangMin: 0.06,
       overhangMax: 0.2,
       wingDepths: [2, 2, 2, 3],
       maxWingWidth: 6,
-      archChance: 0.15,
+      archChance: 0.40,
       customModelChance: 0.05,
       freestandingChance: 0.3,
       buildingTypeWeights: { Industrial: 5, Residential: 4, Commercial: 1 },
@@ -633,11 +645,12 @@ export const DISTRICTS = {
       graniteChance: 0.25,
       brickChance: 0.1,
       roof: { slate: 0.72, reed: 0.18, thatch: 0.1 },
+      roofColor: 0x404850,  // very dark military slate
       overhangMin: 0.22,
       overhangMax: 0.48,
       wingDepths: [3, 4, 5],
       maxWingWidth: 6,
-      archChance: 0.15,
+      archChance: 0.70,
       customModelChance: 0.05,
       freestandingChance: 1.0,
       buildingTypeWeights: { Military: 7, Residential: 2, Industrial: 1 },
@@ -660,7 +673,7 @@ export const DISTRICTS = {
     landmarks: { t5: 1, hall: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -673,6 +686,7 @@ export const DISTRICTS = {
       archChance: 0.15,
       customModelChance: 0.05,
       freestandingChance: 0.05,
+      roofColor: 0x606560,  // sooty industrial dark gray
       buildingTypeWeights: { Industrial: 7, Commercial: 2, Residential: 1 },
       modelWeights: { t5: 3, h10: 2, h11: 2, alchemists: 3, forge: 3 },
     },
@@ -693,7 +707,7 @@ export const DISTRICTS = {
     landmarks: { colliseum: 1 },
     buildingStyle: {
       floors: { 1: 0.45, 2: 0.55 },
-      roofRidgeHeight: { 0: 0.25, 0.5: 0.25, 1: 0.25, 1.5: 0.25, 2: 0.00 },
+      roofRidgeHeight: { 0: 0.00, 0.5: 0.25, 1: 0.5, 1.5: 0.25, 2: 0.00 },
       woodChance: 0.5,
       stoneChance: 0.35,
       graniteChance: 0.15,
@@ -703,9 +717,10 @@ export const DISTRICTS = {
       overhangMax: 0.42,
       wingDepths: [2, 3, 3, 8],
       maxWingWidth: 6,
-      archChance: 0.15,
+      archChance: 0.50,
       customModelChance: 0.05,
       freestandingChance: 0.05,
+      roofColor: 0x909080,  // lighter festive gray
       buildingTypeWeights: { Public: 5, Commercial: 4, Residential: 1 },
       modelWeights: { h8: 2, h9: 2, t5: 2, h15: 1 },
     },
@@ -732,6 +747,7 @@ export const DEFAULTS = {
     graniteChance: 0.18,
     brickChance: 0.12,
     roof: { slate: 0.4, thatch: 0.32, reed: 0.28 },
+    roofColor: 0x7a8d95,  // standard blue-gray fallback
     overhangMin: 0.14,
     overhangMax: 0.48,
     wingDepths: [2, 3, 4, 5],
@@ -745,7 +761,7 @@ export const DEFAULTS = {
 };
 
 // Resolve a live district object ({assignedType, residentialClass, LeadershipClass})
-// to its DISTRICTS key. Residential and Leadership are both split by sub-class — note
+// to its DISTRICTS key. Residential and Leadership are both split by sub-class â€” note
 // they live in different fields (residentialClass vs LeadershipClass). Returns null for
 // an unassigned/untyped district (no assignedType yet).
 export function districtConfigKey(district) {
@@ -761,7 +777,7 @@ export function districtConfigKey(district) {
 // Look up a district's full config, falling back to DEFAULTS for anything unassigned
 // or not in the table. Merges district.configOverrides (set via the cog/settings UI)
 // so per-district tweaks apply without touching the shared DISTRICTS table.
-// buildingStyle is deep-merged so sub-fields (floors, roof, wingDepths, …) can be
+// buildingStyle is deep-merged so sub-fields (floors, roof, wingDepths, â€¦) can be
 // overridden individually without replacing the whole buildingStyle object.
 export function getDistrictConfig(district) {
   const key = districtConfigKey(district);

@@ -16,7 +16,6 @@ import { STONE_GLSL } from './stoneMaterial.js'
 
 const ATLAS_TILE_SCALE = 10.0   // atlas-tile repeats per world unit
 const STONE_DENSITY    = 60.0   // doubled (halved physical stone scale)
-const STONE_DARKEN     = 0.35
 const BRICK_STREET_ASPECT    = 2      // brick long axis : short axis — 1:2
 const BRICK_STREET_DENSITY   = 140.0  // bricks (short-axis count) per world unit across the road (doubled — halved physical brick scale)
 const BRICK_STREET_VARIATION = 0.05   // ±5% colour jitter per brick
@@ -116,14 +115,15 @@ function makeStoneStreetMaterial() {
   const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0, side: THREE.DoubleSide })
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uDensity = { value: STONE_DENSITY }
-    shader.uniforms.uDarken  = { value: STONE_DARKEN }
     shader.vertexShader = 'varying vec3 vStWP;\n' + shader.vertexShader.replace(
       '#include <begin_vertex>',
       '#include <begin_vertex>\n  vStWP = (modelMatrix * vec4(transformed, 1.0)).xyz;',
     )
-    shader.fragmentShader = 'varying vec3 vStWP;\nuniform float uDensity;\nuniform float uDarken;\n' + STONE_GLSL +
+    shader.fragmentShader = 'varying vec3 vStWP;\nuniform float uDensity;\n' + STONE_GLSL +
       shader.fragmentShader.replace('#include <map_fragment>', `
-        diffuseColor.rgb *= stoneCol(vStWP.xz * uDensity) * uDarken;
+        diffuseColor.rgb = stoneCol(vStWP.xz * uDensity);
+        diffuseColor.rgb *= mix(0.45, 1.0, 0.65);
+        diffuseColor.rgb *= mix(vec3(0.68, 0.62, 0.5), vec3(1.0), 0.65);
       `)
   }
   mat.customProgramCacheKey = () => 'gw-street-stone'

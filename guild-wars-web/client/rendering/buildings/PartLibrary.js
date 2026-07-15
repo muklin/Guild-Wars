@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { makeWallMaterial, makeFloorMaterial } from './stoneMaterial.js'
 import { makeBrickMaterial } from './brickMaterial.js'
+import { makeRoofMaterial } from './roofMaterial.js'
 
 // Loads one building-part THEME: its manifest (grid + atlas regions), the shared
 // texture atlas, and each part slot's geometry. All parts share ONE atlas material,
@@ -92,5 +93,14 @@ export default class PartLibrary {
     if (material === 'stone') return this.stoneMaterial
     if (material === 'brick') return this.brickMaterial
     return this.material
+  }
+
+  // Cached procedural roof material by type + color. Avoids re-compiling shaders
+  // for roofs that share the same type and district color.
+  getRoofMaterial(type, hexColor) {
+    this._roofCache ??= new Map()
+    const key = `${type}:${hexColor}`
+    if (!this._roofCache.has(key)) this._roofCache.set(key, makeRoofMaterial(type, hexColor))
+    return this._roofCache.get(key)
   }
 }

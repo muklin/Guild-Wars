@@ -29,8 +29,8 @@ camera.position.set(30, 26, 30)
 const controls = new OrbitControls(camera, renderer.domElement)
 controls.target.set(1.0, 0.12, 0.3)
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.6))
-const sun = new THREE.DirectionalLight(0xffffff, 1.4)
+scene.add(new THREE.AmbientLight(0xffffff, 0.075))
+const sun = new THREE.DirectionalLight(0xffffff, 2.0)
 sun.position.set(8, 16, 6)
 scene.add(sun)
 
