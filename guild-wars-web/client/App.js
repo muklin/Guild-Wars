@@ -9,6 +9,7 @@ import MultiplayerUI from './ui/MultiplayerUI.js'
 import EventCardManager from './ui/EventCardManager.js'
 import config from './config.js'
 import DebugPanel from './ui/DebugPanel.js'
+import AuditFindingsPopup from './ui/AuditFindingsPopup.js'
 import ForeignPowerDialog from './ui/ForeignPowerDialog.js'
 import GodDialog from './ui/GodDialog.js'
 import MagicSystemDialog from './ui/MagicSystemDialog.js'
@@ -27,6 +28,10 @@ export default class App {
     this.pendingTerrainType = null
     this.selectedEdgeIds = new Set()
     this.pendingEdgeType = null
+    // The last edge explicitly clicked (not just any member of selectedEdgeIds) — the
+    // anchor a shortest-path hover/click is measured from once at least one edge is
+    // selected. Pushed to the renderer (setEdgePathAnchor) whenever it changes.
+    this.lastSelectedEdgeId = null
 
     // District selection state (Phase 2)
     this.selectedDistrictId = null
@@ -68,6 +73,7 @@ export default class App {
       this.renderer.addCameraMoveCallback(() => this._updateFPLabelPositions())
 
       this.debugPanel = new DebugPanel(this.renderer)
+      this.auditFindingsPopup = new AuditFindingsPopup()
 
       this.setupEventListeners()
 
@@ -97,6 +103,15 @@ export default class App {
     this.eventBus.on('TERRAIN_APPLY',        (data) => this._handleTerrainApply(data))
     this.eventBus.on('EDGE_TYPE_PREVIEW',    (t)    => this._handleEdgePreview(t))
     this.eventBus.on('EDGE_APPLY',           (data) => this._handleEdgeApply(data))
+    // Closing the edge-type dialogue clears the selection (user-confirmed 2026-07-14),
+    // unlike the region dialogue which leaves the map selection untouched on close.
+    this.eventBus.on('EDGE_SELECTION_CLOSED', ()    => { this._clearEdgeSelection(); this._refreshTerrainPanel() })
+    // Clicking empty space (no region/edge/district/city-edge under the cursor) clears
+    // whatever's selected and closes its panel (user-confirmed 2026-07-14) — clicking a
+    // DIFFERENT selectable thing instead already clears the old selection and redraws
+    // the panel at the new thing's position via the normal click handlers above; this
+    // only covers the "clicked on nothing at all" case those don't reach.
+    this.eventBus.on('MAP_EMPTY_CLICKED', () => this._handleMapEmptyClick())
 
     this.eventBus.on('TERRAIN_COMPLETE', async () => {
       await this._doFinishTerrain()
@@ -432,7 +447,11 @@ export default class App {
   _renderCityGeometry(cityData, { preserveTerrainPlots = false } = {}) {
     if (!cityData) return
     this.renderer.syncPromotedPlots(cityData)
-    this.renderer.setCityDistrictData(cityData)
+    // District z-height (plan "typed-gliding-leaf"): district.polygon vertices carry no
+    // z of their own — getCityDistrictDataForClient() attaches a pointRegistry snapshot
+    // so DistrictRenderer can resolve it via district.pointIds (see resolvePolygon).
+    const pointsById = new Map((cityData.pointRegistry || []).map(p => [p.id, p]))
+    this.renderer.setCityDistrictData(cityData, pointsById)
     this.renderer.renderStreetGraph(cityData.streetGraph)
     this.renderer.renderGutters(cityData.streetGraph)
     this.renderer.renderBlocks(cityData.blocks)
@@ -440,9 +459,50 @@ export default class App {
     this.renderer.drawBlockCenters(cityData.blocks)
     this.renderer.drawPlotCenters(cityData.plots || [])
     this.renderer.drawStreetSeeds(cityData.streetGraph)
+    this.renderer.drawCitySurfaceCorners(cityData.streetGraph, cityData.blocks, cityData.plots)
   }
 
   // ── Terrain region ──────────────────────────────────────────────────────────
+
+  _clearRegionSelection() {
+    if (this.selectedRegionId !== null) this.renderer.deselectRegion(this.selectedRegionId)
+    this.selectedRegionId = null
+    this.pendingTerrainType = null
+  }
+
+  // Clicking empty space (user-confirmed 2026-07-14): clear whatever's selected in the
+  // current phase and close its panel. Terrain Setup has region and edge selection as
+  // two independent, mutually-exclusive things; City phases have district and city-edge
+  // selection the same way — clear whichever is actually active, refresh once.
+  _handleMapEmptyClick() {
+    if (this.currentPhase === 'CitySubdivision') {
+      let changed = false
+      if (this.selectedDistrictId !== null) {
+        this._revertProvisionalDistrict(this.selectedDistrictId)
+        this.renderer.deselectDistrict(this.selectedDistrictId)
+        this.selectedDistrictId = null
+        this.pendingDistrictType = null
+        this.pendingResidentialClass = null
+        this.pendingLeadershipClass = 'Monarchy'
+        changed = true
+      }
+      if (this.selectedCityEdgeIds.size > 0) { this._clearCityEdgeSelection(); changed = true }
+      if (this.selectedTerrainRegionId !== null) {
+        this.renderer.deselectRegion(this.selectedTerrainRegionId)
+        this.renderer.clearTerrainPlotSelected?.()
+        this.selectedTerrainRegionId = null
+        this.selectedTerrainPlotId = null
+        this.pendingTerrainAction = null
+        changed = true
+      }
+      if (changed) this._refreshDistrictPanel()
+      return
+    }
+    let changed = false
+    if (this.selectedRegionId !== null) { this._clearRegionSelection(); changed = true }
+    if (this.selectedEdgeIds.size > 0) { this._clearEdgeSelection(); changed = true }
+    if (changed) this._refreshTerrainPanel()
+  }
 
   _handleRegionClick(regionId) {
     const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
@@ -528,23 +588,25 @@ export default class App {
     try {
       const response = await GameAPI.assignTerrain(regionId, terrainType, description, name)
       if (response.ok) {
-        // Sea/Mountains/Desert/Ice Sheet can reveal+merge adjacent hidden terrain and
-        // create brand-new Terrain Edges the client has never seen geometry for (see
-        // SetupPhase.js's _revealAdjacentHiddenTerrain) — a full re-hydrate is the only
-        // way those new plot/edge meshes actually get built, so the narrow per-id
-        // patches below aren't enough on their own in that case.
-        if (response.revealedRegionIds?.length) {
-          const pointsById = new Map((response.pointRegistry || []).map(p => [p.id, p]))
-          this.renderer.setTerrainData(
-            response.regions || [],
-            response.edges || {},
-            response.terrainPlots || [],
-            response.edgePoints || [],
-            pointsById,
-            response.riverCliffFaces || [],
-            response.hiddenRegions || []
-          )
-        }
+        // Full re-hydrate on EVERY assignment, not just a reveal (user-confirmed
+        // 2026-07-14, same root cause as the edge-assign fix above): assignTerrainToRegion
+        // always runs the type's z-height effect (delta + centre-to-edge taper +
+        // propagation) and often the river/cliff pullback too, mutating terrainPlots'
+        // polygons/z and riverCliffFaces regardless of whether anything got revealed —
+        // the server already sends the full fresh snapshot unconditionally, so this used
+        // to only actually get APPLIED client-side for the reveal case, leaving every
+        // ordinary Mountains/Hills/etc. Apply's z-height changes invisible until some
+        // later, unrelated action happened to trigger a full resync.
+        const pointsById = new Map((response.pointRegistry || []).map(p => [p.id, p]))
+        this.renderer.setTerrainData(
+          response.regions || [],
+          response.edges || {},
+          response.terrainPlots || [],
+          response.edgePoints || [],
+          pointsById,
+          response.riverCliffFaces || [],
+          response.hiddenRegions || this.renderer.terrainData?.hiddenRegions || []
+        )
 
         const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
         if (region) { region.assignedType = terrainType; region.name = name; region.description = description }
@@ -566,6 +628,8 @@ export default class App {
 
         this.selectedRegionId = null
         this.pendingTerrainType = null
+        this.renderer.renderAuditFindings?.(response.auditFindings || [])
+        this.auditFindingsPopup?.update(response.auditCounts, response.auditFindings)
         this._refreshTerrainPanel()
       } else {
         this.uiManager.showError(response.error)
@@ -601,7 +665,8 @@ export default class App {
         this._refreshTerrainPanel()   // hides the floating panel + closes any open NameDialog
         this._finalizeTerrainDisplay()
         const cityData = response.cityDistrictData || { districts: [], edges: {}, edgePoints: [] }
-        this.renderer.setCityDistrictData(cityData)
+        const pointsById = new Map((cityData.pointRegistry || []).map(p => [p.id, p]))
+        this.renderer.setCityDistrictData(cityData, pointsById)
         this.renderer.setMode('city')
         this.renderer.setFinishedGround(false)   // per-district colours during setup
         this.renderer.drawDistrictCenters(cityData.districts)
@@ -668,31 +733,61 @@ export default class App {
 
   // ── Terrain edge ────────────────────────────────────────────────────────────
 
+  // Two interaction modes (user-confirmed 2026-07-14):
+  //  1. No edge selected yet (or a Terrain region is selected instead): hover highlights
+  //     just the one edge under the cursor, click selects just that one edge.
+  //  2. An edge is already selected: hover highlights the SHORTEST PATH (by real-world
+  //     length, over the edge-adjacency graph — see TerrainRenderer.getShortestEdgePath)
+  //     from the last-clicked edge to whatever's hovered; clicking adds every edge along
+  //     that path to the selection in one go, instead of requiring a click per edge.
+  // `lastSelectedEdgeId` is the anchor for mode 2's path search — updated on every click,
+  // and pushed to the renderer (setEdgePathAnchor) so hover knows which mode it's in.
   _handleEdgeClick(edge) {
     const edgeData = this.renderer.terrainData?.edges?.[edge.id]
     if (edgeData?.assignedType) return
 
     if (this.selectedEdgeIds.has(edge.id)) {
+      // Toggle off. If it was the path anchor, fall back to any other still-selected edge.
       this.selectedEdgeIds.delete(edge.id)
       this.renderer.deselectEdge(edge.id)
-    } else {
-      if (!this._isEdgeConnectedToSelection(edge)) this._clearEdgeSelection()
-
-      if (this.selectedEdgeIds.size === 0 && this.selectedRegionId !== null) {
+      if (this.lastSelectedEdgeId === edge.id) {
+        this.lastSelectedEdgeId = [...this.selectedEdgeIds].pop() ?? null
+        this.renderer.setEdgePathAnchor(this.lastSelectedEdgeId)
+      }
+    } else if (this.selectedEdgeIds.size === 0) {
+      // Mode 1: plain single select.
+      if (this.selectedRegionId !== null) {
         this.renderer.deselectRegion(this.selectedRegionId)
         this.selectedRegionId = null
         this.pendingTerrainType = null
       }
-
       this.selectedEdgeIds.add(edge.id)
-      if (this.pendingEdgeType) {
-        this.renderer.previewEdgeType(edge.id, this.pendingEdgeType)
-      } else {
-        this.renderer.selectEdge(edge.id)
+      this.lastSelectedEdgeId = edge.id
+      this.renderer.setEdgePathAnchor(edge.id)
+      if (this.pendingEdgeType) this.renderer.previewEdgeType(edge.id, this.pendingEdgeType)
+      else this.renderer.selectEdge(edge.id)
+    } else {
+      // Mode 2: add the whole shortest path from the anchor to this click. An
+      // unreachable target (disconnected graph — rare) just adds the clicked edge alone,
+      // leaving the existing selection intact rather than discarding it.
+      const path = this.renderer.getShortestEdgePath(this.lastSelectedEdgeId, edge.id)
+      const toAdd = (path && path.length) ? path : [edge.id]
+      for (const id of toAdd) {
+        if (this.selectedEdgeIds.has(id)) continue
+        if (this.renderer.terrainData?.edges?.[id]?.assignedType) continue   // already typed — not selectable
+        this.selectedEdgeIds.add(id)
+        if (this.pendingEdgeType) this.renderer.previewEdgeType(id, this.pendingEdgeType)
+        else this.renderer.selectEdge(id)
       }
+      this.lastSelectedEdgeId = edge.id
+      this.renderer.setEdgePathAnchor(edge.id)
     }
 
-    if (this.selectedEdgeIds.size === 0) this.pendingEdgeType = null
+    if (this.selectedEdgeIds.size === 0) {
+      this.pendingEdgeType = null
+      this.lastSelectedEdgeId = null
+      this.renderer.setEdgePathAnchor(null)
+    }
     this._refreshTerrainPanel()
   }
 
@@ -709,11 +804,26 @@ export default class App {
     try {
       const response = await GameAPI.assignEdges(edgeIds, edgeType, description, name)
       if (response.ok) {
-        for (const edgeId of edgeIds) {
-          const edge = this.renderer.terrainData?.edges?.[edgeId]
-          if (edge) { edge.assignedType = edgeType; edge.name = name; edge.description = description }
-          this.renderer.updateEdgeColor(edgeId, edgeType)
-        }
+        // Full re-hydrate (user-confirmed 2026-07-14, "terrain edges are not being
+        // drawn at the right heights") — assignEdgeType's own pullback + Cliff/River
+        // z-height work mutates terrain-plot polygons, riverCliffFaces, and point z all
+        // in the same call; the server now sends the full fresh snapshot back (same
+        // shape as /terrain/assign) instead of just the edges' own assignedType/color,
+        // so the client's plot fills, faces, and edge-line heights all stay in sync
+        // with whatever the server just computed rather than showing stale geometry
+        // until some later, unrelated action happens to trigger a full resync.
+        const pointsById = new Map((response.pointRegistry || []).map(p => [p.id, p]))
+        this.renderer.setTerrainData(
+          response.regions || [],
+          response.edges || {},
+          response.terrainPlots || [],
+          response.edgePoints || [],
+          pointsById,
+          response.riverCliffFaces || [],
+          this.renderer.terrainData?.hiddenRegions || []
+        )
+        this.renderer.renderAuditFindings?.(response.auditFindings || [])
+        this.auditFindingsPopup?.update(response.auditCounts, response.auditFindings)
         this._clearEdgeSelection()
         this._refreshTerrainPanel()
       } else {
@@ -723,29 +833,12 @@ export default class App {
     } catch (error) { this.uiManager.showError(error.message); this._refreshTerrainPanel() }
   }
 
-  _isEdgeConnectedToSelection(edge) {
-    if (this.selectedEdgeIds.size === 0) return true
-    const edges = this.renderer.terrainData?.edges || {}
-
-    const terminalCount = new Map()
-    for (const selId of this.selectedEdgeIds) {
-      const pts = edges[selId]?.pointIds
-      if (!pts?.length) continue
-      const first = pts[0], last = pts[pts.length - 1]
-      terminalCount.set(first, (terminalCount.get(first) || 0) + 1)
-      if (last !== first) terminalCount.set(last, (terminalCount.get(last) || 0) + 1)
-    }
-    const freeEndpoints = new Set([...terminalCount].filter(([, c]) => c === 1).map(([v]) => v))
-
-    const pts = edge.pointIds
-    if (!pts?.length) return false
-    return pts.some(pid => freeEndpoints.has(pid))
-  }
-
   _clearEdgeSelection() {
     for (const edgeId of this.selectedEdgeIds) this.renderer.deselectEdge(edgeId)
     this.selectedEdgeIds.clear()
     this.pendingEdgeType = null
+    this.lastSelectedEdgeId = null
+    this.renderer.setEdgePathAnchor(null)
   }
 
   _getAdjacentRegions(regionId) {

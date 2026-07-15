@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed (2026-07-12). Extends ADR-0020's Groundplane Point (already reserves `z`, currently unused) to carry meaningful data. Terrain-scope only — District-scale z-height (Canals, District boundary dragging, streets/plots/wings, berm walls) is a deliberate, separate follow-up, not decided here.
+Accepted, Cliff/River implemented 2026-07-14 (plan "typed-gliding-leaf"). Extends ADR-0020's Groundplane Point (already reserves `z`, currently unused) to carry meaningful data. Terrain-scope only — District-scale z-height (Canals, District boundary dragging, streets/plots/wings, berm walls) is a deliberate, separate follow-up, not decided here.
+
+**Cliff split formula, resolved at implementation time** (this ADR's original text left the exact magnitude open): a Cliff's high/low split is decided per physically-contiguous RUN of Cliff-assigned edges, not per individual edge or per region pair — even where the run crosses several different region pairs, one side is consistently high and the other consistently low along the whole run. A region touching Sea/Swamp/Ice Sheet/Lake is always the low side; otherwise the side is decided by averaging the z of every point one hop off the run (excluding points on the run itself), bucketed by side across the *whole* run — the higher average wins. Each split vertex's new z is then `lerp(ownZ, sideAverage, 0.8)`, not a flat ±constant — see `computeCliffChainSides`/`CLIFF_LERP_T` in `TerrainZHeight.js`. River's linear-grade/Waterfall design (body §14 above) is implemented as designed in `applyRiverZGradient`.
 
 ## Decision
 

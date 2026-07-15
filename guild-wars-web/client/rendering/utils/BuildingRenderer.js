@@ -281,6 +281,21 @@ export default class BuildingRenderer {
   // Only used by dev/preview tools — the main game leaves seedOffset at 0.
   randomizeSeed() { this._seedOffset = (Math.random() * 0x7FFFFFFF) | 0 }
 
+  // District z-height (plan "typed-gliding-leaf"): a plot's blockCorners already carry
+  // real per-vertex z (Tier 2, CityBlockGenerator/PlotVoronoiGenerator) — every building/
+  // tree placement on that plot used to hardcode GROUND_Y (0) instead, so houses floated
+  // above or sank into their own plot as soon as the plot itself stopped being flat.
+  // Average of the plot's own corners, not a footprint-local lookup — good enough for a
+  // building's base seat; Stage 6 (Wing z-quantization, still pending) is the place for
+  // per-footprint-corner precision.
+  _plotGroundZ(plot) {
+    const poly = plot?.blockCorners
+    if (!poly?.length) return GROUND_Y
+    let sum = 0, n = 0
+    for (const v of poly) { if (v.z != null && isFinite(v.z)) { sum += v.z; n++ } }
+    return n ? sum / n : GROUND_Y
+  }
+
   clear(scene) {
     this.featureManager?.clear()
     for (const g of this._paraGroups) scene?.remove(g)
@@ -389,13 +404,16 @@ export default class BuildingRenderer {
     // as _lastPolyWingEntries above, just for the non-parametric building path.
     this._lastGlbFootprints = glbFootprints
     // Landmarks are placed by the server before plots (ADR-0005); here we just render
-    // the recorded placements.
+    // the recorded placements. No plot reference of their own — find the plot (always a
+    // paved square, per convertTerrainCellsToPlots/ADR-0005) actually underneath the
+    // landmark's footprint and borrow its ground z, same as every other building.
     for (const lb of (districtData?.landmarkBuildings || [])) {
       const m = MODEL_BY_NAME.get(lb.name)
       if (m) {
         const style = this._districtStyle(districtById?.get(lb.districtId))
         const { buildingTypes, buildingSubtype } = this._rollBuildingTypes(style, posHash(lb.x, lb.z) + this._seedOffset)
-        housePlacements.push({ x: lb.x, z: lb.z, rotY: lb.rotY ?? 0, glbPath: m.glbPath, scale: MODEL_SCALE, buildingTypes, buildingSubtype })
+        const underPlot = plots.find(p => p.blockCorners?.length && pointInPolygon(lb.x, lb.z, p.blockCorners))
+        housePlacements.push({ x: lb.x, z: lb.z, y: this._plotGroundZ(underPlot), rotY: lb.rotY ?? 0, glbPath: m.glbPath, scale: MODEL_SCALE, buildingTypes, buildingSubtype })
       }
     }
 
@@ -416,7 +434,7 @@ export default class BuildingRenderer {
       const tPara = performance.now()
       this._ensureLib().then(lib => {
         if (this._renderGen !== gen) return   // superseded by a newer render call
-        for (const { spec, x, z, rotY } of paraQueue) {
+        for (const { spec, x, z, rotY, y } of paraQueue) {
           // One building's spec throwing inside assemble() must not abort the rest of
           // the batch — that previously meant a single bad spec silently killed every
           // building queued after it in this render() call (most districts going blank).
@@ -428,7 +446,7 @@ export default class BuildingRenderer {
             continue
           }
           g.scale.setScalar(PARA_SCALE)
-          g.position.set(x, GROUND_Y, z)
+          g.position.set(x, y ?? GROUND_Y, z)
           g.rotation.y = rotY
           g.visible = this._visible
           this._applyRoofVisible(g, this._roofsVisible)
@@ -804,7 +822,7 @@ export default class BuildingRenderer {
 
         // Scatter trees behind the primary wing only
         if (wi === 0 && si === 0 && housePlacements) {
-          this._scatterBackTrees(plot, poly, midX, midZ, ux, uz, nx, nz, L, worldD, maxD, housePlacements)
+          this._scatterBackTrees(plot, poly, midX, midZ, ux, uz, nx, nz, L, worldD, maxD, housePlacements, this._plotGroundZ(plot))
         }
       }
     }
@@ -938,7 +956,7 @@ export default class BuildingRenderer {
 
     const primaryFloors = Math.max(...wings.map(w => w.floorCount))
     const spec = this._buildTownhouseSpec(distKey, wings, primaryFloors, hash, style, attached)
-    return { spec, x: 0, z: 0, rotY: 0 }
+    return { spec, x: 0, z: 0, rotY: 0, y: this._plotGroundZ(plot) }
   }
 
   _buildTownhouseSpec(distKey, wings, floors, hash, style, attached) {
@@ -1061,6 +1079,7 @@ export default class BuildingRenderer {
     const poly = plot.blockCorners
     const streetEdges = plot.streetEdges || []
     if (!poly || poly.length < 3 || streetEdges.length === 0) return
+    const groundZ = this._plotGroundZ(plot)
 
     // Primary frontage = longest street-facing edge.
     let a = null, b = null, len = -1
@@ -1104,7 +1123,7 @@ export default class BuildingRenderer {
     const sel = this._selectModel(districtById?.get(plot.districtId), bw, bd, glbHash)
     if (sel) {
       const { buildingTypes, buildingSubtype } = this._rollBuildingTypes(this._districtStyle(districtById?.get(plot.districtId)), glbHash)
-      housePlacements.push({ x: ccx, z: ccy, rotY: theta, glbPath: sel.glbPath, scale: MODEL_SCALE, buildingTypes, buildingSubtype })
+      housePlacements.push({ x: ccx, z: ccy, y: groundZ, rotY: theta, glbPath: sel.glbPath, scale: MODEL_SCALE, buildingTypes, buildingSubtype })
       if (glbFootprints) {
         const poly = footprintRectWorld(ccx, ccy, theta, (sel.width * MODEL_SCALE) / 2, (sel.depth * MODEL_SCALE) / 2)
         glbFootprints.push({ plot, poly })
@@ -1112,7 +1131,7 @@ export default class BuildingRenderer {
     }
 
     // A large/deep plot leaves empty yard behind the building — scatter small trees there.
-    this._scatterBackTrees(plot, poly, mx, my, ex, ey, nx, ny, len, setback + bd, depth, housePlacements)
+    this._scatterBackTrees(plot, poly, mx, my, ex, ey, nx, ny, len, setback + bd, depth, housePlacements, groundZ)
   }
 
   // Scatter small trees in the back of a plot (perpendicular distance from `frontDepth`
@@ -1149,7 +1168,7 @@ export default class BuildingRenderer {
     }
   }
 
-  _scatterBackTrees(plot, poly, mx, my, ex, ey, nx, ny, len, frontDepth, depth, placements) {
+  _scatterBackTrees(plot, poly, mx, my, ex, ey, nx, ny, len, frontDepth, depth, placements, plotZ = GROUND_Y) {
     // Push trees toward the back of the plot: skip the first 55% of the back yard and
     // only scatter in the rear zone, so trees cluster at the plot boundary rather than
     // right behind the building.

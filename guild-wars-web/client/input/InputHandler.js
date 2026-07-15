@@ -112,8 +112,9 @@ export default class InputHandler {
         const rawPlot = this.renderer.getTerrainSetupPlotAtWorldPos(worldPos.x, worldPos.y)
         if (rawPlot) { this.eventBus.emit('TERRAIN_PLOT_CLICKED', rawPlot); return }
         const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-        if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
+        if (region) { this.eventBus.emit('REGION_CLICKED', region.id); return }
       }
+      this.eventBus.emit('MAP_EMPTY_CLICKED')
       return
     }
 
@@ -121,7 +122,8 @@ export default class InputHandler {
     const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
     if (edge) { this.eventBus.emit('EDGE_CLICKED', edge); return }
     const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
-    if (region) { this.eventBus.emit('REGION_CLICKED', region.id) }
+    if (region) { this.eventBus.emit('REGION_CLICKED', region.id); return }
+    this.eventBus.emit('MAP_EMPTY_CLICKED')
   }
 
   _showTooltip(html, e) {

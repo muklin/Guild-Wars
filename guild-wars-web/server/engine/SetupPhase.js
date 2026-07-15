@@ -1,4 +1,4 @@
-import TerrainVoronoiGenerator, { organicClipCircle } from './CityGenerator/TerrainVoronoiGenerator.js'
+import TerrainVoronoiGenerator, { organicClipCircle, organicOuterClipRadius } from './CityGenerator/TerrainVoronoiGenerator.js'
 import StreetVoronoiGenerator from './CityGenerator/StreetVoronoiGenerator.js'
 import CityBlockGenerator, { majorityStreetType, gutterRoadEdges } from './CityGenerator/CityBlockGenerator.js'
 import PlotVoronoiGenerator, { markSquareBlocks } from './CityGenerator/PlotVoronoiGenerator.js'
@@ -10,12 +10,13 @@ import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
 import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
-import { applyTerrainTypeZEffect, getRegionCornerIds, determineCliffSide, propagateFromPoints, CLIFF_Z_RULE } from './CityGenerator/TerrainZHeight.js'
+import { applyTerrainTypeZEffect, getRegionCornerIds, computeCliffChainSides, propagateFromPoints, CLIFF_Z_RULE, CLIFF_LERP_T, lerp, applyRiverZGradient } from './CityGenerator/TerrainZHeight.js'
+import { applyCanalZDelta } from './CityGenerator/DistrictZHeight.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { getDistrictConfig } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
-import { readFileSync } from 'fs'
+import { readFileSync, mkdirSync, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
@@ -34,6 +35,12 @@ let _abilityArrays = null
 // _revealAdjacentHiddenTerrain's own doc comment and _recoverGeometryFromSeeds' use of
 // this same list to know which regions to clip which way on reload).
 const TERRAIN_REVEAL_TYPES = ['Desert', 'Mountains', 'Sea', 'Ice Sheet']
+
+// Dev-only diagnostic (user-confirmed 2026-07-14, "will be removed in production"):
+// every groundplane sync gets audited and appended to a plain log file, so a manifold
+// violation (hole/overlap) can be traced back to exactly which terrain update caused it
+// without needing to reproduce it live first.
+const AUDIT_LOG_PATH = join(_dir, '../logs/groundplane-audit.log')
 
 function _loadCharacterData() {
   if (!_nameLib) {
@@ -234,13 +241,27 @@ export default class SetupPhase {
         ...(worldData.hiddenTerrainPlots || []).map(p => ({ id: `htp:${p.id}`, kind: 'terrain-plot', pointIds: p.pointIds })),
       ]
       const groundplane = { points: registry.toJSON(), surfaces, terrain: { worldSize } }
-      const { counts } = auditGroundplane(groundplane)
+      const { counts, boundaryEdgeKeys } = auditGroundplane(groundplane)
       if (counts.HOLE === 0) {
         if (attempt > 1) this.log.push(`Terrain generation succeeded on attempt ${attempt} (hole-free)`)
+        // User-specified design: compute the map's outer ring of edges ONCE, right here
+        // (a hole-free generation's boundaryEdgeKeys IS exactly that ring, nothing else —
+        // every other unpaired edge would have shown up as a HOLE finding and failed the
+        // check above), and treat it as permanently exempt from HOLE reporting for the
+        // rest of the game — every subsequent audit (Cliff/River/Berm splits, District→
+        // Street→Block→Plot generation, all wired through _auditAndLogGroundplane) reads
+        // this same set, so a genuinely NEW gap near the map edge is no longer masked by
+        // onWorldBoundary's radius heuristic (which this replaces as the primary test —
+        // see auditGroundplane.js).
+        this.gameStateManager.groundplane.outerRingEdgeKeys = boundaryEdgeKeys
+        this.log.push(`Outer ring: ${boundaryEdgeKeys.length} boundary edge(s) marked permanently exempt from hole audits`)
         return worldData
       }
       console.warn(`[SetupPhase] Terrain generation attempt ${attempt}/${maxAttempts} has ${counts.HOLE} hole(s) (excluding world boundary) — ${attempt < maxAttempts ? 'retrying' : 'giving up, shipping anyway'}`)
-      if (attempt === maxAttempts) return worldData
+      if (attempt === maxAttempts) {
+        this.gameStateManager.groundplane.outerRingEdgeKeys = boundaryEdgeKeys
+        return worldData
+      }
     }
   }
 
@@ -266,7 +287,20 @@ export default class SetupPhase {
     this.log.push('Initializing Setup Phase...')
 
     this.worldGenerator = new TerrainVoronoiGenerator()
-    const worldData = this._generateWorldWithHoleCheck(15, 50, 0, 0)
+    // mergeDistance 0.02 (was 0, user-confirmed 2026-07-14): Step 1.5's
+    // mergeNearbyVertices exists specifically to merge near-coincident circumcenters at
+    // complex multi-region junctions, but sat permanently disabled (mergeDistance=0)
+    // since this call was first written. Root-caused live via a save file: two raw
+    // 'terrain' points 0.0114 apart — a genuine near-miss circumcenter pair at a 4+-way
+    // junction, never merged — each independently got zLocked by its own Ice Sheet
+    // domain pass (slightly different jittered z) and then each independently split by
+    // the Cliff pullback, producing a visible 4-point cluster/gap where the user should
+    // have seen one clean shared corner. 0.02 comfortably covers that case (and the
+    // general class of near-cocircular-circumcenter noise this function's own doc
+    // comment describes) while staying far below real inter-point spacing (~1.6 units
+    // average at this world's density), so it can't merge two legitimately distinct
+    // corners.
+    const worldData = this._generateWorldWithHoleCheck(15, 50, 0.02, 0)
     this.gameStateManager.worldTerrainData = worldData
     this.log.push(`Generated ${worldData.regions.length} terrain regions`)
 
@@ -317,7 +351,14 @@ export default class SetupPhase {
     // one _addPromotedDistrictEdges used to run — are both deleted; see plan §2).
     const districts = cityTerrainPlots.map((cell, i) => ({
       id: i,
-      seedPoint: { x: cell.seedPoint.x, y: cell.seedPoint.y },
+      // z adopted from the originating terrain plot's own seedPoint (plan "typed-
+      // gliding-leaf": District-scale z-height adoption) — same fix already applied to
+      // promoteTerrainPlotToDistrict's matching seedPoint copy (see its doc comment):
+      // the district's boundary corners (pointIds, below) already share the terrain
+      // plot's exact registry point ids, so THEIR z is inherited automatically by
+      // construction; only seedPoint needed an explicit copy, since it's a bare object,
+      // not a shared registry id.
+      seedPoint: { x: cell.seedPoint.x, y: cell.seedPoint.y, z: cell.seedPoint.z ?? 0 },
       polygon: cell.polygon.map(v => ({ x: v.x, y: v.y })),
       pointIds: [...cell.pointIds],
       // Which worldTerrainData.terrainPlots entry this district mirrors — promoted
@@ -664,11 +705,19 @@ export default class SetupPhase {
     // for every OTHER type: a later-Applied neighbour's own effect can still adjust this
     // region's already-set corners afterward — nothing about this call prevents that,
     // since it only ever touches `.z`, never `.assignedType`.
+    // Hidden (generated-but-unrendered) terrain plots are included alongside the kept
+    // ones (user-confirmed 2026-07-14, "those terrains are only hidden — they should
+    // still be getting height updates resultant of nearby hills etc changes"): a hidden
+    // plot's own domain never matches `region.id` (it belongs to a different, hidden
+    // region) so the DOMAIN write above is unaffected — this only widens the fine
+    // Point/Edge graph propagateFromRegion walks, so a wave from a kept region's Apply
+    // can now actually cross into hidden territory instead of stopping dead at the
+    // kept/hidden boundary.
     applyTerrainTypeZEffect(
       this.gameStateManager.pointRegistry,
       region,
       getRegionCornerIds(this.gameStateManager.worldTerrainData.edges, regionId),
-      this.gameStateManager.worldTerrainData.terrainPlots || [],
+      [...(this.gameStateManager.worldTerrainData.terrainPlots || []), ...(this.gameStateManager.worldTerrainData.hiddenTerrainPlots || [])],
       this.gameStateManager.worldTerrainData.regions || []
     )
 
@@ -694,28 +743,68 @@ export default class SetupPhase {
 
     const registry = this.gameStateManager.pointRegistry
     const worldSize = wt.worldSize || 50
-    const worldRect = [{ x: 0, y: 0 }, { x: worldSize, y: 0 }, { x: worldSize, y: worldSize }, { x: 0, y: worldSize }]
+    // Organic outer-ring clip circle (NEVER the literal world square — user-confirmed
+    // 2026-07-14, "I never want these to be square, remove whatever is making it
+    // square, and make it never happen") — the exact same clip shape generate()'s Step
+    // 5.5 gives every kept plot at generation time (TerrainVoronoiGenerator.js). A
+    // literal `[0,worldSize]` square clip was used here before the outer-ring rewrite
+    // (2026-07-13) replaced Step 5.5's own square clip with this organic circle; this
+    // reveal path was never updated to match, so a revealed plot came out square-cut
+    // even though every plot kept from the start never does.
+    const outerClipCircle = organicClipCircle(worldSize, 48, organicOuterClipRadius(worldSize))
 
     const hiddenIdSet = new Set(hiddenIds)
     const revealedPlots = wt.hiddenTerrainPlots.filter(p => hiddenIdSet.has(p.parentRegionId))
     wt.hiddenTerrainPlots = wt.hiddenTerrainPlots.filter(p => !hiddenIdSet.has(p.parentRegionId))
     wt.hiddenRegions = (wt.hiddenRegions || []).filter(r => !hiddenIdSet.has(r.id))
 
-    // Clip each revealed plot to the literal world square — same treatment
-    // generate()'s Step 5.5 gives every kept plot at generation time; these plots
-    // were never clipped before since they were hidden (their raw polygon can reach
-    // well outside [0,worldSize], a sentinel-triangulation artefact).
+    // Clip each revealed plot to the same organic outer clip circle every kept plot
+    // already gets at generation time — these plots were never clipped before since
+    // they were hidden (their raw polygon can reach well outside the world, a
+    // sentinel-triangulation artefact).
+    //
+    // Collect every brand-new (not-yet-id'd) clip vertex across ALL revealed plots
+    // FIRST, then dedupe them together in one pass — the exact same technique
+    // generate()'s Step 5.5 already uses for this identical situation (user-confirmed
+    // 2026-07-14, traced live via a duplicate-coordinate 'terrain' point pair: two
+    // adjacent revealed plots whose shared boundary crosses the clip circle each
+    // computed their OWN intersection point independently — Sutherland-Hodgman clipping
+    // isn't guaranteed to land on the bit-identical point when the same physical
+    // crossing is traversed in opposite directions by each plot's own polygon winding —
+    // and this loop used to call registry.create() directly per vertex with NO
+    // deduplication at all, minting two separate ids for what should be one shared
+    // corner. That stray duplicate then persists forever: nothing else in the pipeline
+    // ever merges two already-distinct 'terrain' points after the fact, only prevents
+    // minting new ones going forward.)
+    const revealZ = wt.regions.find(r => r.id === regionId)?.seedPoint?.z ?? 0
+    const clippedPlots = []
+    const newClipVertices = []
     for (const plot of revealedPlots) {
-      const clipped = clipToPolygon(plot.polygon, worldRect)
+      const clipped = clipToPolygon(plot.polygon, outerClipCircle)
       if (!clipped) continue
       plot.polygon = clipped
-      // z: the revealing region's current z rather than a hardcoded 0 — Sea/Lake
-      // immediately overwrite every domain point's z below regardless (see
-      // applyTerrainTypeZEffect), but Mountains/Desert/Ice Sheet only ever write
-      // boundary-corner z, so a freshly-minted INTERIOR vertex here would otherwise be
-      // stuck at 0 forever (a flat pit inside e.g. a revealed Mountains plot).
-      const revealZ = wt.regions.find(r => r.id === regionId)?.seedPoint?.z ?? 0
-      plot.pointIds = clipped.map(v => v.id !== undefined ? v.id : registry.create(v.x, v.y, revealZ, 'terrain').id)
+      clippedPlots.push(plot)
+      for (const v of clipped) if (v.id === undefined) newClipVertices.push(v)
+    }
+    // z: the revealing region's current z rather than a hardcoded 0 — Sea/Lake
+    // immediately overwrite every domain point's z below regardless (see
+    // applyTerrainTypeZEffect), but Mountains/Desert/Ice Sheet only ever write
+    // boundary-corner z, so a freshly-minted INTERIOR vertex here would otherwise be
+    // stuck at 0 forever (a flat pit inside e.g. a revealed Mountains plot). mintDeduped
+    // itself always creates a NEW point at z=0, so that's patched on right after — but
+    // ONLY for ids that didn't already exist before this call (reuseExisting can hand
+    // back an EXISTING point with a real, already-correct z from elsewhere; overwriting
+    // that unconditionally would be a regression, not the fix).
+    const existingIdsBefore = new Set(registry.toJSON().map(p => p.id))
+    const dedupedClipIds = registry.mintDeduped(newClipVertices, 'terrain', 0.01, { reuseExisting: true })
+    newClipVertices.forEach((v, i) => {
+      v.id = dedupedClipIds[i]
+      if (existingIdsBefore.has(v.id)) return   // reused an existing point — leave its z alone
+      const p = registry.get(v.id)
+      if (p) p.z = revealZ
+    })
+    for (const plot of clippedPlots) {
+      plot.pointIds = plot.polygon.map(v => v.id)
       plot.parentRegionId = regionId
       plot.assignedType = terrainType
       wt.terrainPlots.push(plot)
@@ -785,6 +874,27 @@ export default class SetupPhase {
     edge.name = name?.trim() || ''
     this.edgePlacements.push({ edgeId, edgeType, description, name: edge.name })
     this.log.push(`Assigned ${edgeType} to edge ${edgeId}`)
+    // River z-gradient MUST run before the pullback/split below, not after (plan
+    // "typed-gliding-leaf", user-confirmed 2026-07-14, "left/right banks of a river must
+    // always remain at the same z-height"): the pullback mints each bank corner as its
+    // own registry point, snapshotting z from the raw centreline point at THAT moment
+    // (_dcelPullbackMaterialize's posFor copies `base.z` unchanged for a River — no
+    // per-side differentiation the way Cliff gets). Grading the centreline first, then
+    // splitting, means both bank copies snapshot the SAME already-correct z for free —
+    // no separate bank-sync step needed. Grading AFTER the split (the original order)
+    // would edit the raw point too late: the split copies already exist with their own
+    // frozen z, and wouldn't pick up the change until some later, unrelated pullback
+    // recompute. Defining a River doesn't itself trigger propagation elsewhere
+    // ("adjust, don't freeze"'s one exception) — this only grades the River's OWN path,
+    // reading whatever z already exists at each endpoint/crossing right now.
+    if (edgeType === 'River') {
+      const wt = this.gameStateManager.worldTerrainData
+      const cliffPointIds = new Set()
+      for (const e of Object.values(wt.edges)) {
+        if (e.assignedType === 'Cliff') for (const pid of e.pointIds || []) cliffPointIds.add(pid)
+      }
+      applyRiverZGradient(this.gameStateManager.pointRegistry, edge, cliffPointIds)
+    }
     // Restored (2026-07-11) — see assignTerrainToRegion's matching comment for why
     // deferring this to District mode broke block/plot generation.
     if (edgeType === 'River' || edgeType === 'Cliff') this._applyRiverCliffPullbackToTerrainPlots()
@@ -1262,6 +1372,14 @@ export default class SetupPhase {
     edge.name = name?.trim() || ''
     this.districtEdgePlacements.push({ edgeId, edgeType, description, name: edge.name })
     this.log.push(`Assigned ${edgeType} to city edge ${edgeId}`)
+    // District z-height Stage 4 (plan "typed-gliding-leaf"): Canal lowers its own
+    // centreline points directly on the shared registry — some of those ids are also
+    // district boundary corners, so Tier 1/2 IDW (StreetVoronoiGenerator/CityBlockGenerator/
+    // PlotVoronoiGenerator) picks up the drop automatically on the next regeneration pass,
+    // no separate propagation mechanism needed.
+    if (edgeType === 'Canal') {
+      applyCanalZDelta(this.gameStateManager.pointRegistry, edge.pointIds)
+    }
     // Regenerate streets for any already-typed adjacent districts so the
     // boundary polyline is stamped with the correct type (Stone for Wall, etc.)
     // before the client tries to build the wall/canal mesh.
@@ -1572,11 +1690,10 @@ export default class SetupPhase {
     return { pushed: result.pushed, deltas: result.deltas, anyMatch, edgeMatched }
   }
 
-  // Same ratio PolylineRenderer.js uses by default (miterLimitDist = thickness * 1.5 =
-  // (2*halfWidth) * 1.5 = halfWidth * 3) — keeps the pullback's narrow-angle bevel
-  // threshold visually consistent with the stroke renderer's own, even though the two
-  // currently use different halfWidth values (0.35 for pullback vs 0.25 for the Terrain
-  // Setup stroke — a pre-existing mismatch, not something this change addresses).
+  // Historically matched PolylineRenderer.js's own default miter-limit ratio (retired —
+  // see plan "typed-gliding-leaf" Stage D; miterLimitDist = thickness * 1.5 =
+  // (2*halfWidth) * 1.5 = halfWidth * 3) — kept as this pullback's own narrow-angle bevel
+  // threshold regardless of what the client stroke renderer does now.
   static MITER_LIMIT_RATIO = 3
 
   // Precompute the shared, junction-aware LEFT/RIGHT boundary position for every point
@@ -1691,32 +1808,39 @@ export default class SetupPhase {
   static ALWAYS_LOCKED_TERRAIN_TYPES = new Set(['Sea', 'Lake', 'Ice Sheet'])
 
   // Cliff z-height (user-confirmed 2026-07-13, "fix cliffs — by definition, joins
-  // between significantly different z-heights"): for every currently-assigned Cliff
-  // edge, determines which of its two regions is HIGH vs LOW (TerrainZHeight.js's
-  // determineCliffSide) and records that against every one of the edge's own pointIds.
-  // Returns Map<vertexId, Map<regionId, 'high'|'low'>> — a vertexId maps to a region map
-  // rather than a single side because a vertex can be a corner of MULTIPLE Cliff edges
-  // (different chains meeting at a point), each with its own two regions/sides. A region
-  // whose type is permanently flat/locked (see ALWAYS_LOCKED_TERRAIN_TYPES above) gets
-  // NO entry at all — its own side of the split stays at the shared corner's raw z,
-  // unconditionally, on every rebuild, not just the first one.
+  // between significantly different z-heights"; chain-wide-average formula user-
+  // confirmed 2026-07-14, plan "typed-gliding-leaf"): for every physically-contiguous
+  // run of Cliff-assigned edges, determines which side is HIGH vs LOW and each side's
+  // chain-wide target z average (TerrainZHeight.js's computeCliffChainSides), then
+  // records {side, targetAvg} against every one of the run's edges' own pointIds.
+  // Returns Map<vertexId, Map<regionId, {side, targetAvg}>> — a vertexId maps to a
+  // region map rather than a single side because a vertex can be a corner of MULTIPLE
+  // Cliff edges (different chains meeting at a point), each with its own two
+  // regions/sides. A region whose type is permanently flat/locked (see
+  // ALWAYS_LOCKED_TERRAIN_TYPES above) gets NO entry at all — its own side of the split
+  // stays at the shared corner's raw z, unconditionally, on every rebuild, not just the
+  // first one.
   // Consumed by _dcelPullbackMaterialize's posFor (its z hook) — this only ever decides
-  // WHICH side a split copy is on; the actual z delta is applied there.
+  // WHICH side a split copy is on and what it should lerp toward; the lerp itself is
+  // applied there.
   _computeCliffSideAtVertex() {
     const wt = this.gameStateManager.worldTerrainData
     const regions = wt?.regions || []
     const regionById = new Map(regions.map(r => [r.id, r]))
+    const registry = this.gameStateManager.pointRegistry
+    const sidesByEdge = computeCliffChainSides(wt?.edges || {}, wt?.terrainPlots || [], registry, regionById)
     const sideAtVertex = new Map()
-    for (const edge of Object.values(wt?.edges || {})) {
+    for (const [edgeId, edge] of Object.entries(wt?.edges || {})) {
       if (edge.assignedType !== 'Cliff') continue
       const regionA = regionById.get(edge.regionA), regionB = regionById.get(edge.regionB)
       if (!regionA || !regionB) continue
-      const sides = determineCliffSide(regionA, regionB)
+      const sides = sidesByEdge.get(edgeId)
+      if (!sides) continue
       for (const pid of edge.pointIds || []) {
         if (!sideAtVertex.has(pid)) sideAtVertex.set(pid, new Map())
         const m = sideAtVertex.get(pid)
-        if (!SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionA.assignedType)) m.set(regionA.id, sides[regionA.id])
-        if (!SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionB.assignedType)) m.set(regionB.id, sides[regionB.id])
+        if (!SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionA.assignedType)) m.set(regionA.id, sides.get(regionA.id))
+        if (!SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionB.assignedType)) m.set(regionB.id, sides.get(regionB.id))
       }
     }
     return sideAtVertex
@@ -2017,15 +2141,10 @@ export default class SetupPhase {
           // ever true for some other reason.
           if (vertexCliffSides && !base.zLocked) {
             const regionId = regionIdByFaceId.get(heOut.face)
-            const side = regionId != null ? vertexCliffSides.get(regionId) : null
-            if (side === 'high') {
-              z += CLIFF_Z_RULE.magnitude
-              cliffSplitEntries.push({ side, heOut })
-              console.log(`[TerrainZHeight] cliff split: vertex ${vertexId} region ${regionId} side high z ${(base.z ?? 0).toFixed(4)} -> ${z.toFixed(4)}`)
-            } else if (side === 'low') {
-              z -= CLIFF_Z_RULE.magnitude
-              cliffSplitEntries.push({ side, heOut })
-              console.log(`[TerrainZHeight] cliff split: vertex ${vertexId} region ${regionId} side low z ${(base.z ?? 0).toFixed(4)} -> ${z.toFixed(4)}`)
+            const info = regionId != null ? vertexCliffSides.get(regionId) : null
+            if (info?.targetAvg != null) {
+              z = lerp(base.z ?? 0, info.targetAvg, CLIFF_LERP_T)
+              cliffSplitEntries.push({ side: info.side, heOut })
             }
           }
           if (base.zLocked) lockedSplitHeOuts.push(heOut)
@@ -2677,8 +2796,18 @@ export default class SetupPhase {
         const p = registry.get(id)
         if (p) targetZById.set(id, p.z)
       }
-      if (cliffHighIds.length) propagateFromPoints(registry, terrainPlots, cliffHighIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'up')
-      if (cliffLowIds.length) propagateFromPoints(registry, terrainPlots, cliffLowIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'down')
+      // Propagation graph includes hidden (generated-but-unrendered) terrain plots too
+      // (user-confirmed 2026-07-14, "those terrains are only hidden — they should still
+      // be getting height updates") — a hidden plot is real geometry with a real point
+      // graph, just not sent to the client; excluding it here meant a Cliff right at the
+      // kept/hidden boundary never propagated its z past that boundary at all. Scoped to
+      // ONLY these propagateFromPoints calls, not the pullback/split logic above (which
+      // stays kept-plots-only, unchanged) — this is a read-only graph-walk, not a
+      // geometry mutation, so there's no risk to the DCEL/split machinery from widening
+      // it.
+      const plotsForPropagation = [...terrainPlots, ...(this.gameStateManager.worldTerrainData?.hiddenTerrainPlots || [])]
+      if (cliffHighIds.length) propagateFromPoints(registry, plotsForPropagation, cliffHighIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'up')
+      if (cliffLowIds.length) propagateFromPoints(registry, plotsForPropagation, cliffLowIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'down')
     }
 
     // Real, gap-free filled Faces (see plan "typed-giggling-giraffe" addendum, and
@@ -2768,6 +2897,25 @@ export default class SetupPhase {
         pointIds: [...(cell.pointIds || [])],
       })
     }
+    // Hidden (generated-but-unrendered) terrain plots, tagged distinctly (`htp:`) so
+    // nothing downstream confuses them for real, interactive kept surfaces — included
+    // ONLY so auditGroundplane can see the real geometry bordering a kept plot's outer
+    // edge (user-confirmed 2026-07-14, "shouldn't those actually be ok, since they have
+    // linked geometry that's hidden"). Without this, every kept-plot edge touching a
+    // hidden neighbour read as an unpaired HOLE — a false positive, not a real gap —
+    // since the audit only ever saw one side of that boundary. The organic world's own
+    // TRUE outer edge (beyond even the hidden ring) still correctly reports as a HOLE:
+    // auditGroundplane's onWorldBoundary check already excludes it via the same
+    // organicOuterRadius-based radius test used everywhere else, now just measured
+    // against the hidden ring's own farther-out rim instead of the kept ring's.
+    for (const cell of wt.hiddenTerrainPlots || []) {
+      surfaces.push({
+        id: `htp:${cell.id}`,
+        kind: 'terrain-plot',
+        type: cell.assignedType ?? null,
+        pointIds: [...(cell.pointIds || [])],
+      })
+    }
     for (const f of wt.riverCliffFaces || []) {
       surfaces.push({
         id: `rcf:${f.id}`,
@@ -2822,6 +2970,32 @@ export default class SetupPhase {
       }),
       ...otherRegions,
     ]
+
+    this._auditAndLogGroundplane()
+  }
+
+  // Dev-only (see AUDIT_LOG_PATH's doc comment): runs auditGroundplane against the
+  // just-synced snapshot, stores the result on gameStateManager for the API routes to
+  // hand to the client (debug hole/overlap lines + a findings-count popup), and appends
+  // a line to the log file regardless of whether anything was found — a clean run is as
+  // useful to see in the log as a dirty one, when tracing back which update broke it.
+  _auditAndLogGroundplane() {
+    const gp = this.gameStateManager.groundplane
+    // outerRingEdgeKeys (see _generateWorldWithHoleCheck): the map's outer boundary,
+    // computed once on a hole-free New Game and exempt from HOLE reporting ever since —
+    // every terrain-topology change (Cliff/River/Berm splits, District→Street→Block→
+    // Plot generation) re-audits through this same method, so it's the single place
+    // that needs to thread the ring through.
+    const snapshot = { points: gp.points.toJSON(), surfaces: gp.surfaces || [], terrain: gp.terrain || {}, outerRingEdgeKeys: gp.outerRingEdgeKeys || null }
+    const { counts, findings } = auditGroundplane(snapshot)
+    this.gameStateManager.lastAuditCounts = counts
+    this.gameStateManager.lastAuditFindings = findings
+    try {
+      mkdirSync(join(_dir, '../logs'), { recursive: true })
+      appendFileSync(AUDIT_LOG_PATH, JSON.stringify({ at: new Date().toISOString(), counts, findings }) + '\n', 'utf8')
+    } catch (e) {
+      console.warn(`[groundplane-audit] failed to write log: ${e.message}`)
+    }
   }
 
   // Recompute every terrain plot's polygon (and any district's, since a district's
@@ -2862,6 +3036,17 @@ export default class SetupPhase {
     const registry = this.gameStateManager.pointRegistry
     const RECOVERY_TOL = 0.05
     const W = wt.worldSize ?? 50
+    // Organic outer clip circle ONLY — NEVER the literal world square (user-confirmed
+    // 2026-07-14, "I never want these to be square, remove whatever is making it
+    // square, and make it never happen"). A literal `[0,worldSize]` square used to be
+    // built here (`worldRect`) purely to bound computeVoronoiCellsHalfPlane's half-plane
+    // clip (a real requirement — it needs SOME bounding polygon) — it was never meant to
+    // be the FINAL clip shape, but a since-removed exception then also used that same
+    // square as the actual final clip for reveal-type regions (Sea/Mountains/Desert/Ice
+    // Sheet), re-introducing a square cut on every reload for any region that had hidden
+    // terrain revealed into it. Every cell — reveal-type or not — now gets the SAME
+    // final clip: the organic outer circle, exactly matching generate()'s Step 5.5 and
+    // _revealAdjacentHiddenTerrain's own (now-matching) live-reveal clip.
     const worldRect = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: W }, { x: 0, y: W }]
     // Hidden (organic-world, generated-but-unrendered) plots must be included here too
     // — computeVoronoiCellsHalfPlane has no sentinel-triangulation concept of "a
@@ -2870,29 +3055,22 @@ export default class SetupPhase {
     // the literal square, so it naturally expands to fill the square — visibly
     // reverting the whole map to the old square-clipped look on every load (confirmed
     // live 2026-07-12). Only kept cells' recomputed polygons are actually used below
-    // (via polyBySeedKey, looked up only for `cells` = wt.terrainPlots).
+    // (via polyBySeedKey, looked up only for `cells` = wt.terrainPlots). `worldRect`
+    // itself is ONLY ever passed to computeVoronoiCellsHalfPlane below, never used as a
+    // final clip target.
     const seeds = [...cells.map(c => c.seedPoint), ...(wt.hiddenTerrainPlots || []).map(c => c.seedPoint)]
     const recomputed = computeVoronoiCellsHalfPlane(seeds, worldRect)
-    // Same organic boundary generate()'s Step 5.5 clips kept plots to — even with
+    // Same organic boundary generate()'s Step 5.5 clips kept plots to, and the same one
+    // _revealAdjacentHiddenTerrain now uses for a freshly-revealed plot — even with
     // hidden seeds bounding it, a rim cell can still have residual boundary-effect
     // elongation (sparse real neighbours in one direction); the circle clip trims that
     // exactly like it does on a fresh generation, keeping recovered geometry identical
-    // to what a live "New Game" would have produced.
-    //
-    // EXCEPT for regions that have had hidden terrain revealed into them
-    // (_revealAdjacentHiddenTerrain, triggered by a TERRAIN_REVEAL_TYPES assignment) —
-    // those regions' plots were deliberately clipped to the literal world SQUARE, not
-    // the circle, when revealed (a Sea/Desert/etc legitimately extends to the map's
-    // edge). Clipping their plots back to the circle here would truncate them right
-    // back down on every reload — confirmed live (2026-07-12): a saved region with Sea
-    // already revealed into it had those far-out plots silently left un-clipped by the
-    // circle-clip fallback (`clipToPolygon` returning null for a subject entirely
-    // outside the clip circle), masking a real bug until this case was excluded
-    // properly instead of relying on that fallback.
-    const clipCircle = organicClipCircle(W)
-    const revealTypeRegionIds = new Set(
-      (wt.regions || []).filter(r => TERRAIN_REVEAL_TYPES.includes(r.assignedType)).map(r => r.id)
-    )
+    // to what a live "New Game" (or a live reveal) would have produced. A revealed
+    // region's plots can legitimately reach further out than an ordinary kept plot's own
+    // organicClipCircle radius, so this uses the wider organicOuterClipRadius (same
+    // radius _revealAdjacentHiddenTerrain's own clip circle uses) for every cell, not
+    // the tighter default — a single, always-organic, always-generous clip shape.
+    const clipCircle = organicClipCircle(W, 48, organicOuterClipRadius(W))
     const keyOf = (p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
     const polyBySeedKey = new Map(recomputed.map(r => [keyOf(r.seedPoint), r.polygon]))
     const signedArea = (poly) => {
@@ -2919,8 +3097,31 @@ export default class SetupPhase {
       const poly = polyBySeedKey.get(keyOf(c.seedPoint))
       if (!poly) continue
       const wound = coerceWinding(poly)
-      const clipTarget = revealTypeRegionIds.has(c.parentRegionId) ? worldRect : clipCircle
-      c.polygon = clipToPolygon(wound, clipTarget) || wound
+      const clipped = clipToPolygon(wound, clipCircle) || wound
+      // District z-height (plan "typed-gliding-leaf") surfaced a real data-loss bug here:
+      // this recomputed polygon comes from computeVoronoiCellsHalfPlane, which knows
+      // nothing about z, and Cliff/River pullback (reapplied separately, AFTER this whole
+      // function returns — see server/index.js's auto-load block) means a pulled-back
+      // corner can legitimately sit further than RECOVERY_TOL from its own already-correct
+      // registry point — mintDeduped's dedup then misses the match and mints a brand-new
+      // point at z=0 (its create() default), silently flattening that corner (and, via
+      // Tier 1/2 IDW, everything interpolated from it) on every reload. Backfill each new
+      // vertex's z from the NEAREST pre-recovery point (c's own OLD pointIds, still valid
+      // here — this loop hasn't reassigned them yet) before minting, so a tolerance miss
+      // only ever costs X/Y precision, never the z data. mintDeduped itself now also
+      // respects v.z instead of hardcoding 0 for a genuinely new point (see its own fix).
+      const oldPoints = (c.pointIds || []).map(id => registry.get(id)).filter(Boolean)
+      if (oldPoints.length) {
+        for (const v of clipped) {
+          let best = null, bestD = Infinity
+          for (const p of oldPoints) {
+            const d = (p.x - v.x) ** 2 + (p.y - v.y) ** 2
+            if (d < bestD) { bestD = d; best = p }
+          }
+          if (best) v.z = best.z
+        }
+      }
+      c.polygon = clipped
       c.pointIds = registry.mintDeduped(c.polygon, 'terrain', RECOVERY_TOL, { reuseExisting: true })
       delete c._rawPolygon
       delete c._rawPointIds
@@ -3335,7 +3536,16 @@ export default class SetupPhase {
       .filter(p => !SetupPhase._isIneligibleTerrainPlot(p, wt))
       .filter(p => this._isWithinLivingBoundary(p, districts))
       .map(p => p.id)
-    return cityData
+    // District z-height (plan "typed-gliding-leaf"): district.polygon only carries {x,y}
+    // — real z lives on the shared registry Points, addressed via district.pointIds (see
+    // DistrictRenderer.setCityDistrictData's resolvePolygon call). Attach a registry
+    // snapshot so every city-district client call site can resolve it, the same way
+    // terrain routes already attach pointRegistry (server/index.js). A SHALLOW COPY, not
+    // a mutation of the live cityData — GameStateManager.serialize() spreads
+    // groundplane.city verbatim into the save, so writing this large, fully-derivable
+    // field directly onto the live object would duplicate the whole registry into every
+    // autosave.
+    return { ...cityData, pointRegistry: this.gameStateManager.pointRegistry.toJSON() }
   }
 
   // Lake, Sea, Ice Sheet, and Mountains terrain can never become a city District — not

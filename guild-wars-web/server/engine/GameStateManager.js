@@ -45,6 +45,14 @@ export default class GameStateManager {
       // and districts (gameplay payload lives here). Rebuilt wholesale on every
       // pullback pass, so cleared features vanish naturally.
       regions: [],
+      // The map's outer ring of edges (plan "typed-gliding-leaf" hole-audit design,
+      // user-specified): computed ONCE, right after a hole-free New Game generation
+      // (SetupPhase._generateWorldWithHoleCheck), then permanently exempt from HOLE
+      // findings for the rest of the game — every subsequent audit
+      // (_auditAndLogGroundplane) reads this same set. Array of `edgeKey(id,id)`
+      // strings (see auditGroundplane.js); 'terrain' point ids are durable, so these
+      // stay valid for the life of the save.
+      outerRingEdgeKeys: [],
     }
 
     // Per-building persistent data keyed by `${kind}:${refId}` (e.g. "plot:plot-5").
@@ -164,6 +172,7 @@ export default class GameStateManager {
         } : this.groundplane.city,
         surfaces: this.groundplane.surfaces,
         regions: this.groundplane.regions,
+        outerRingEdgeKeys: this.groundplane.outerRingEdgeKeys,
       },
       buildingData: this.buildingData,
       nextFactionAutoId: this.nextFactionAutoId
@@ -199,6 +208,7 @@ export default class GameStateManager {
     this.cityDistrictData = (gp ? gp.city : data.cityDistrictData) || this.cityDistrictData
     this.groundplane.surfaces = gp?.surfaces || []
     this.groundplane.regions = gp?.regions || []
+    this.groundplane.outerRingEdgeKeys = gp?.outerRingEdgeKeys || []
     if (data.buildingData) this.buildingData = data.buildingData
     if (data.nextFactionAutoId) {
       this.nextFactionAutoId = data.nextFactionAutoId
@@ -232,6 +242,7 @@ export default class GameStateManager {
     }
     this.groundplane.surfaces = []
     this.groundplane.regions = []
+    this.groundplane.outerRingEdgeKeys = []
     this.nextFactionAutoId = 100
   }
 }

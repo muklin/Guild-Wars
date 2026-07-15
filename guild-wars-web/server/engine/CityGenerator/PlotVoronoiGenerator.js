@@ -5,6 +5,7 @@ import { getDistrictParams } from './StreetVoronoiGenerator.js'
 import { polysOverlap } from './buildings/LandmarkPlacer.js'
 import GroundPointRegistry from './GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './DCEL.js'
+import { idwZ } from './DistrictZHeight.js'
 
 // Mark every block below its district's square_threshhold as a City square. Run as a
 // pre-pass (before Landmark placement) so squares are known when Landmarks are placed
@@ -196,6 +197,40 @@ export default class PlotVoronoiGenerator {
     const si = blocks.filter(b => b.blockType === 'single').length
     const sd = blocks.filter(b => b.blockType === 'subdivided').length
     console.log(`PlotVoronoiGenerator: ${blocks.length} blocks (${sq} square, ${si} single, ${sd} subdivided), ${plots.length} plots (${paved} paved under Landmarks)`)
+
+    // District z-height Tier 2 (plan "typed-gliding-leaf"): a square/single/unsubdivided
+    // plot's blockCorners is the same array CityBlockGenerator already IDW-assigned z to,
+    // so nothing to do there. A SUBDIVIDED plot's blockCorners is a fresh Voronoi-clipped
+    // polygon (cell.polygon) — vertices kept from the original block boundary already
+    // carry z, but new intersection points minted by the clip do not. Fill those in the
+    // same way CityBlockGenerator did for block corners: IDW from the nearby, already-
+    // z-aware Tier-1 junctions/gutters belonging to the plot's district.
+    {
+      const controlPointsByDistrict = new Map()
+      const controlPointsFor = (districtId) => {
+        if (controlPointsByDistrict.has(districtId)) return controlPointsByDistrict.get(districtId)
+        const pts = []
+        for (const j of (junctions || [])) {
+          if (j.z == null) continue
+          if (j.districtId !== districtId && j.left !== districtId && j.right !== districtId) continue
+          pts.push({ x: j.x, y: j.y, z: j.z })
+          for (const c of (j.connections || [])) {
+            if (c.gutterLeft?.z != null) pts.push({ x: c.gutterLeft.x, y: c.gutterLeft.y, z: c.gutterLeft.z })
+            if (c.gutterRight?.z != null) pts.push({ x: c.gutterRight.x, y: c.gutterRight.y, z: c.gutterRight.z })
+          }
+        }
+        controlPointsByDistrict.set(districtId, pts)
+        return pts
+      }
+      for (const plot of plots) {
+        const controls = controlPointsFor(plot.districtId)
+        for (const v of plot.blockCorners) {
+          if (v.z != null) continue
+          const z = idwZ(v.x, v.y, controls)
+          if (z != null) v.z = z
+        }
+      }
+    }
 
     return { plots }
   }

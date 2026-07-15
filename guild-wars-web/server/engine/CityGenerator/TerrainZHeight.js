@@ -40,34 +40,160 @@ export const TERRAIN_TYPE_Z_RULES = {
 }
 
 // Cliff isn't in TERRAIN_TYPE_Z_RULES: it's an Edge type (Sea/Lake/etc. are Region
-// types), its magnitude is a fixed +1/-1 split rather than a settable/deltable region
-// value. Wired up (user-confirmed 2026-07-13, "fix cliffs — by definition, joins between
-// significantly different z-heights, both sides connect to their adjacent terrain") via
-// determineCliffSide (below) + SetupPhase.js's _dcelPullbackMaterialize (the existing
-// X,Y pullback split, reused for z — see its own doc comment) + propagateFromPoints
-// (below, blending each side's newly-split corners into their own surrounding terrain).
-export const CLIFF_Z_RULE = { magnitude: 1/3, hopCount: 4, curve: 'linear' }
+// types). Wired up via computeCliffChainSides (below) + SetupPhase.js's
+// _dcelPullbackMaterialize (the existing X,Y pullback split, reused for z — see its own
+// doc comment) + propagateFromPoints (below, blending each side's newly-split corners
+// into their own surrounding terrain). CLIFF_Z_RULE now only carries the OUTWARD
+// propagation shape (hopCount/curve) — the split-vertex magnitude itself comes from
+// computeCliffChainSides' chain-wide average + CLIFF_LERP_T, not a fixed magnitude.
+export const CLIFF_Z_RULE = { hopCount: 4, curve: 'linear' }
 
-// Plan "rustling-churning-finch" §4's side-determination rule, per-edge (not yet the
-// full multi-segment chain-consistency averaging the plan also describes — deliberately
-// scoped down to the common single-chain case for this pass): a region touching
-// Mountains/Hills is the HIGH side; Sea/Swamp/Ice Sheet/Lake is the LOW side; if neither
-// list matches (or, degenerately, BOTH regions match the same list), fall back to
-// comparing their actual current terrain-centre heights — higher wins. Returns
-// { [regionA.id]: 'high'|'low', [regionB.id]: 'high'|'low' } — regionA/regionB are the
-// full region objects (need .assignedType and .seedPoint.z), not bare ids.
-const CLIFF_HIGH_TYPES = new Set(['Mountains', 'Hills'])
+// Blend factor for computeCliffChainSides' split-vertex z (plan "typed-gliding-leaf",
+// user-confirmed 2026-07-14): a split vertex's new z is 80% of the way from its OWN
+// pre-split z toward its side's chain-wide neighbour average — not a full snap (t=1)
+// and not the old flat +/-CLIFF_Z_RULE.magnitude step.
+export const CLIFF_LERP_T = 0.8
+
+function lerp(a, b, t) { return a + (b - a) * t }
+
+// Cliff chains are consistent along their WHOLE physically-contiguous run (plan
+// "typed-gliding-leaf", user-confirmed 2026-07-14): one side is always the high side,
+// the other always low, even where the run crosses several different region pairs (e.g.
+// 3 highland regions against 4 lowland regions along one continuous Cliff). A region
+// touching Sea/Swamp/Ice Sheet/Lake is always the low side; otherwise the side is
+// decided by averaging the z of every LINKED point (one-hop graph neighbour, excluding
+// points that are themselves on the run) bucketed by side across the whole run — higher
+// average wins, for every segment in the run.
 const CLIFF_LOW_TYPES = new Set(['Sea', 'Swamp', 'Ice Sheet', 'Lake'])
-export function determineCliffSide(regionA, regionB) {
-  const aHigh = CLIFF_HIGH_TYPES.has(regionA.assignedType), bHigh = CLIFF_HIGH_TYPES.has(regionB.assignedType)
-  const aLow = CLIFF_LOW_TYPES.has(regionA.assignedType), bLow = CLIFF_LOW_TYPES.has(regionB.assignedType)
-  if (aHigh && !bHigh) return { [regionA.id]: 'high', [regionB.id]: 'low' }
-  if (bHigh && !aHigh) return { [regionA.id]: 'low', [regionB.id]: 'high' }
-  if (aLow && !bLow) return { [regionA.id]: 'low', [regionB.id]: 'high' }
-  if (bLow && !aLow) return { [regionA.id]: 'high', [regionB.id]: 'low' }
-  const az = regionA.seedPoint?.z ?? 0, bz = regionB.seedPoint?.z ?? 0
-  return az >= bz ? { [regionA.id]: 'high', [regionB.id]: 'low' } : { [regionA.id]: 'low', [regionB.id]: 'high' }
+
+// Groups Cliff-assigned edges into runs (graph-connected via shared endpoint pointIds,
+// regardless of how many different region pairs they cross), decides each run's
+// high/low side, and returns Map<edgeId, Map<regionId, {side, targetAvg}>> — targetAvg
+// is the chain-wide neighbour average for that side (null for a forced-low side, which
+// is zLocked and never lerped — see SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES). Consumed by
+// SetupPhase._computeCliffSideAtVertex, which further keys this by vertex and drops
+// entries for always-locked region types.
+export function computeCliffChainSides(edges, terrainPlots, registry, regionsById) {
+  const cliffEntries = Object.entries(edges).filter(([, e]) => e.assignedType === 'Cliff')
+  const result = new Map()
+  if (!cliffEntries.length) return result
+
+  // 1. Group into runs via shared endpoint pointIds (first/last id of each edge chain).
+  const endpointsOf = (e) => [e.pointIds[0], e.pointIds[e.pointIds.length - 1]]
+  const edgeIdsByEndpoint = new Map()
+  for (const [id, e] of cliffEntries) {
+    for (const ep of endpointsOf(e)) {
+      if (!edgeIdsByEndpoint.has(ep)) edgeIdsByEndpoint.set(ep, [])
+      edgeIdsByEndpoint.get(ep).push(id)
+    }
+  }
+  const edgeById = new Map(cliffEntries)
+  const visited = new Set()
+  const runs = []
+  for (const [id] of cliffEntries) {
+    if (visited.has(id)) continue
+    const run = []
+    const queue = [id]
+    visited.add(id)
+    while (queue.length) {
+      const curId = queue.shift()
+      run.push(curId)
+      for (const ep of endpointsOf(edgeById.get(curId))) {
+        for (const nbId of edgeIdsByEndpoint.get(ep) || []) {
+          if (!visited.has(nbId)) { visited.add(nbId); queue.push(nbId) }
+        }
+      }
+    }
+    runs.push(run)
+  }
+
+  // 2. Point graph + point->plots index, for the linked-neighbour averaging step.
+  const graph = buildPointGraph(terrainPlots)
+  const plotsByPoint = new Map()
+  for (const plot of terrainPlots) {
+    for (const pid of plot.pointIds || []) {
+      if (!plotsByPoint.has(pid)) plotsByPoint.set(pid, [])
+      plotsByPoint.get(pid).push(plot)
+    }
+  }
+
+  for (const run of runs) {
+    const runEdges = run.map(id => edgeById.get(id))
+    const runPointSet = new Set()
+    for (const e of runEdges) for (const pid of e.pointIds) runPointSet.add(pid)
+
+    // 3. Assign a sideKey ('A'/'B') per region touched by the run, propagated across
+    // edges via shared regions — a region recurring in two consecutive edges of the run
+    // must stay on the same sideKey both times.
+    const sideKeyByRegion = new Map()
+    sideKeyByRegion.set(runEdges[0].regionA, 'A')
+    sideKeyByRegion.set(runEdges[0].regionB, 'B')
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const e of runEdges) {
+        const hasA = sideKeyByRegion.has(e.regionA), hasB = sideKeyByRegion.has(e.regionB)
+        if (hasA && !hasB) { sideKeyByRegion.set(e.regionB, sideKeyByRegion.get(e.regionA) === 'A' ? 'B' : 'A'); changed = true }
+        else if (hasB && !hasA) { sideKeyByRegion.set(e.regionA, sideKeyByRegion.get(e.regionB) === 'A' ? 'B' : 'A'); changed = true }
+        else if (!hasA && !hasB) { sideKeyByRegion.set(e.regionA, 'A'); sideKeyByRegion.set(e.regionB, 'B'); changed = true }
+      }
+    }
+
+    // 4. Forced-low check (Sea/Swamp/Ice Sheet/Lake on either bucket).
+    const regionIdsByKey = { A: [], B: [] }
+    for (const [rid, key] of sideKeyByRegion) regionIdsByKey[key].push(rid)
+    const isForcedLow = (rid) => CLIFF_LOW_TYPES.has(regionsById.get(rid)?.assignedType)
+    const aForced = regionIdsByKey.A.some(isForcedLow)
+    const bForced = regionIdsByKey.B.some(isForcedLow)
+
+    const averageLinkedNeighbors = (targetKey) => {
+      let sum = 0, cnt = 0
+      for (const pid of runPointSet) {
+        const myPlots = plotsByPoint.get(pid) || []
+        for (const nb of graph.get(pid) || []) {
+          if (runPointSet.has(nb)) continue   // exclude points that are themselves on the run
+          const nbPlotSet = new Set(plotsByPoint.get(nb) || [])
+          const sharedPlot = myPlots.find(p => nbPlotSet.has(p))
+          if (!sharedPlot) continue
+          if (sideKeyByRegion.get(sharedPlot.parentRegionId) !== targetKey) continue
+          const np = registry.get(nb)
+          if (!np || !isFinite(np.z)) continue
+          sum += np.z; cnt++
+        }
+      }
+      return cnt ? sum / cnt : null
+    }
+
+    let highKey, lowKey, highAvg, lowAvg
+    if (aForced && !bForced) { lowKey = 'A'; highKey = 'B' }
+    else if (bForced && !aForced) { lowKey = 'B'; highKey = 'A' }
+    else {
+      const avgA = averageLinkedNeighbors('A'), avgB = averageLinkedNeighbors('B')
+      if ((avgA ?? 0) >= (avgB ?? 0)) { highKey = 'A'; lowKey = 'B' } else { highKey = 'B'; lowKey = 'A' }
+    }
+    // Always compute both averages, even on a forced-low side — a forced-low region
+    // that's ALSO always-locked (Sea/Lake/Ice Sheet, per SetupPhase.ALWAYS_LOCKED_TERRAIN_
+    // TYPES) never reaches the lerp at all (its split copies are skipped upstream via
+    // base.zLocked), but Swamp is forced-low here without being always-locked, so it
+    // still needs a real target average, not null.
+    highAvg = averageLinkedNeighbors(highKey)
+    lowAvg = averageLinkedNeighbors(lowKey)
+
+    // 5. Record per-edge output.
+    for (let i = 0; i < run.length; i++) {
+      const e = runEdges[i]
+      const perRegion = new Map()
+      const aKey = sideKeyByRegion.get(e.regionA), bKey = sideKeyByRegion.get(e.regionB)
+      perRegion.set(e.regionA, aKey === highKey ? { side: 'high', targetAvg: highAvg } : { side: 'low', targetAvg: lowAvg })
+      perRegion.set(e.regionB, bKey === highKey ? { side: 'high', targetAvg: highAvg } : { side: 'low', targetAvg: lowAvg })
+      result.set(run[i], perRegion)
+    }
+  }
+
+  return result
 }
+
+export { lerp, CLIFF_LOW_TYPES }
 
 export function smoothstepFalloff(t) {
   const c = Math.max(0, Math.min(1, t))
@@ -155,9 +281,7 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     region.seedPoint.z = target
     region.seedPoint.zLocked = true
     for (const p of domainPoints) {
-      const before = p.z
       p.z = target; p.zLocked = true
-      console.log(`[TerrainZHeight] region ${region.id} (${region.assignedType}): point ${p.id} z ${before.toFixed(4)} -> ${p.z.toFixed(4)} (domain set, locked)`)
     }
     if (!rule.hopCount) return
     propagateFromRegion(registry, region, cornerIds, terrainPlots, rule.hopCount, rule.curve, rule.direction, domainIds)
@@ -183,14 +307,11 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     }
     region.seedPoint.z = target
     region.seedPoint.zLocked = true
-    console.log(`[TerrainZHeight] region ${region.id} (Ice Sheet): seedPoint z -> ${target.toFixed(4)} (locked)`)
     // Same shared-boundary-with-an-already-locked-neighbour exclusion as Sea/Lake above.
     const domainPoints = getRegionDomainPointIds(terrainPlots, region.id).map(id => registry.get(id)).filter(p => p && !p.zLocked)
     for (const p of domainPoints) {
-      const before = p.z
       p.z = target + (Math.random() * 2 - 1) * 0.25
       p.zLocked = true
-      console.log(`[TerrainZHeight] region ${region.id} (Ice Sheet): point ${p.id} z ${before.toFixed(4)} -> ${p.z.toFixed(4)} (domain set, locked)`)
     }
     return   // no propagation for Ice Sheet — unchanged from the prior rule
   }
@@ -205,20 +326,30 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
   const domainIds = getRegionDomainPointIds(terrainPlots, region.id)
   const domainPoints = domainIds.map(id => registry.get(id)).filter(p => p && !p.zLocked)
 
+  // Internal centre-to-edge taper (user-confirmed 2026-07-14, "should be high in the
+  // centre and less high on the edges" — every domain point previously got the exact
+  // same flat cornerAmount bump, with no gradient inside the region at all): blend each
+  // point's own bump between `amount` (the seed/centre's own value) and `cornerAmount`
+  // (at the domain's own farthest point from the seed), proportional to its distance
+  // from the seed. A no-op wherever amount === cornerAmount (Desert, Swamp's own path).
+  const distToSeed = (p) => Math.hypot(p.x - region.seedPoint.x, p.y - region.seedPoint.y)
+  const maxDomainDist = domainPoints.reduce((m, p) => Math.max(m, distToSeed(p)), 0)
+  const taperedAmount = (p) => {
+    if (maxDomainDist === 0) return rule.cornerAmount
+    const t = distToSeed(p) / maxDomainDist
+    return rule.amount + (rule.cornerAmount - rule.amount) * t
+  }
+
   if (rule.mode === 'set') {
     if (!region.seedPoint.zLocked) region.seedPoint.z = rule.amount
     for (const p of domainPoints) {
-      const before = p.z
-      p.z = rule.cornerAmount
-      console.log(`[TerrainZHeight] region ${region.id} (${region.assignedType}): point ${p.id} z ${before.toFixed(4)} -> ${p.z.toFixed(4)} (domain set)`)
+      p.z = taperedAmount(p)
     }
   } else if (rule.mode === 'delta') {
     if (!region.seedPoint.zLocked) region.seedPoint.z += rule.amount
     for (const p of domainPoints) {
-      const before = p.z
-      p.z += rule.cornerAmount
+      p.z += taperedAmount(p)
       if (rule.floor != null) p.z = Math.max(rule.floor, p.z)
-      console.log(`[TerrainZHeight] region ${region.id} (${region.assignedType}): point ${p.id} z ${before.toFixed(4)} -> ${p.z.toFixed(4)} (domain delta)`)
     }
     if (rule.floor != null && !region.seedPoint.zLocked) region.seedPoint.z = Math.max(rule.floor, region.seedPoint.z)
   } else if (rule.mode === 'flattenThenDelta') {
@@ -229,9 +360,7 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     const z = Math.max(rule.floor, avg + rule.amount)
     if (!region.seedPoint.zLocked) region.seedPoint.z = z
     for (const p of domainPoints) {
-      const before = p.z
       p.z = z
-      console.log(`[TerrainZHeight] region ${region.id} (${region.assignedType}): point ${p.id} z ${before.toFixed(4)} -> ${p.z.toFixed(4)} (flatten+delta)`)
     }
   }
 
@@ -281,7 +410,16 @@ export function propagateFromRegion(registry, region, cornerIds, terrainPlots, h
   if (maxDistance === 0) return   // nothing beyond the source's own domain was reached
 
   const f = falloffFor(curve)
-  const sourceZ = region.seedPoint.z
+  // Blend toward the region's own BOUNDARY height (average of its corners, already
+  // updated with cornerAmount) — NOT the centre (seedPoint.z, updated with the
+  // different `amount`). Using the centre as the target made a point immediately
+  // outside the region's edge blend almost entirely toward it (f(t) -> 1 as distance ->
+  // 0), landing HIGHER than the region's own boundary corners for any type where
+  // cornerAmount < amount (Hills, Mountains) — confirmed live 2026-07-14, "the mountain
+  // itself was flat... the surrounding terrain was higher than all of the mountain
+  // region." Using the corners' own average makes the falloff genuinely continuous
+  // across the boundary: right at the edge it matches the edge, then fades outward.
+  const sourceZ = cornerPoints.reduce((s, p) => s + p.z, 0) / cornerPoints.length
   for (const [id, d] of nearestDistById) {
     const p = registry.get(id)
     if (!p) continue
@@ -290,9 +428,7 @@ export function propagateFromRegion(registry, region, cornerIds, terrainPlots, h
     const newZ = p.z + blend * (sourceZ - p.z)
     if (direction === 'up' && newZ < p.z) continue    // never lower a point for a "raise" type
     if (direction === 'down' && newZ > p.z) continue  // never raise a point for a "lower" type
-    const before = p.z
     p.z = newZ
-    console.log(`[TerrainZHeight] region ${region.id} (${region.assignedType}): point ${id} z ${before.toFixed(4)} -> ${p.z.toFixed(4)} (propagated)`)
   }
 }
 
@@ -300,7 +436,8 @@ export function propagateFromRegion(registry, region, cornerIds, terrainPlots, h
 // OWN target z (not one shared region seedPoint.z) — Cliff's own use case (user-
 // confirmed 2026-07-13, "both sides of the cliff connect to their adjacent terrain"): a
 // jagged Cliff chain's split corners each sit at a locally-different height (the shared
-// point's pre-split z, ±CLIFF_Z_RULE.magnitude), so a single global blend target
+// point's pre-split z, lerped toward its side's chain-wide average — see
+// computeCliffChainSides/CLIFF_LERP_T), so a single global blend target
 // (propagateFromRegion's model) can't represent it — every reached point instead blends
 // toward whichever SOURCE point is nearest it (multi-source flood-fill, same idea as a
 // discrete Voronoi-from-seeds), using that nearest source's own target z and its own
@@ -355,9 +492,7 @@ export function propagateFromPoints(registry, terrainPlots, sourceIds, targetZBy
     const newZ = p.z + blend * (targetZ - p.z)
     if (direction === 'up' && newZ < p.z) continue
     if (direction === 'down' && newZ > p.z) continue
-    const before = p.z
     p.z = newZ
-    console.log(`[TerrainZHeight] cliff source ${ownerId}: point ${id} z ${before.toFixed(4)} -> ${p.z.toFixed(4)} (cliff propagated)`)
   }
 }
 
@@ -388,4 +523,75 @@ export function getRegionCornerIds(edges, regionId) {
     }
   }
   return [...ids]
+}
+
+// River z-gradient (plan "typed-gliding-leaf", per plan "rustling-churning-finch" §7):
+// endpoints are fixed at whatever z already exists at the moment the River is drawn —
+// this only sets INTERIOR path points, along `edge.pointIds` (the River's own raw
+// centreline chain, not a split land copy), weighted by cumulative (x,y) distance.
+//
+// New Rule for Rivers (user-confirmed 2026-07-14): water can only ever flow downhill —
+// grading between two fixed points must never invent an interior rise. Each stretch
+// between two fixed points (see gradeRange below) always walks from whichever end is
+// HIGHER down to the other, so it's monotonic-decreasing by construction — the old
+// approach (always interpolating start-to-end in path order) could invent an uphill
+// stretch whenever the "start" happened to be the lower of the two, which is exactly
+// the "aqueduct bridging a dip" artifact this fixes.
+//
+// If the path crosses an already-assigned Cliff at an interior point (`cliffPointIds`,
+// every pointId on any currently-assigned Cliff edge), that crossing is a Waterfall: its
+// own z (the Cliff split's high/low value) is never overwritten — each stretch either
+// side of it (start-to-crossing, crossing-to-end, or crossing-to-crossing for a river
+// that crosses more than one Cliff) grades independently, per the same rule, so the
+// vertical gap at the crossing itself is exactly the Waterfall drop. A crossing whose
+// own fixed value is out of monotonic order relative to its neighbours (a genuinely
+// inconsistent River/Cliff combination) still shows as a real jump there — this
+// algorithm can't paper over a contradiction in the underlying terrain data, only
+// guarantee every stretch it actually computes is internally consistent.
+// zLocked points (Sea/Lake/Ice Sheet) are never overwritten, matching every other
+// z-height writer in this file.
+export function applyRiverZGradient(registry, edge, cliffPointIds = new Set()) {
+  const path = edge.pointIds || []
+  if (path.length < 2) return
+  const pts = path.map(id => registry.get(id))
+  if (pts.some(p => !p)) return
+
+  const cum = [0]
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y))
+  }
+  if (cum[cum.length - 1] === 0) return
+
+  // Walks from whichever of pts[i0]/pts[i1] is HIGHER toward the other, writing every
+  // STRICTLY interior point between them (i0/i1 themselves are never touched — they're
+  // either the river's own fixed endpoints or a Cliff crossing's fixed Waterfall value)
+  // with a straight distance-weighted lerp from the high end down to the low end.
+  // Choosing the walk direction per-pair this way is what guarantees each stretch is
+  // monotonic-decreasing by construction (interpolating from a high fixed value down to
+  // a low fixed value can never produce an interior value above the high end), which is
+  // exactly the "New Rule for Rivers" (user-confirmed 2026-07-14): water only flows
+  // downhill, never uphill, between two fixed points.
+  const gradeRange = (i0, i1) => {
+    const forward = pts[i0].z >= pts[i1].z
+    const hiIdx = forward ? i0 : i1, loIdx = forward ? i1 : i0
+    const step = forward ? 1 : -1
+    const hiZ = pts[hiIdx].z, loZ = pts[loIdx].z
+    const totalDist = Math.abs(cum[loIdx] - cum[hiIdx])
+    if (totalDist <= 0) return
+    for (let i = hiIdx + step; i !== loIdx; i += step) {
+      if (pts[i].zLocked) continue
+      const t = Math.abs(cum[i] - cum[hiIdx]) / totalDist
+      pts[i].z = hiZ + (loZ - hiZ) * t
+    }
+  }
+
+  // Every interior Cliff crossing along this path (a river can cross more than one
+  // Cliff) is a fixed anchor, same as the two endpoints — grade independently between
+  // each consecutive pair of anchors, never overwriting any of them.
+  const anchors = [0]
+  for (let i = 1; i < pts.length - 1; i++) {
+    if (cliffPointIds.has(path[i])) anchors.push(i)
+  }
+  anchors.push(pts.length - 1)
+  for (let a = 0; a < anchors.length - 1; a++) gradeRange(anchors[a], anchors[a + 1])
 }

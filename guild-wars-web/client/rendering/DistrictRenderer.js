@@ -158,7 +158,16 @@ export default class DistrictRenderer {
         }
       }
       this.cityDistrictData = data
-      this.cityEdgePointsById = new Map((data.edgePoints || []).map(p => [p.id, p]))
+      // District z-height (plan "typed-gliding-leaf"): data.edgePoints is a plain {id,x,y}
+      // convenience copy (see generateCityDistrictData) — real z lives on the same
+      // shared registry ids, resolved through pointsById exactly like district.polygon
+      // above. Without this, every District Edge (Wall/Canal/Docks and the plain hover/
+      // select highlight in EdgeLineRenderer, which already reads .z per point) renders
+      // flat regardless of the terrain/district relief underneath it.
+      this.cityEdgePointsById = new Map((data.edgePoints || []).map(p => {
+        const z = pointsById?.get(p.id)?.z
+        return [p.id, z != null ? { ...p, z } : p]
+      }))
       this.renderDistricts(data.districts || [])
       this.renderCityEdges(data.edges || {})
     }
@@ -183,7 +192,7 @@ export default class DistrictRenderer {
     if (!rawPoly || rawPoly.length < 3) return null
 
     const polygon = [...rawPoly]
-    const vertices = polygon.map(v => [v.x, 0, v.y]).flat()
+    const vertices = polygon.map(v => [v.x, v.z ?? 0, v.y]).flat()
 
     // Ear-clipping, not a fan from vertex 0 — a previewed (not yet locked) district can
     // have a concave polygon once River/Cliff pullback insets part of its boundary, and

@@ -64,6 +64,18 @@ function onWorldBoundary(p, worldSize, minBoundaryRadius) {
   return dist >= minBoundaryRadius
 }
 
+// Exact outer-ring membership (undirected — a HOLE's two directions are the same
+// physical edge). Computed once, right after a hole-free New Game generation (see
+// SetupPhase._generateWorldWithHoleCheck), and persisted for the rest of the game —
+// this is the primary boundary test from then on; the radius heuristic above only
+// matters for the very first, ring-computing pass (and as a fallback for an old save
+// from before the ring existed). An exact set means a genuinely NEW stray gap that
+// happens to land near the map edge is no longer silently masked by the radius band.
+function edgeKey(a, b) { return a < b ? `${a},${b}` : `${b},${a}` }
+function onOuterRing(originId, otherId, outerRingEdgeKeys) {
+  return !!outerRingEdgeKeys && outerRingEdgeKeys.has(edgeKey(originId, otherId))
+}
+
 function bbox(poly) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const p of poly) {
@@ -103,20 +115,30 @@ function polygonsOverlap(polyA, polyB) {
   return pointInPolygon(polyA[0], polyB) || pointInPolygon(polyB[0], polyA)
 }
 
-// groundplane: {points, surfaces, terrain: {worldSize}} — the same shape saved at
-// gameState.groundplane. Returns {counts, findings} — findings is a flat array, each
-// tagged with a `category` ('OVERLAP' | 'DEGENERATE' | 'HOLE' | 'PINCH').
+// groundplane: {points, surfaces, terrain: {worldSize}, outerRingEdgeKeys}. The last
+// is optional — an array of `edgeKey(id,id)` strings, SetupPhase._generateWorldWithHoleCheck's
+// exact outer-ring capture (see edgeKey/onOuterRing above) — when present, THIS is the
+// boundary test; onWorldBoundary's radius heuristic only fills in for anything the exact
+// set doesn't cover (an old save from before the ring existed). Returns {counts,
+// findings, boundaryEdgeKeys} — findings is a flat array, each tagged with a `category`
+// ('OVERLAP' | 'DEGENERATE' | 'HOLE' | 'PINCH' | 'AREA_OVERLAP'); boundaryEdgeKeys is
+// every unpaired edge classified as "on the world boundary" this run (by whichever
+// test applied) — the caller captures this on a clean New Game generation to seed
+// outerRingEdgeKeys for every audit for the rest of the game.
 export function auditGroundplane(groundplane) {
-  const { points = [], surfaces = [], terrain = {} } = groundplane || {}
+  const { points = [], surfaces = [], terrain = {}, outerRingEdgeKeys = null } = groundplane || {}
   const worldSize = terrain.worldSize
   // The world's real boundary band (see onWorldBoundary's doc comment) — computed
   // straight from worldSize so every caller gets this for free, no groundplane shape
-  // change needed.
+  // change needed. Only load-bearing until outerRingEdgeKeys exists (or for an id the
+  // exact ring doesn't recognise, e.g. an old save).
   const minBoundaryRadius = worldSize != null ? organicOuterRadius(worldSize) - worldSize * BOUNDARY_INNER_SLACK_RATIO : null
+  const ringKeys = outerRingEdgeKeys instanceof Set ? outerRingEdgeKeys : (outerRingEdgeKeys ? new Set(outerRingEdgeKeys) : null)
   const registry = new GroundPointRegistry(points)
   const dcel = new DCEL(registry)
 
   const findings = []
+  const boundaryEdgeKeys = new Set()
   // Directed pair "u,v" -> surfaceId, built alongside insertion so a later HOLE finding
   // can name which Surface actually owns the real (non-void) side of that boundary.
   const directedPairToSurfaceId = new Map()
@@ -155,7 +177,15 @@ export function auditGroundplane(groundplane) {
     const twin = dcel.getHalfEdge(he.twin)
     const originId = he.origin, otherId = twin?.origin
     const originPt = registry.get(originId), otherPt = registry.get(otherId)
-    if (originPt && otherPt && onWorldBoundary(originPt, worldSize, minBoundaryRadius) && onWorldBoundary(otherPt, worldSize, minBoundaryRadius)) continue
+    // Exact ring first (once computed, this is authoritative for the rest of the game);
+    // the radius heuristic only ever fires for ids the ring doesn't recognise.
+    const onRing = otherId != null && onOuterRing(originId, otherId, ringKeys)
+    const onHeuristicBoundary = !onRing && originPt && otherPt &&
+      onWorldBoundary(originPt, worldSize, minBoundaryRadius) && onWorldBoundary(otherPt, worldSize, minBoundaryRadius)
+    if (onRing || onHeuristicBoundary) {
+      if (otherId != null) boundaryEdgeKeys.add(edgeKey(originId, otherId))
+      continue
+    }
     const borderingSurfaceId = otherId != null ? directedPairToSurfaceId.get(`${otherId},${originId}`) : undefined
     const finding = {
       category: 'HOLE',
@@ -262,5 +292,5 @@ export function auditGroundplane(groundplane) {
     if (f.category === 'HOLE') counts[f.nearMiss ? 'HOLE_NEAR_MISS' : 'HOLE_TRUE_VOID']++
   }
 
-  return { counts, findings }
+  return { counts, findings, boundaryEdgeKeys: [...boundaryEdgeKeys] }
 }

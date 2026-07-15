@@ -308,6 +308,8 @@ app.post('/api/setup/terrain/assign', requireActiveSeat, async (req, res) => {
       edgePoints: wt.edgePoints,
       riverCliffFaces: wt.riverCliffFaces || [],
       pointRegistry: gameStateManager.pointRegistry.toJSON(),
+      auditFindings: gameStateManager.lastAuditFindings || [],
+      auditCounts: gameStateManager.lastAuditCounts || null,
       log: result.log
     })
   } catch (error) {
@@ -325,9 +327,24 @@ app.post('/api/setup/terrain/edge', requireActiveSeat, async (req, res) => {
     const result = setupPhase.assignEdgeType(edgeId, edgeType, description, name)
     const seat = seatOf(req)
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Edge', entityName: name?.trim() || edgeType, vetoable: true } : null)
+    // Full fresh snapshot (user-confirmed 2026-07-14, "terrain edges are not being
+    // drawn at the right heights") — assignEdgeType's own pullback + Cliff/River z-
+    // height work (chain-average lerp, the monotonic gradient) mutates terrainPlots'
+    // polygons, riverCliffFaces, and point z all in the same call, but this route used
+    // to send back only `edges` (assignedType/color) — the client kept rendering the
+    // OLD, pre-assignment plot geometry/z/faces until some UNRELATED later action
+    // happened to trigger a full resync, same shape as /api/setup/terrain/assign.
+    const wt = gameStateManager.worldTerrainData
     res.json({
       ok: result.ok,
-      edges: gameStateManager.worldTerrainData.edges,
+      regions: wt.regions,
+      terrainPlots: wt.terrainPlots,
+      edges: wt.edges,
+      edgePoints: wt.edgePoints,
+      riverCliffFaces: wt.riverCliffFaces || [],
+      pointRegistry: gameStateManager.pointRegistry.toJSON(),
+      auditFindings: gameStateManager.lastAuditFindings || [],
+      auditCounts: gameStateManager.lastAuditCounts || null,
       log: result.log
     })
   } catch (error) {
@@ -350,7 +367,20 @@ app.post('/api/setup/terrain/edges', requireActiveSeat, async (req, res) => {
     }
     const seat = seatOf(req)
     await autoSave(seat ? { id: Date.now(), seatId: seat.id, seatName: seat.name, entityType: 'Edge', entityName: name?.trim() || edgeType, vetoable: true } : null)
-    res.json({ ok: true, edges: gameStateManager.worldTerrainData.edges, log })
+    // Full fresh snapshot — see the singular /edge route's matching comment above.
+    const wt = gameStateManager.worldTerrainData
+    res.json({
+      ok: true,
+      regions: wt.regions,
+      terrainPlots: wt.terrainPlots,
+      edges: wt.edges,
+      edgePoints: wt.edgePoints,
+      riverCliffFaces: wt.riverCliffFaces || [],
+      pointRegistry: gameStateManager.pointRegistry.toJSON(),
+      auditFindings: gameStateManager.lastAuditFindings || [],
+      auditCounts: gameStateManager.lastAuditCounts || null,
+      log
+    })
   } catch (error) {
     console.error('Edge batch assign error:', error)
     res.status(400).json({ ok: false, error: error.message })

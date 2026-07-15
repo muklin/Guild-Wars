@@ -468,6 +468,19 @@ export default class WorldRenderer {
     this.terrainRenderer.setEdgeHover(edgeId); this.markDirty()
   }
 
+  setEdgePathAnchor(edgeId) {
+    this.terrainRenderer.setEdgePathAnchor(edgeId)
+  }
+
+  renderAuditFindings(findings) {
+    this.terrainRenderer.renderAuditFindings(findings)
+    this.markDirty()
+  }
+
+  getShortestEdgePath(fromId, toId) {
+    return this.terrainRenderer.getShortestEdgePath(fromId, toId)
+  }
+
   renderThreats(threats, regions) {
     return this.terrainRenderer.renderThreats(threats, regions)
   }
@@ -504,12 +517,44 @@ export default class WorldRenderer {
     return this.terrainRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
   }
 
+  // District z-height (plan "typed-gliding-leaf"): the debug Z readout used to only
+  // ever consult terrainRenderer's own terrain-plot data — harmless for Terrain Setup,
+  // but meaningless once inside a district, since city-footprint terrain plots are
+  // excluded from terrain rendering entirely (see TerrainPlotConverter.js). Hovering a
+  // street or plot returned whatever unrelated terrain plot happened to be nearest,
+  // not the real value — confirmed live (2026-07-15): a square and an adjacent street
+  // both read the identical "1.356", the square's own leftover-terrain-plot neighbour's
+  // z, not the street's. Check city plots (any type, including squares — squares ARE
+  // real, correctly-set ground per that same report) first; fall back to terrain only
+  // when nothing city-side contains the point.
   getZHeightAtWorldPos(worldX, worldY) {
+    const plots = this.districtRenderer?.cityDistrictData?.plots
+    if (plots?.length) {
+      for (const p of plots) {
+        if (!p.blockCorners?.length || !pointInPolygon(worldX, worldY, p.blockCorners)) continue
+        let sum = 0, n = 0
+        for (const v of p.blockCorners) { if (isFinite(v.z)) { sum += v.z; n++ } }
+        if (n) return sum / n
+      }
+    }
     return this.terrainRenderer.getZHeightAtWorldPos(worldX, worldY)
   }
 
+  // District z-height (plan "typed-gliding-leaf") exposed a latent hover/pick bug: this
+  // used to only test terrain meshes, which was harmless while districts/plots rendered
+  // dead flat — InputHandler.screenToWorld's y=0 flat-plane fallback was close enough
+  // everywhere. Now that districts and plots carry real relief, hovering anywhere over a
+  // district/plot (city-footprint terrain plots are excluded from terrain rendering
+  // entirely — see TerrainPlotConverter.js — so there's no terrain mesh there to hit)
+  // fell through to that y=0 fallback and, at any camera tilt, resolved to a wildly wrong
+  // (x,y) — confirmed live: hovering a district highlighted an unrelated terrain region
+  // on the far side of the map. District and plot fills are real relief meshes too now,
+  // so they belong in the same raycast-pickable set.
   getPickableMeshes() {
-    return this.terrainRenderer.getPickableMeshes()
+    const meshes = [...this.terrainRenderer.getPickableMeshes()]
+    for (const m of this.districtRenderer.districtMeshes.values()) if (m.visible) meshes.push(m)
+    for (const m of this.groundRenderer.plotMeshes) if (m.visible) meshes.push(m)
+    return meshes
   }
 
   setTerrainPlotHover(plotId) {
@@ -797,6 +842,10 @@ export default class WorldRenderer {
 
   drawPlotCenters(plots) {
     return this.groundRenderer.drawPlotCenters(plots)
+  }
+
+  drawCitySurfaceCorners(streetGraph, blocks, plots) {
+    return this.groundRenderer.drawSurfaceCorners(streetGraph, blocks, plots)
   }
 
   getPlotCenterAtWorldPos(worldX, worldY, threshold) {
@@ -1116,7 +1165,7 @@ export default class WorldRenderer {
       case 'terrainCenters':  this.terrainRenderer.setTerrainCentersVisible(on); break
       case 'terrainPlotCenters': this.terrainRenderer.setTerrainPlotCentersVisible(on); break
       case 'terrainSeeds':    this.terrainRenderer.setTerrainSeedsVisible(on); break
-      case 'surfaceCorners':  this.terrainRenderer.setSurfaceCornersVisible(on); break
+      case 'surfaceCorners':  this.terrainRenderer.setSurfaceCornersVisible(on); this.groundRenderer.setSurfaceCornersVisible(on); break
       case 'streetSeeds':     this.groundRenderer.setStreetSeedsVisible(on); break
     }
     this.markDirty()
@@ -1183,7 +1232,7 @@ export default class WorldRenderer {
       terrainCenters:  this.terrainRenderer._terrainCentersVisible,
       terrainPlotCenters: this.terrainRenderer._terrainPlotCentersVisible,
       terrainSeeds:    this.terrainRenderer._terrainSeedsVisible,
-      surfaceCorners:  this.terrainRenderer._surfaceCornersVisible,
+      surfaceCorners:  this.terrainRenderer._surfaceCornersVisible || this.groundRenderer._surfaceCornersVisible,
       streetSeeds:     this.groundRenderer._streetSeedsVisible,
     }
   }

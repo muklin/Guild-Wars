@@ -1,13 +1,13 @@
 // Pure geometry for a constant-half-width stroke along a chain of points, with proper
 // miter/bevel joints at interior vertices and at shared junction endpoints (2+ edges
-// meeting at the same point, fan-capped when 3+). No THREE.js/DOM dependency — safe to
-// import from both client (PolylineRenderer.js, which owns turning this into meshes)
-// and server (SetupPhase.js's river/cliff pullback, see plan "typed-giggling-giraffe":
-// using this SAME computation to place terrain-plot split vertices, instead of pullback
-// independently re-deriving its own miter/width math, is what guarantees the pulled-back
-// terrain data and the rendered stroke agree by construction — no separate width-
-// reconciliation pass needed, and junctions with 3+ incident edges are handled the same
-// mature way here as they already are for rendering).
+// meeting at the same point, fan-capped when 3+). No THREE.js/DOM dependency. Used
+// server-side by riverCliffBoundary.js/SetupPhase.js's river/cliff pullback (see plan
+// "typed-giggling-giraffe") to place terrain-plot split vertices — using this same
+// computation there, instead of pullback independently re-deriving its own miter/width
+// math, is what guarantees the pulled-back terrain data matches the filled River/Cliff
+// faces by construction. Formerly also consumed client-side by PolylineRenderer.js
+// (deleted — plan "typed-gliding-leaf" Stage D; EdgeLineRenderer.js's plain-line stroke
+// doesn't need this geometry).
 //
 // edges format: { [edgeId]: { pointIds: [id, ...], ... } }
 // pointsById: Map<id, {x, y}> (or anything with a matching .get(id) -> {x,y})

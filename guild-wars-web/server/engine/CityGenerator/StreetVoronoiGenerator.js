@@ -2,6 +2,7 @@ import DelaunayTriangulator from '../voronoi/DelaunayTriangulator.js'
 import Point from '../voronoi/Point.js'
 import { clipToPolygon, triangleCenter, generateGridSeeds, pip, distToSegSq, distToPolygonBoundary, projectToPolygon, segIntersect } from '../voronoi/VoronoiUtils.js'
 import { getDistrictConfig } from '../../../shared/districtConfig.js'
+import { idwZ } from './DistrictZHeight.js'
 
 // Stable deterministic [0,1) value based on world position — used for gate/bridge probability.
 function posHash(x, y) {
@@ -1260,6 +1261,50 @@ export default class StreetVoronoiGenerator {
         j.id = idMap.get(j.id) ?? j.id
         for (const c of (j.connections || [])) {
           c.toId = idMap.get(c.toId) ?? c.toId
+        }
+      }
+    }
+
+    // Tier 1 z-height (plan "typed-gliding-leaf", District-scale z-height adoption):
+    // IDW-interpolate each junction's z from its owning District's own boundary corners
+    // — those already carry real z via shared registry point ids with the originating
+    // Terrain Plot (SetupPhase.js's generateCityDistrictData/promoteTerrainPlotToDistrict),
+    // no propagation graph needed, just a self-contained per-district interpolation
+    // (see DistrictZHeight.js's own doc comment for why this deliberately isn't
+    // TerrainZHeight.js's BFS/falloff machinery). A boundary junction (left/right district
+    // ids) blends from BOTH districts' corners; an interior junction (single districtId)
+    // uses just its own. Gutters (connection.gutterLeft/gutterRight) are tiny lateral
+    // offsets of their own junction, not independent graph nodes, so they simply inherit
+    // their junction's z rather than getting their own IDW call. No-op when no registry
+    // is passed, same backward-compatibility convention as the registry-backing above.
+    if (registry) {
+      const districtControlPoints = new Map()   // districtId -> [{x,y,z}]
+      const controlPointsFor = (districtId) => {
+        if (districtId == null) return []
+        if (districtControlPoints.has(districtId)) return districtControlPoints.get(districtId)
+        const district = districtById.get(districtId)
+        const pts = []
+        if (district) {
+          const poly = district.polygon || []
+          for (let i = 0; i < poly.length; i++) {
+            const id = district.pointIds?.[i]
+            const p = id != null ? registry.get(id) : null
+            if (p && isFinite(p.z)) pts.push({ x: p.x, y: p.y, z: p.z })
+          }
+        }
+        districtControlPoints.set(districtId, pts)
+        return pts
+      }
+      for (const j of junctions) {
+        const controls = j.districtId != null
+          ? controlPointsFor(j.districtId)
+          : [...controlPointsFor(j.left), ...controlPointsFor(j.right)]
+        const z = idwZ(j.x, j.y, controls)
+        if (z == null) continue
+        j.z = z
+        for (const c of (j.connections || [])) {
+          if (c.gutterLeft) c.gutterLeft.z = z
+          if (c.gutterRight) c.gutterRight.z = z
         }
       }
     }

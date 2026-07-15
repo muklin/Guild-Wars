@@ -272,6 +272,15 @@ export default class GroundRenderer {
     // Each entry: { mat, color, emissive, ei } for save/restore.
     this._districtHighlight = []
 
+    // ── Surface corners (debug) ───────────────────────────────────────────────
+    // Mirrors TerrainRenderer's own _surfaceCornerMeshes/_surfaceCornersVisible —
+    // user-requested (2026-07-15, "all surface corners, incl streets, plots, should
+    // have surface corners in debug mode"): that visualization only ever covered
+    // terrain-plot/river-cliff-face corners, nothing city-side. Off by default, same
+    // reason as the terrain one — a real city has thousands of these.
+    this._surfaceCornerMeshes = []
+    this._surfaceCornersVisible = false
+
     // ── Atlas ────────────────────────────────────────────────────────────────
     this._atlas                       = null
     this._lastRenderedGraph           = null
@@ -308,6 +317,12 @@ export default class GroundRenderer {
     for (const m of this._blockDebugMeshes)  m.visible = show && this._blockCentersVisible
     for (const m of this._blockSeedMeshes)   m.visible = show && this._blockSeedsVisible
     for (const m of this._plotDebugMeshes)   m.visible = show && this._plotCentersVisible
+    for (const m of this._surfaceCornerMeshes) m.visible = show && this._surfaceCornersVisible
+  }
+
+  setSurfaceCornersVisible(on) {
+    this._surfaceCornersVisible = on
+    for (const m of this._surfaceCornerMeshes) m.visible = this.showDebug && on
   }
 
   setStreetSeedsVisible(on) {
@@ -342,6 +357,7 @@ export default class GroundRenderer {
     this._clearDebugGroup(this._blockDebugMeshes)
     this._clearDebugGroup(this._blockSeedMeshes)
     this._clearDebugGroup(this._plotDebugMeshes)
+    this._clearDebugGroup(this._surfaceCornerMeshes)
     for (const obj of this.debugObjects) this.scene.remove(obj)
     this.debugObjects = []
   }
@@ -1381,6 +1397,48 @@ export default class GroundRenderer {
         this._blockSeedMeshes.push(sm)
       }
     }
+  }
+
+  // City-side counterpart to TerrainRenderer.drawSurfaceCorners (user-requested
+  // 2026-07-15, "all surface corners, incl streets, plots, should have surface corners
+  // in debug mode") — junctions/gutters (blue), block corners (orange), plot corners
+  // (green), deduped by point id like the terrain version (a shared corner between a
+  // block and its own plots would otherwise get one marker per Surface).
+  drawSurfaceCorners(streetGraph, blocks, plots) {
+    this._clearDebugGroup(this._surfaceCornerMeshes)
+    const geo = new THREE.OctahedronGeometry(0.04, 0)
+    const junctionMat = new THREE.MeshBasicMaterial({ color: 0x3399ff })
+    const blockMat = new THREE.MeshBasicMaterial({ color: 0xffa500 })
+    const plotMat = new THREE.MeshBasicMaterial({ color: 0x33ff33 })
+    const seen = new Set()
+    const addMarker = (id, x, y, z, mat, sourceKind) => {
+      if (id == null || seen.has(id) || !isFinite(x) || !isFinite(y)) return
+      seen.add(id)
+      const m = new THREE.Mesh(geo, mat)
+      m.position.set(x, (z ?? GROUND_Y) + 0.12, y)
+      m.renderOrder = 999
+      m.userData = { kind: 'surfaceCorner', id, sourceKind, x, y, z: z ?? GROUND_Y, realY: (z ?? GROUND_Y) + 0.12, flatY: 0.12 }
+      m.visible = this.showDebug && this._surfaceCornersVisible
+      this.scene.add(m)
+      this.debugObjects.push(m)
+      this._surfaceCornerMeshes.push(m)
+    }
+    for (const j of (streetGraph?.junctions || [])) {
+      addMarker(j.id, j.x, j.y, j.z, junctionMat, 'junction')
+      for (const c of (j.connections || [])) {
+        if (c.gutterLeft) addMarker(`gL:${j.id}:${c.toId}`, c.gutterLeft.x, c.gutterLeft.y, c.gutterLeft.z, junctionMat, 'gutter')
+        if (c.gutterRight) addMarker(`gR:${j.id}:${c.toId}`, c.gutterRight.x, c.gutterRight.y, c.gutterRight.z, junctionMat, 'gutter')
+      }
+    }
+    const addPoly = (ids, poly, mat, sourceKind) => {
+      if (!ids?.length || !poly?.length || ids.length !== poly.length) return
+      for (let i = 0; i < ids.length; i++) {
+        const v = poly[i]
+        if (v) addMarker(ids[i], v.x, v.y, v.z, mat, sourceKind)
+      }
+    }
+    for (const b of (blocks || [])) addPoly(b.pointIds, b.blockCorners, blockMat, 'block')
+    for (const p of (plots || [])) addPoly(p.pointIds, p.blockCorners, plotMat, 'plot')
   }
 
   drawPlotCenters(plots) {

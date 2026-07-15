@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import PolylineRenderer from './utils/PolylineRenderer.js'
+import EdgeLineRenderer from './utils/EdgeLineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, clipPolygonToBox, triangulatePolygon, resolvePolygon, posHash } from './utils/renderUtils.js'
 
@@ -31,6 +31,7 @@ export default class TerrainRenderer {
     this._terrainVertexMeshes = []   // green boxes at polygon vertices
     this._terrainPlotCenterMeshes = []   // orange spheres at raw terrain PLOT (fine cell) seed points
     this._surfaceCornerMeshes = []   // magenta diamonds at every distinct terrain-plot/river-cliff-face Surface corner (post-pullback, exact registry ids)
+    this._auditFindingLines = []   // yellow (HOLE) / red (AREA_OVERLAP) lines from the last auditGroundplane run — dev-only, see renderAuditFindings
 
     this._terrainCentersVisible = true
     this._terrainSeedsVisible   = true
@@ -43,6 +44,7 @@ export default class TerrainRenderer {
     this.terrainData = null
     this.worldSize = 50
     this.edgePointsById = new Map()
+    this._groundFlattened = false   // tracked so a freshly-built EdgeLineRenderer can sync immediately — see renderEdges
     // Once true (see setCityModeActive), the raw River/Cliff/unassigned terrain-edge
     // STROKE overlay (this.terrainPolylines) is a Terrain-Setup-only concept and never
     // renders again — District mode shows only the filled river/cliff DCEL faces (see
@@ -105,6 +107,7 @@ export default class TerrainRenderer {
     for (const m of this._terrainVertexMeshes) m.visible = show && this._terrainSeedsVisible
     for (const m of this._terrainPlotCenterMeshes) m.visible = show && this._terrainPlotCentersVisible
     for (const m of this._surfaceCornerMeshes) m.visible = show && this._surfaceCornersVisible
+    for (const m of this._auditFindingLines) m.visible = show
   }
 
   setTerrainCentersVisible(on) {
@@ -132,6 +135,7 @@ export default class TerrainRenderer {
     this._clearDebugGroup(this._terrainVertexMeshes)
     this._clearDebugGroup(this._terrainPlotCenterMeshes)
     this._clearDebugGroup(this._surfaceCornerMeshes)
+    this._clearDebugGroup(this._auditFindingLines)
     for (const obj of this.debugObjects) this.scene.remove(obj)
     this.debugObjects = []
   }
@@ -252,10 +256,14 @@ export default class TerrainRenderer {
       this.hoveredRegionId = null
     }
     if (this.hoveredEdgeId !== null) {
-      const mesh = this.edgeMeshes.get(this.hoveredEdgeId)
-      if (mesh?.material?.emissiveIntensity !== undefined) mesh.material.emissiveIntensity = 0.5
+      this.terrainPolylines?.resetEdgeColor(this.hoveredEdgeId)
       this.hoveredEdgeId = null
     }
+    if (this._hoveredPathEdgeIds?.size) {
+      for (const id of this._hoveredPathEdgeIds) this.terrainPolylines?.resetEdgeColor(id)
+      this._hoveredPathEdgeIds = null
+    }
+    this._pathHoverTargetId = null
   }
 
   // ── Terrain data ────────────────────────────────────────────────────────────
@@ -271,7 +279,7 @@ export default class TerrainRenderer {
   // plan "typed-giggling-giraffe" addendum). Rendered as filled meshes exactly like
   // Lake/Sea (buildRegionMesh), replacing the stroked-polyline overlay for whichever
   // edges got a face — a chain that couldn't be built (confluence, etc) simply isn't in
-  // this array and keeps stroke-rendering via PolylineRenderer, unchanged.
+  // this array and keeps stroke-rendering via EdgeLineRenderer, unchanged.
   // hiddenRegions (outer-ring rewrite, 2026-07-13): stored on terrainData for a future
   // "discover foreign lands" reveal, but currently inert — hover/click hit tests and
   // renderEdges' "is this edge shown" gate deliberately only look at `regions` (kept),
@@ -279,7 +287,17 @@ export default class TerrainRenderer {
   setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], hiddenRegions = []) {
     this.clearMarkers()
     console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points,', riverCliffFaces.length, 'river/cliff faces')
-    this.edgePointsById = new Map((edgePoints || []).map(p => [p.id, p]))
+    // District z-height (plan "typed-gliding-leaf") surfaced the same gap here as
+    // DistrictRenderer's cityEdgePointsById had: edgePoints is a plain {id,x,y}
+    // convenience copy (see e.g. TerrainVoronoiGenerator's edge-point construction) —
+    // real z lives on the same shared registry ids, resolved through pointsById. Without
+    // this, every terrain edge (River/Cliff strokes, hover/select highlight) rendered
+    // flat regardless of the terrain relief underneath it — "very often on new game,
+    // Terrain edges are not correctly zheight set".
+    this.edgePointsById = new Map((edgePoints || []).map(p => {
+      const z = pointsById?.get(p.id)?.z
+      return [p.id, z != null ? { ...p, z } : p]
+    }))
     // Kept for z lookups against data this method doesn't itself resolve (e.g. a coarse
     // region's convex-hull polygon, still {x,y,id} — see getTerrainCornerAtWorldPos).
     this._pointsById = pointsById || this._pointsById
@@ -293,28 +311,13 @@ export default class TerrainRenderer {
     }
     this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces, hiddenRegions: hiddenRegions || [] }
     this.renderTerrain(regions, terrainPlots || [])
-    // Reverted (2026-07-11): Terrain Setup mode's EDGE OVERLAY (renderEdges, below) goes
-    // back to stroke rendering for every River/Cliff edge instead of skipping the ones
-    // covered by a filled DCEL face — the face pipeline still has unresolved visual
-    // artifacts at bends/confluences (see plan "typed-giggling-giraffe" Addendum 2 Stage
-    // B notes) that the fixed-width stroke has always simply painted over. That revert
-    // is scoped to the stroke overlay only; the filled faces are still built, but ONLY
-    // once District mode is active (_cityModeActive — see setCityModeActive), so District
-    // mode (which tears down the stroke overlay entirely) has something to show for
-    // River/Cliff before GroundRenderer's own district-plot fill takes over (see
-    // deleteNonCityTerrainPlots, which retires these meshes the moment that handoff
-    // happens). Gating this on _cityModeActive is itself a fix (2026-07-12): a prior
-    // restoration of this call ran it unconditionally, which meant Terrain Setup got the
-    // stroke AND the filled face simultaneously — two overlapping meshes at nearly the
-    // same position, confirmed live as a z-fighting/hatching artifact along every
-    // river/cliff edge during Terrain Setup, not just a District-mode gap.
-    // Still call renderRiverCliffFaces UNCONDITIONALLY (with [] outside city mode, not
-    // skipped outright) — it's the only place that clears this.riverCliffFaceMeshes, so
-    // skipping it entirely in Terrain mode left a PREVIOUS game's meshes (still in the
-    // scene) stranded forever, most visible right after New Game (confirmed live:
-    // disconnected river shards from the discarded game scattered over the freshly
-    // generated map).
-    this.renderRiverCliffFaces(this._cityModeActive ? riverCliffFaces : [])
+    // Re-enabled in Terrain mode itself (plan "typed-gliding-leaf", user-confirmed
+    // 2026-07-14 — the bank-path/confluence artifacts that motivated the 2026-07-11
+    // revert are fixed): River/Cliff now render as filled DCEL faces during Terrain
+    // Setup too, not just District mode. renderEdges (below) filters out any edge that
+    // has a matching face by sourceEdgeId, so the stroke overlay and the fill never
+    // double-render the same edge.
+    this.renderRiverCliffFaces(riverCliffFaces)
     this.drawVoronoiCenters(regions)
     this.drawTerrainPlotCenters(terrainPlots)
     this.drawSurfaceCorners(terrainPlots, riverCliffFaces)
@@ -524,20 +527,21 @@ export default class TerrainRenderer {
 
   renderEdges(edges) {
     if (this._cityModeActive) return
+    // Thin hover/select line only — a real filled DCEL face (renderRiverCliffFaces)
+    // now covers any edge whose River/Cliff face could be built (plan "typed-gliding-
+    // leaf"); this stroke is only ever needed for an UNASSIGNED edge's hover/click-select
+    // affordance during Terrain Setup, or a rare assigned edge whose face couldn't be
+    // built (confluence, etc — falls back to stroke, same as before this change).
     if (!this.terrainPolylines) {
-      // Visual stroke only — 1/3 of the true land-pullback width (SetupPhase.js's
-      // RIVER_CLIFF_HALF_WIDTH = 0.35, i.e. a 0.7 gap once an edge is assigned River/
-      // Cliff and the land recedes). Deliberately thinner than that gap now (was 0.7,
-      // exactly matching it) because the full-width stroke read as oversized/dominant
-      // in practice; the tradeoff is a visible sliver of the pulled-back gap on either
-      // side of the stroke for an ASSIGNED River/Cliff edge specifically (unassigned
-      // edges have no land pullback yet, so they're unaffected). Revisit if that gap
-      // reads as a bug once seen live on an assigned edge.
-      this.terrainPolylines = new PolylineRenderer(this.scene, { thickness: 0.7 / 3, stripY: 0.01, priorityColor: TERRAIN_COLORS.River })
+      this.terrainPolylines = new EdgeLineRenderer(this.scene, { y: 0.06 })
+      // Ordering fix (user-confirmed 2026-07-14, "still not visible from above, selected
+      // or not"): setGroundFlattened(true) may already have run BEFORE this instance
+      // existed (top-down toggled before any edge was ever rendered this session) — that
+      // call silently no-op'd on a null `this.terrainPolylines` and is otherwise never
+      // retried, so a freshly-built instance would default to unflattened (_flattened
+      // starts false) forever, even while genuinely in top-down mode right now.
+      this.terrainPolylines.setFlattened(this._groundFlattened)
     }
-    // Reverted (2026-07-11): every edge strokes, including River/Cliff — see
-    // setTerrainData's matching comment for why the filled-face pass was dropped for
-    // Terrain mode specifically.
     // Sea/Lake <-> Sea/Lake edges are never worth showing: River and Cliff (the only
     // assignable types) don't make sense between two water regions, and the raw region
     // boundary just cuts an ugly, meaningless line across what reads as one continuous
@@ -552,8 +556,11 @@ export default class TerrainRenderer {
     // (or between) still-hidden organic-world regions — "shown" is this downstream
     // check, not a generation-time gate (see TerrainVoronoiGenerator.js's doc comment).
     const isShown = (edge) => regionsById.has(edge.regionA) && regionsById.has(edge.regionB)
-    const visibleEdges = Object.fromEntries(Object.entries(edges).filter(([, edge]) => isShown(edge) && !isWaterWaterEdge(edge)))
-    console.log(`Rendering ${Object.keys(visibleEdges).length} edges (${Object.keys(edges).length - Object.keys(visibleEdges).length} hidden-region/Sea-Lake edges excluded)`)
+    // An edge with a matching filled River/Cliff face (by sourceEdgeId) is fully covered
+    // by that face already — stroking it too would double-render the same boundary.
+    const facedEdgeIds = new Set((this.terrainData?.riverCliffFaces || []).map(f => f.sourceEdgeId))
+    const visibleEdges = Object.fromEntries(Object.entries(edges).filter(([id, edge]) => isShown(edge) && !isWaterWaterEdge(edge) && !facedEdgeIds.has(id)))
+    console.log(`Rendering ${Object.keys(visibleEdges).length} edges (${Object.keys(edges).length - Object.keys(visibleEdges).length} hidden-region/Sea-Lake/faced edges excluded)`)
     // Prefer the registry-backed pointsById (real z, TODO.md "Groundplane Z-height
     // implementation") over edgePointsById (a materialized {id,x,y} snapshot with no z,
     // predating this session) — same underlying terrain point ids either way, so this is
@@ -569,20 +576,14 @@ export default class TerrainRenderer {
   get edgeMeshes()     { return this.terrainPolylines?.edgeMeshes     ?? new Map() }
   get junctionMeshes() { return this.terrainPolylines?.junctionMeshes ?? new Map() }
 
+  // EdgeLineRenderer has no junction fill meshes (unlike the retired PolylineRenderer's
+  // mitred-strip junction disks) — a plain THREE.Line per edge is all there is to hide.
   hideUndefinedEdges() {
     const edges = this.terrainData?.edges || {}
-    const hiddenEdgeIds = new Set()
     for (const [edgeId, edge] of Object.entries(edges)) {
       if (!edge.assignedType) {
         const mesh = this.terrainPolylines?._edgeMeshes?.get(edgeId)
         if (mesh) mesh.visible = false
-        hiddenEdgeIds.add(edgeId)
-      }
-    }
-    if (this.terrainPolylines) {
-      for (const [ptId, mesh] of this.terrainPolylines.junctionMeshes) {
-        const adjEdgeIds = this.terrainPolylines._junctionEdgeIds.get(ptId) ?? new Set()
-        if ([...adjEdgeIds].every(id => hiddenEdgeIds.has(id))) mesh.visible = false
       }
     }
   }
@@ -676,6 +677,7 @@ export default class TerrainRenderer {
   // stashed at build time) and flat 0, in place, no rebuild. Reversible: leaving
   // top-down restores the real relief from the same stashed array.
   setGroundFlattened(flat) {
+    this._groundFlattened = flat
     const apply = (mesh) => {
       const geo = mesh?.geometry
       const realY = geo?.userData?.realY
@@ -688,6 +690,20 @@ export default class TerrainRenderer {
     this.terrainPlotMeshes.forEach(apply)
     this.regionMeshes.forEach(apply)
     this.riverCliffFaceMeshes?.forEach(apply)
+    this.terrainPolylines?.setFlattened(flat)
+    // Audit-finding lines (renderAuditFindings) — same realY stash, but no
+    // computeVertexNormals (a THREE.Line has no faces to shade). Exactly 0 when flat,
+    // not the +0.15 build-time offset — see EdgeLineRenderer.setFlattened's matching
+    // comment: top-down's floor-scroll clip plane sits just above GROUND_Y by default
+    // (~0.045 world units), so any nonzero flattened offset risks getting clipped.
+    for (const line of this._auditFindingLines) {
+      const geo = line.geometry
+      const realY = geo?.userData?.realY
+      if (!realY) continue
+      const pos = geo.attributes.position
+      for (let i = 0; i < realY.length; i++) pos.array[i * 3 + 1] = flat ? 0 : realY[i]
+      pos.needsUpdate = true
+    }
   }
 
   // Debug-point markers (spheres/boxes, position-based rather than per-vertex
@@ -750,13 +766,112 @@ export default class TerrainRenderer {
     return n ? sum / n : null
   }
 
+  // `_pathAnchorEdgeId` (set via setEdgePathAnchor, App.js's "last selected edge") turns
+  // hover from a single-edge highlight into a shortest-path highlight from that anchor to
+  // whatever's hovered — the new interaction model (plan-adjacent, user-confirmed
+  // 2026-07-14): once an edge is selected, hovering another edge previews the whole
+  // chain a click would add, instead of requiring the user to click every edge in it.
   setEdgeHover(edgeId) {
-    if (this.hoveredEdgeId === edgeId && this.hoveredRegionId === null) return
+    if (this._pathAnchorEdgeId != null && this._pathAnchorEdgeId !== edgeId) {
+      if (this._pathHoverTargetId === edgeId) return   // no-op guard, same as the plain-hover branch below
+      const path = this.getShortestEdgePath(this._pathAnchorEdgeId, edgeId)
+      // Only one thing may be hovered at a time (user-confirmed 2026-07-14) — clearHover()
+      // FIRST, unconditionally, so a region/terrain-plot hover left over from a moment
+      // ago (or the previous path highlight) never lingers alongside the new one.
+      this.clearHover()
+      this._pathHoverTargetId = edgeId
+      this._setHoveredEdgePath(path && path.length ? path : [edgeId])
+      return
+    }
+    if (this.hoveredEdgeId === edgeId && this.hoveredRegionId === null && !this._hoveredPathEdgeIds?.size) return
     this.clearHover()
     if (this.terrainData?.edges?.[edgeId]?.assignedType) return
     this.hoveredEdgeId = edgeId
-    const mesh = this.edgeMeshes.get(edgeId)
-    if (mesh?.material?.emissiveIntensity !== undefined) mesh.material.emissiveIntensity = 0.9
+    this.terrainPolylines?.setEdgeColor(edgeId, 0xffffff)
+  }
+
+  // Highlights every edge in `edgeIds` (already-assigned edges are skipped — they have
+  // no selectable stroke/line left to highlight once a River/Cliff face covers them).
+  // Always called right after clearHover() (see setEdgeHover), so there is never a stale
+  // previous path to diff against here — every call paints onto a clean slate.
+  _setHoveredEdgePath(edgeIds) {
+    const next = new Set(edgeIds.filter(id => !this.terrainData?.edges?.[id]?.assignedType))
+    for (const id of next) this.terrainPolylines?.setEdgeColor(id, 0xffffff)
+    this._hoveredPathEdgeIds = next
+  }
+
+  // Called by App.js whenever the "last selected edge" changes (null when no edge is
+  // currently selected) — the anchor setEdgeHover measures a shortest path FROM.
+  setEdgePathAnchor(edgeId) {
+    this._pathAnchorEdgeId = edgeId
+  }
+
+  // Every edge sharing an endpoint pointId (first/last of its own pointIds chain) with
+  // `edge` — same connectivity notion App.js's _isEdgeConnectedToSelection already uses.
+  _edgeEndpoints(edge) {
+    const ids = edge?.pointIds || []
+    if (!ids.length) return []
+    return ids.length === 1 ? [ids[0]] : [ids[0], ids[ids.length - 1]]
+  }
+
+  _edgeLength(edge) {
+    const pts = (edge?.pointIds || []).map(id => this._pointsById?.get(id) || this.edgePointsById.get(id)).filter(Boolean)
+    let len = 0
+    for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+    return len
+  }
+
+  // Map<edgeId, Set<edgeId>> — two edges are adjacent if they share an endpoint point.
+  _buildEdgeAdjacency() {
+    const edges = this.terrainData?.edges || {}
+    const byEndpoint = new Map()
+    for (const [id, edge] of Object.entries(edges)) {
+      for (const pid of this._edgeEndpoints(edge)) {
+        if (!byEndpoint.has(pid)) byEndpoint.set(pid, [])
+        byEndpoint.get(pid).push(id)
+      }
+    }
+    const adj = new Map()
+    for (const ids of byEndpoint.values()) {
+      for (const a of ids) {
+        if (!adj.has(a)) adj.set(a, new Set())
+        for (const b of ids) if (b !== a) adj.get(a).add(b)
+      }
+    }
+    return adj
+  }
+
+  // Dijkstra shortest path (by cumulative real-world edge length, not hop count) over the
+  // edge-adjacency graph. Returns an ordered array of edgeIds from fromId to toId
+  // INCLUSIVE, or null if unreachable or either id doesn't exist.
+  getShortestEdgePath(fromId, toId) {
+    const edges = this.terrainData?.edges || {}
+    if (!edges[fromId] || !edges[toId]) return null
+    if (fromId === toId) return [fromId]
+    const adj = this._buildEdgeAdjacency()
+    const dist = new Map([[fromId, 0]])
+    const prev = new Map()
+    const visited = new Set()
+    while (true) {
+      let u = null, best = Infinity
+      for (const [id, d] of dist) { if (!visited.has(id) && d < best) { best = d; u = id } }
+      if (u === null || u === toId) break
+      visited.add(u)
+      for (const v of adj.get(u) || []) {
+        if (visited.has(v)) continue
+        const nd = best + this._edgeLength(edges[v])
+        if (nd < (dist.get(v) ?? Infinity)) { dist.set(v, nd); prev.set(v, u) }
+      }
+    }
+    if (!dist.has(toId)) return null
+    const path = [toId]
+    let cur = toId
+    while (cur !== fromId) {
+      cur = prev.get(cur)
+      if (cur === undefined) return null
+      path.push(cur)
+    }
+    return path.reverse()
   }
 
   // Faction-hover highlight of an off-map region. Uses its OWN state (not
@@ -1061,7 +1176,11 @@ export default class TerrainRenderer {
 
   getEdgeAtWorldPos(worldX, worldY) {
     if (!this.terrainData || !this.terrainData.edges) return null
-    const threshold = 0.375
+    // 1.5x the old 0.25 base (user-confirmed 2026-07-14: edges were too easy to miss on
+    // hover — a slightly-off cursor position fell through to the terrain-plot/region hit
+    // test instead, leaving the wrong thing highlighted right up until a click, whose
+    // position happened to land back inside the old, narrower threshold).
+    const threshold = 0.375 * 1.5
     let closestEdge = null
     let closestDistance = threshold
     // Same "both sides shown" gate as renderEdges — this hit-test scans
@@ -1273,6 +1392,98 @@ export default class TerrainRenderer {
     }
     addCorners(terrainPlots, plotMat, 'terrainPlot')
     addCorners(riverCliffFaces, faceMat, 'riverCliffFace')
+  }
+
+  // Dev-only (user-confirmed 2026-07-14, "will be removed in production"): visualizes
+  // the last auditGroundplane run's findings — a yellow line across every HOLE (an
+  // unpaired directed edge; `origin`/`other` are the two endpoints, real z resolved via
+  // pointsById when available) and a red outline around every Surface flagged in an
+  // AREA_OVERLAP finding (resolved from the CURRENT terrainPlots/riverCliffFaces by id
+  // — the finding itself carries no geometry, only the two surface ids). Always
+  // rebuilds from scratch; only ever called with the LATEST findings for the current
+  // terrainData, so there's nothing to diff.
+  renderAuditFindings(findings) {
+    this._clearDebugGroup(this._auditFindingLines)
+    // Plain THREE.Line — same defect EdgeLineRenderer was rewritten to avoid earlier
+    // this session (2026-07-14, "make these lines thicker"): linewidth is silently
+    // ignored on ANGLE/D3D and most desktop GL contexts, so a thin debug line can never
+    // actually be made thicker this way. HOLE findings are the one category that's
+    // actually actionable (AREA_OVERLAP's closed-loop outline stays a thin THREE.Line —
+    // less critical, not asked for) — real ribbon-mesh quads instead, wide and red
+    // (user-specified 2026-07-15), same per-segment-quad technique as EdgeLineRenderer.
+    const HOLE_THICKNESS = 0.3
+    const mkLine = (pts, color) => {
+      if (pts.length < 2) return
+      const vecs = pts.map(p => new THREE.Vector3(p.x, (p.z ?? 0) + 0.15, p.y))
+      const geometry = new THREE.BufferGeometry().setFromPoints(vecs)
+      geometry.userData.realY = vecs.map(v => v.y)
+      // Ordering fix, same as EdgeLineRenderer's matching one: if already in top-down
+      // mode (this._groundFlattened) at the moment findings come in, build flat
+      // immediately — exactly 0, not the +0.15 build offset, so it isn't silently
+      // clipped by the floor-scroll plane until the next unrelated top-down toggle
+      // happens to re-sync it via setGroundFlattened.
+      if (this._groundFlattened) {
+        const pos = geometry.attributes.position
+        for (let i = 0; i < vecs.length; i++) pos.array[i * 3 + 1] = 0
+      }
+      const material = new THREE.LineBasicMaterial({ color, depthTest: false })
+      const line = new THREE.Line(geometry, material)
+      line.renderOrder = 999
+      line.visible = this.showDebug
+      this.scene.add(line)
+      this.debugObjects.push(line)
+      this._auditFindingLines.push(line)
+    }
+    const mkHoleRibbon = (pts) => {
+      if (pts.length < 2) return
+      const halfW = HOLE_THICKNESS / 2
+      const verts = [], realY = []
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1]
+        const dx = b.x - a.x, dy = b.y - a.y
+        const len = Math.hypot(dx, dy)
+        if (len === 0) continue
+        const px = (-dy / len) * halfW, py = (dx / len) * halfW
+        const ay = (a.z ?? 0) + 0.15, by = (b.z ?? 0) + 0.15
+        verts.push(a.x - px, ay, a.y - py, a.x + px, ay, a.y + py, b.x + px, by, b.y + py, b.x - px, by, b.y - py)
+        realY.push(ay, ay, by, by)
+      }
+      if (!verts.length) return
+      const idx = []
+      for (let base = 0; base < verts.length / 3; base += 4) idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+      const geometry = new THREE.BufferGeometry()
+      const posArray = new Float32Array(verts)
+      geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3))
+      geometry.setIndex(idx)
+      geometry.userData.realY = realY
+      if (this._groundFlattened) for (let i = 0; i < realY.length; i++) posArray[i * 3 + 1] = 0
+      const material = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide, depthTest: false })
+      const mesh = new THREE.Mesh(geometry, material)
+      mesh.renderOrder = 999
+      mesh.visible = this.showDebug
+      this.scene.add(mesh)
+      this.debugObjects.push(mesh)
+      this._auditFindingLines.push(mesh)
+    }
+
+    const surfaceById = new Map()
+    for (const cell of (this.terrainData?.terrainPlots || [])) surfaceById.set(`tp:${cell.id}`, cell.polygon)
+    for (const face of (this.terrainData?.riverCliffFaces || [])) surfaceById.set(`rcf:${face.id}`, face.polygon)
+
+    for (const f of findings || []) {
+      if (f.category === 'HOLE') {
+        if (!f.origin || !f.other) continue
+        const oz = this._pointsById?.get(f.originId)?.z ?? 0
+        const ez = this._pointsById?.get(f.otherId)?.z ?? 0
+        mkHoleRibbon([{ ...f.origin, z: oz }, { ...f.other, z: ez }])
+      } else if (f.category === 'AREA_OVERLAP') {
+        for (const id of [f.surfaceId, f.conflictSurfaceId]) {
+          const poly = surfaceById.get(id)
+          if (!poly?.length) continue
+          mkLine([...poly, poly[0]], 0xff2222)
+        }
+      }
+    }
   }
 
   getSurfaceCornerAtWorldPos(worldX, worldY, threshold = 0.06) {

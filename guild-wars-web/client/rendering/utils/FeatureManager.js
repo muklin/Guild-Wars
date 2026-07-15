@@ -285,10 +285,15 @@ export default class FeatureManager {
         if (wrapper) {
           // Seat the base on the ground by measuring the actual spawned wrapper
           // in world space (its real clone, scale and rotation), then lifting it
-          // so the lowest vertex sits at y = baseY. Robust regardless of model origin.
+          // so the lowest vertex sits at y = groundY. Robust regardless of model origin.
+          // groundY is per-placement (BuildingRenderer._plotGroundZ, plan "typed-gliding-
+          // leaf") when the caller knows it, falling back to the shared baseY otherwise —
+          // a fixed baseY for every building in the batch was fine while plots rendered
+          // flat, but sinks/floats every house once plots carry real relief.
+          const groundY = p.y ?? baseY
           wrapper.updateMatrixWorld(true)
           const wb = new THREE.Box3().setFromObject(wrapper)
-          if (isFinite(wb.min.y)) wrapper.position.y = baseY - wb.min.y
+          if (isFinite(wb.min.y)) wrapper.position.y = groundY - wb.min.y
         }
       }
       const dt = performance.now() - tInst

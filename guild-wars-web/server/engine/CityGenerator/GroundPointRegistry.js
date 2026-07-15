@@ -150,7 +150,14 @@ export default class GroundPointRegistry {
         const existing = this._byId.get(id)
         if (existing) { existing.x = v.x; existing.y = v.y }
       } else {
-        const p = this.create(v.x, v.y, 0, kind); id = p.id; addToBucket(v.x, v.y, id)
+        // v.z, when the caller set one (e.g. a District/Terrain z-height pass backfilling
+        // before minting) — not a hardcoded 0. A tolerance-miss here used to silently
+        // flatten real z data: _recoverGeometryFromSeeds calls this with `reuseExisting`
+        // on a freshly-recomputed (pre-pullback) polygon, and a corner that went through
+        // Cliff/River pullback can legitimately sit further than `tolerance` from its own
+        // already-correct point, missing the dedup match and mint a "new" point here —
+        // previously always at z=0 regardless of what the caller knew.
+        const p = this.create(v.x, v.y, v.z ?? 0, kind); id = p.id; addToBucket(v.x, v.y, id)
       }
       byRef.set(v, id)
       ids[vi] = id

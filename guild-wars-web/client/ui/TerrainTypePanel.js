@@ -131,9 +131,12 @@ export default class TerrainTypePanel {
   }
 
   // Shared header row: label + close (✕) button, doubling as the drag handle — same
-  // pattern as DistrictTypePanel's closeRow. Close only hides the panel (showContext
-  // 'none'); it never touches the underlying map selection.
-  _headerRow(text) {
+  // pattern as DistrictTypePanel's closeRow. Close always hides the panel (showContext
+  // 'none'); `onClose`, when given, also runs first — used by the edge context to clear
+  // the underlying map selection (user-confirmed 2026-07-14: closing the edge dialogue
+  // clears the selection). The region context passes no `onClose`, so it keeps its
+  // original "never touches the underlying map selection" behavior.
+  _headerRow(text, onClose = null) {
     const row = document.createElement('div')
     row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;cursor:move'
     const label = document.createElement('div')
@@ -145,7 +148,7 @@ export default class TerrainTypePanel {
     closeBtn.style.cssText = 'background:none;border:none;color:#666;cursor:pointer;font-size:13px;line-height:1;padding:0'
     closeBtn.addEventListener('mouseenter', () => { closeBtn.style.color = '#ccc' })
     closeBtn.addEventListener('mouseleave', () => { closeBtn.style.color = '#666' })
-    closeBtn.addEventListener('click', () => this.showContext('none'))
+    closeBtn.addEventListener('click', () => { onClose?.(); this.showContext('none') })
     row.appendChild(label)
     row.appendChild(closeBtn)
     makeDraggable(this._el, row, { onDragEnd: () => { this._userMoved = true } })
@@ -228,10 +231,13 @@ export default class TerrainTypePanel {
   }
 
   _buildEdgeContent(container, { edgeCount, pendingType, adjacentTypes = [], riverDisabledReason = null }) {
-    container.appendChild(this._headerRow(`${edgeCount} Edge${edgeCount > 1 ? 's' : ''} Selected`))
+    container.appendChild(this._headerRow(
+      `${edgeCount} Edge${edgeCount > 1 ? 's' : ''} Selected`,
+      () => this.eventBus.emit('EDGE_SELECTION_CLOSED')
+    ))
 
     const hint = document.createElement('div')
-    hint.textContent = 'Click connected edges to add to selection.'
+    hint.textContent = 'Click another edge to add the shortest path to it.'
     hint.style.cssText = 'font-size:10px;color:#777;margin-bottom:8px;line-height:1.4'
     container.appendChild(hint)
 

@@ -14,7 +14,7 @@ _Avoid_: biome, tile type, land type
 The boundary line between two adjacent Terrains, which can be assigned a type (River, Cliff, etc.). An undefined Edge is a zero-width boundary chain in the Groundplane; assigning a type converts it into a Region of face Surfaces (see the Groundplane section).
 _Avoid_: border, boundary
 
-A River/Cliff occupies a fixed width centred on the assigned Edge, extending into both neighbouring terrain plots' nominal area — the plots pull their boundary back to the bank/face, and the strip between the banks is filled by the feature's own face Surfaces (like Sea/Lake, which never need pullback because their polygon already is the water's boundary). The legacy stroked-polyline rendering of this strip is being retired (see plan "typed-giggling-giraffe", Addendum 2 Stage D).
+A River/Cliff occupies a fixed width centred on the assigned Edge, extending into both neighbouring terrain plots' nominal area — the plots pull their boundary back to the bank/face, and the strip between the banks is filled by the feature's own face Surfaces (like Sea/Lake, which never need pullback because their polygon already is the water's boundary). The legacy stroked-polyline rendering of this strip is retired for Terrain Setup (plan "typed-gliding-leaf": River/Cliff render as filled Surfaces there too now, not just post-subdivision) — a thin unassigned-Edge hover/select line is all that remains of the old stroke renderer.
 
 **River** (edge type):
 An edge marked as a river channel. A valid River selection must satisfy all four rules:

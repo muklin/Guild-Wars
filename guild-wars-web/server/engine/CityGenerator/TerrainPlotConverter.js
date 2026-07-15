@@ -46,7 +46,18 @@ function inferTerrainType(cell, regionTypeById, worldRegions) {
 // z heights", actually a rendering-handoff gap, not a data wipe).
 export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = [], worldRegions = [], riverCliffFaces = [], registry = null) {
   const regionTypeById = new Map(worldRegions.map(r => [r.id, r.assignedType]))
-  const zOf = (v) => (v.id != null ? registry?.get(v.id)?.z : null) ?? 0
+  // Resolves by ID, not by reading `.id` off the vertex object (user-confirmed
+  // 2026-07-15, "SOMETHING at the end of District setup or start of Guild setup sets
+  // all the central terrain back to lower height values"): cell.polygon's vertices are
+  // plain {x,y} once a plot has gone through ANY pullback pass (see
+  // _dcelPullbackMaterialize's own output: `{x: p.x, y: p.y}`, never an .id) — they
+  // never carried an .id field to check in the first place, so the old `v.id != null`
+  // test was always false and this silently fell back to 0 for virtually every plot.
+  // Real z lives only in the PARALLEL cell.pointIds array, matched to cell.polygon by
+  // index (both built from the same half-edge walk, same length, same order — see
+  // _dcelPullbackMaterialize) — callers below now pass the id directly instead of the
+  // vertex object.
+  const zOf = (id) => (id != null ? registry?.get(id)?.z : null) ?? 0
 
   // Flatten trade road waypoints into segments [{a,b}]
   const roadSegments = []
@@ -60,7 +71,7 @@ export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = []
   let plotId = 0
 
   for (const cell of terrainPlots) {
-    const poly = cell.polygon.map(v => ({ x: v.x, y: v.y, z: zOf(v) }))
+    const poly = cell.polygon.map((v, i) => ({ x: v.x, y: v.y, z: v.z ?? zOf(cell.pointIds?.[i]) }))
     if (!poly || poly.length < 3) continue
 
     const hasRoad = roadSegments.some(seg => polygonCrossesSegment(poly, seg.a, seg.b))
@@ -80,7 +91,7 @@ export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = []
   }
 
   for (const face of riverCliffFaces) {
-    const poly = (face.polygon || []).map(v => ({ x: v.x, y: v.y, z: zOf(v) }))
+    const poly = (face.polygon || []).map((v, i) => ({ x: v.x, y: v.y, z: v.z ?? zOf(face.pointIds?.[i]) }))
     if (poly.length < 3) continue
     plots.push({
       id: `rcf${face.id}`,

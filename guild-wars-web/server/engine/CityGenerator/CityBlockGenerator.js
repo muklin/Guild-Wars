@@ -2,6 +2,7 @@ import { distToSegSq, pip, segIntersect } from '../voronoi/VoronoiUtils.js'
 import { STREET_HALF_WIDTH, getDistrictParams, halfWidthForDistrict } from './StreetVoronoiGenerator.js'
 import GroundPointRegistry from './GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './DCEL.js'
+import { idwZ } from './DistrictZHeight.js'
 
 
 // Street priority for tie-breaking (paved hierarchy: Stone > Brick > Mud).
@@ -293,6 +294,42 @@ export default class CityBlockGenerator {
     logRejects('road-pass2 (surrounded by road)', dbgRoad2)
     logRejects('degenerate-area', dbgArea)
     logRejects('enclosesNode (face wraps a gutter node)', this._dbgEnclosedRejects || [])
+
+    // District z-height Tier 2 (plan "typed-gliding-leaf"): IDW-interpolate each block
+    // corner's z from the nearby, already-z-aware junctions/gutters (Tier 1, see
+    // StreetVoronoiGenerator.generate()) belonging to the same district. Block corners
+    // are ephemeral gutter-graph points with no durable registry-backed z of their own
+    // (unlike a District's own boundary corners), so this interpolates fresh every call
+    // rather than resolving anything by id. Junctions without a Tier-1 z (e.g. a caller
+    // that ran StreetVoronoiGenerator without a registry) simply yield no control points
+    // for their district, and blockCorners are left without z — same fallback GroundRenderer
+    // already uses for any z-less vertex.
+    {
+      const controlPointsByDistrict = new Map()
+      const controlPointsFor = (districtId) => {
+        if (controlPointsByDistrict.has(districtId)) return controlPointsByDistrict.get(districtId)
+        const pts = []
+        for (const j of junctions) {
+          if (j.z == null) continue
+          if (j.districtId !== districtId && j.left !== districtId && j.right !== districtId) continue
+          pts.push({ x: j.x, y: j.y, z: j.z })
+          for (const c of (j.connections || [])) {
+            if (c.gutterLeft?.z != null) pts.push({ x: c.gutterLeft.x, y: c.gutterLeft.y, z: c.gutterLeft.z })
+            if (c.gutterRight?.z != null) pts.push({ x: c.gutterRight.x, y: c.gutterRight.y, z: c.gutterRight.z })
+          }
+        }
+        controlPointsByDistrict.set(districtId, pts)
+        return pts
+      }
+      for (const block of blocks) {
+        const controls = controlPointsFor(block.districtId)
+        for (const v of block.blockCorners) {
+          if (v.z != null) continue
+          const z = idwZ(v.x, v.y, controls)
+          if (z != null) v.z = z
+        }
+      }
+    }
 
     return { blocks, roadEdges }
   }
