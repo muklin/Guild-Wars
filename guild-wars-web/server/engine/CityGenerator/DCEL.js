@@ -237,6 +237,34 @@ export default class DCEL {
     return faceA
   }
 
+  // Insert a raw graph edge between two EXISTING vertices, with no face on either side
+  // and no rotational next/prev linkage yet (both null on both sides). This is the entry
+  // point for a raw planar graph (nodes+edges, no face structure — e.g. a street graph
+  // mid-repair, before any block/road face has been traced over it) to become real DCEL
+  // half-edges. rechainEdge and deleteDanglingEdge both already tolerate a null
+  // next/prev (see their own "no neighbor" branches) — that's what makes an edge
+  // inserted here immediately usable by them, before any face-tracing pass establishes
+  // a genuine rotation system. Mirrors insertFace's own void-side placeholder, which
+  // also starts out with prev/next left for a later reclaiming face to set — the
+  // difference is nothing is ever "reclaiming" this pair into a real face here; that's
+  // a separate, later step (e.g. CityBlockGenerator._traceFaces-style angular walk).
+  // Throws if this directed pair (in either direction) already exists.
+  insertEdge(u, v) {
+    const key = `${u},${v}`, revKey = `${v},${u}`
+    if (this._heByDirectedPair.has(key) || this._heByDirectedPair.has(revKey)) {
+      throw new Error(`DCEL.insertEdge: directed pair ${key} already exists`)
+    }
+    const he = this._mintHalfEdge(u, null)
+    const twin = this._mintHalfEdge(v, null)
+    he.twin = twin.id
+    twin.twin = he.id
+    this._heByDirectedPair.set(key, he.id)
+    this._heByDirectedPair.set(revKey, twin.id)
+    this._setVertexAnchor(u, he.id)
+    this._setVertexAnchor(v, twin.id)
+    return he
+  }
+
   // Re-route half-edge heId (and its twin) through an ordered chain of intermediate
   // vertices, splitting one boundary segment origin->dest into
   // origin->v1->v2->...->vk->dest — without touching which face(s) (or void side) the

@@ -3,6 +3,7 @@ import Point from '../voronoi/Point.js'
 import { clipToPolygon, triangleCenter, generateGridSeeds, pip, distToSegSq, distToPolygonBoundary, projectToPolygon, segIntersect } from '../voronoi/VoronoiUtils.js'
 import { getDistrictConfig } from '../../../shared/districtConfig.js'
 import { idwZ } from './DistrictZHeight.js'
+import GroundPointRegistry from './GroundPointRegistry.js'
 
 // Stable deterministic [0,1) value based on world position — used for gate/bridge probability.
 function posHash(x, y) {
@@ -1076,26 +1077,23 @@ export default class StreetVoronoiGenerator {
     const allNodes = [...voronoiNodes, ...boundaryNodes]
     const allEdges = [...voronoiEdges, ...boundaryEdges]
 
-    // ── Union-Find for near-duplicate node merge ──────────────────────────────
-    const parent = new Map()
-    const find = (id) => {
-      if (parent.get(id) === id) return id
-      const root = find(parent.get(id))
-      parent.set(id, root)
-      return root
-    }
-    for (const n of allNodes) parent.set(n.id, n.id)
-
-    for (let i = 0; i < allNodes.length; i++) {
-      for (let j = i + 1; j < allNodes.length; j++) {
-        const dx = allNodes[i].x - allNodes[j].x
-        const dy = allNodes[i].y - allNodes[j].y
-        if (dx * dx + dy * dy < SNAP_THRESHOLD * SNAP_THRESHOLD) {
-          const ri = find(allNodes[i].id), rj = find(allNodes[j].id)
-          if (ri !== rj) parent.set(rj, ri)
-        }
-      }
-    }
+    // ── Near-duplicate node merge ─────────────────────────────────────────────
+    // Clustering goes through registry.collapseNearbyVertices (its own doc comment
+    // names this exact pass as the intended replacement target) instead of a hand-
+    // rolled union-find — same transitive within-tolerance grouping (grid-bucketed,
+    // not a different algorithm from the O(n²) pairwise check it replaces) and the
+    // same "first node encountered in allNodes order survives" convention (no bias
+    // passed here — see below for why survivor CHOICE doesn't matter for output).
+    // A throwaway, call-scoped registry is used purely as clustering scratch space:
+    // collapseNearbyVertices needs real point ids to operate on, but nothing minted
+    // here needs to outlive this call. Position averaging (boundary-biased, below)
+    // is untouched — collapseNearbyVertices only decides grouping/survivor id, never
+    // a position, so which id survives has no effect on the merged coordinates.
+    const clusterRegistry = new GroundPointRegistry()
+    const localToClusterId = new Map(allNodes.map(n => [n.id, clusterRegistry.create(n.x, n.y, 0, 'street').id]))
+    const survivorByClusterId = clusterRegistry.collapseNearbyVertices([...localToClusterId.values()], SNAP_THRESHOLD)
+    const clusterIdToLocalId = new Map([...localToClusterId].map(([local, cluster]) => [cluster, local]))
+    const find = (id) => clusterIdToLocalId.get(survivorByClusterId.get(localToClusterId.get(id)))
 
     // Merge node positions — boundary nodes are pinned.
     // When a cluster contains any boundary node, the merged position uses only
@@ -1104,9 +1102,10 @@ export default class StreetVoronoiGenerator {
     // district boundary and leave a visible gap between adjacent district plots.
     const boundaryNodeIdSet = new Set(boundaryNodes.map(n => n.id))
     const rootData = new Map()
-    // A cluster's surviving root id is whichever member the union-find happened to visit
-    // first (allNodes lists voronoi nodes before boundary ones, so a voronoi id often
-    // wins even though the merged POSITION above always prefers the boundary node's) —
+    // A cluster's surviving root id is whichever member collapseNearbyVertices happened
+    // to visit first (allNodes lists voronoi nodes before boundary ones, so a voronoi id
+    // often wins even though the merged POSITION above always prefers the boundary
+    // node's) —
     // if any member of the cluster was minted at a real edge point, propagate that
     // tracking onto the root id so resolveNodeRegistryIds still reuses the exact id
     // later, regardless of which local id happened to survive here.

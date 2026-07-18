@@ -388,5 +388,46 @@ function area(poly) {
   })())
 }
 
+// ── Test: insertEdge — raw graph edges usable by rechainEdge/deleteDanglingEdge ────
+{
+  const reg = new GroundPointRegistry()
+  const dcel = new DCEL(reg)
+  const a = reg.create(0, 0, 0, 'street').id
+  const b = reg.create(1, 0, 0, 'street').id
+  const c = reg.create(2, 0, 0, 'street').id
+
+  const he = dcel.insertEdge(a, b)
+  check('insertEdge returns the a->b half-edge', he.origin === a)
+  check('insertEdge mints a void twin', dcel.getHalfEdge(he.twin)?.face === null)
+  check('insertEdge leaves the forward side void too', he.face === null)
+  check('a->b is findable', dcel.findHalfEdge(a, b)?.id === he.id)
+  check('b->a is findable', dcel.findHalfEdge(b, a)?.id === he.twin)
+  check('no next/prev linkage yet (forward)', he.next === null && he.prev === null)
+  check('no next/prev linkage yet (twin)', dcel.getHalfEdge(he.twin).next === null && dcel.getHalfEdge(he.twin).prev === null)
+  check("a's anchor points at the new edge", reg.get(a).halfEdge === he.id)
+  check("b's anchor points at the new edge's twin", reg.get(b).halfEdge === he.twin)
+
+  check('throws inserting a duplicate directed pair', (() => {
+    try { dcel.insertEdge(a, b); return false } catch { return true }
+  })())
+  check('throws inserting the reverse of an existing pair', (() => {
+    try { dcel.insertEdge(b, a); return false } catch { return true }
+  })())
+
+  // A lone insertEdge'd segment (both sides void, no next/prev) is exactly the shape
+  // deleteDanglingEdge expects — confirms the two primitives compose without any extra
+  // manual wiring, unlike the hand-built fixtures earlier in this file.
+  dcel.deleteDanglingEdge(he.id)
+  check('deleteDanglingEdge accepts a bare insertEdge result', dcel.getHalfEdge(he.id) === undefined)
+  check("a's anchor cleared (fully isolated)", reg.get(a).halfEdge === null)
+  check("b's anchor cleared (fully isolated)", reg.get(b).halfEdge === null)
+
+  // rechainEdge splicing an insertEdge'd segment through an intermediate vertex — the
+  // other half of the "raw graph edge, no face" contract.
+  const he2 = dcel.insertEdge(b, c)
+  dcel.rechainEdge(he2.id, [])   // empty chain is documented as a no-op
+  check('rechainEdge([]) is a no-op', dcel.findHalfEdge(b, c)?.id === he2.id)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)
