@@ -3,7 +3,7 @@
 // explicit instruction: these must be RED against the current stub, then implemented
 // to turn GREEN. Run with:
 //   node server/engine/SetupPhase.districtEdgeFaces.test.mjs
-import SetupPhase from './SetupPhase.js'
+import GroundplaneAudit from './GroundplaneAudit.js'
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 
 let pass = 0, fail = 0
@@ -17,7 +17,7 @@ function area(poly) {
   return Math.abs(a) / 2
 }
 
-const assemble = (chain) => SetupPhase.prototype._assembleDistrictEdgeFacePoints(chain)
+const assemble = (chain) => GroundplaneAudit.prototype._assembleDistrictEdgeFacePoints(chain)
 
 // Test 1: a straight 2-junction chain produces a 4-point quad, left points forward
 // then right points reversed, forming a simple non-self-intersecting rectangle.
@@ -32,7 +32,7 @@ const assemble = (chain) => SetupPhase.prototype._assembleDistrictEdgeFacePoints
     { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 1 }, { x: 0, y: 1 },
   ]))
   check('resulting rectangle has area 10 (10 long x 1 wide)', poly && Math.abs(area(poly) - 10) < 1e-9)
-  check('resulting polygon is simple (non-self-intersecting)', poly && !SetupPhase.prototype._polygonSelfIntersects(poly))
+  check('resulting polygon is simple (non-self-intersecting)', poly && !GroundplaneAudit.prototype._polygonSelfIntersects(poly))
 }
 
 // Test 2: a 3-junction chain (one bend) produces a 6-point hexagon in the correct
@@ -57,7 +57,7 @@ const assemble = (chain) => SetupPhase.prototype._assembleDistrictEdgeFacePoints
     { x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 },
     { x: 10, y: -1 }, { x: 5, y: 4 }, { x: 0, y: -1 },
   ]))
-  check('bent chain result is a simple polygon', poly && !SetupPhase.prototype._polygonSelfIntersects(poly))
+  check('bent chain result is a simple polygon', poly && !GroundplaneAudit.prototype._polygonSelfIntersects(poly))
 }
 
 // Test 3: degenerate inputs return null rather than a garbage/partial polygon.
@@ -82,7 +82,7 @@ const assemble = (chain) => SetupPhase.prototype._assembleDistrictEdgeFacePoints
   const poly = assemble(chain)
   check('4-junction straight chain produces exactly 8 points (one face, not per-segment)', poly?.length === 8)
   check('4-junction chain area is 15 (15 long x 1 wide)', poly && Math.abs(area(poly) - 15) < 1e-9)
-  check('4-junction chain result is a simple polygon', poly && !SetupPhase.prototype._polygonSelfIntersects(poly))
+  check('4-junction chain result is a simple polygon', poly && !GroundplaneAudit.prototype._polygonSelfIntersects(poly))
 }
 
 // Test 5: _buildDistrictEdgeFaces orientation handling. A boundary chain's two ends
@@ -116,8 +116,8 @@ const assemble = (chain) => SetupPhase.prototype._assembleDistrictEdgeFacePoints
     ],
   }
   const edges = { 'A-B': { assignedType: 'Wall', districtA: 'A', districtB: 'B' } }
-  const fake = Object.create(SetupPhase.prototype)
-  fake.gameStateManager = { pointRegistry: new GroundPointRegistry(), cityDistrictData: { streetGraph, edges } }
+  const fake = Object.create(GroundplaneAudit.prototype)
+  fake.sp = { gameStateManager: { pointRegistry: new GroundPointRegistry(), cityDistrictData: { streetGraph, edges } } }
   const faces = fake._buildDistrictEdgeFaces()
 
   check('exactly one face built for the one Wall edge', faces.length === 1)
