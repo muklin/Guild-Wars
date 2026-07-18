@@ -604,8 +604,7 @@ export default class App {
           response.terrainPlots || [],
           response.edgePoints || [],
           pointsById,
-          response.riverCliffFaces || [],
-          response.hiddenRegions || this.renderer.terrainData?.hiddenRegions || []
+          response.riverCliffFaces || []
         )
 
         const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
@@ -819,8 +818,7 @@ export default class App {
           response.terrainPlots || [],
           response.edgePoints || [],
           pointsById,
-          response.riverCliffFaces || [],
-          this.renderer.terrainData?.hiddenRegions || []
+          response.riverCliffFaces || []
         )
         this.renderer.renderAuditFindings?.(response.auditFindings || [])
         this.auditFindingsPopup?.update(response.auditCounts, response.auditFindings)
@@ -1574,8 +1572,7 @@ export default class App {
       state.worldTerrainData.terrainPlots || [],
       state.worldTerrainData.edgePoints || [],
       pointsById,
-      state.worldTerrainData.riverCliffFaces || [],
-      state.worldTerrainData.hiddenRegions || []
+      state.worldTerrainData.riverCliffFaces || []
     )
 
     const cityData = state.cityDistrictData
@@ -1938,7 +1935,7 @@ export default class App {
         this.renderer.setMode('terrain')
         this.renderer.guildSetupActive = false
         this.renderer.setCityEdgesHidden(false)
-        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [], response.hiddenRegions || [])
+        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [])
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')
         // New Game: discard any saved camera view from the previous game first, so

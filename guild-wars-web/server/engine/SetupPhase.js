@@ -16,6 +16,7 @@ import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { getDistrictConfig } from '../../shared/districtConfig.js'
 import { generateName } from '../../shared/nameLibrary.js'
+import { extractBoundaryChain, boundaryConnectionAt } from '../../shared/boundaryChain.js'
 import { readFileSync, mkdirSync, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -236,10 +237,15 @@ export default class SetupPhase {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (attempt > 1) registry.clearKind('terrain')
       const worldData = this.worldGenerator.generate(regionCount, worldSize, mergeDistance, manhattan, registry)
-      const surfaces = [
-        ...worldData.terrainPlots.map(p => ({ id: `tp:${p.id}`, kind: 'terrain-plot', pointIds: p.pointIds })),
-        ...(worldData.hiddenTerrainPlots || []).map(p => ({ id: `htp:${p.id}`, kind: 'terrain-plot', pointIds: p.pointIds })),
-      ]
+      // worldData.terrainPlots now holds kept + hidden plots merged (tagged via
+      // `.hidden`) — the audit still wants both included, so no filtering here; the
+      // id prefix keeps kept/hidden cell ids from colliding, same as the old two-array
+      // split did with separate `tp:`/`htp:` prefixes.
+      const surfaces = worldData.terrainPlots.map(p => ({
+        id: `${p.hidden ? 'htp' : 'tp'}:${p.id}`,
+        kind: 'terrain-plot',
+        pointIds: p.pointIds
+      }))
       const groundplane = { points: registry.toJSON(), surfaces, terrain: { worldSize } }
       const { counts, boundaryEdgeKeys } = auditGroundplane(groundplane)
       if (counts.HOLE === 0) {
@@ -717,11 +723,29 @@ export default class SetupPhase {
       this.gameStateManager.pointRegistry,
       region,
       getRegionCornerIds(this.gameStateManager.worldTerrainData.edges, regionId),
-      [...(this.gameStateManager.worldTerrainData.terrainPlots || []), ...(this.gameStateManager.worldTerrainData.hiddenTerrainPlots || [])],
+      this.gameStateManager.worldTerrainData.terrainPlots || [],
       this.gameStateManager.worldTerrainData.regions || []
     )
 
     return { ok: true, clearedEdgeIds, autoCliffEdgeIds, revealedRegionIds, newEdgeIds, log: this.log }
+  }
+
+  // "Which hidden region(s) does this KEPT region border" — replaces the former
+  // persisted `wt.hiddenNeighborsByRegion` map with an on-demand query over `wt.edges`,
+  // which already carries `regionA`/`regionB` on every edge (kept↔hidden and
+  // hidden↔hidden pairs included — generateBoundaryEdges builds the full adjacency
+  // graph unconditionally, not just kept-kept). Only ever meaningful for a kept
+  // `regionId` (a hidden region never gets an isEdge/reveal concept of its own), same
+  // as the removed map's original KEPT-regionA-only bookkeeping.
+  _hiddenNeighborsOf(regionId) {
+    const wt = this.gameStateManager.worldTerrainData
+    const keptSet = new Set(wt.regions.filter(r => !r.hidden).map(r => r.id))
+    const found = new Set()
+    for (const edge of Object.values(wt.edges)) {
+      if (edge.regionA === regionId && !keptSet.has(edge.regionB)) found.add(edge.regionB)
+      else if (edge.regionB === regionId && !keptSet.has(edge.regionA)) found.add(edge.regionA)
+    }
+    return [...found]
   }
 
   // Sea/Mountains/Desert/Ice Sheet only ever get placed on an `isEdge` region — the
@@ -738,7 +762,7 @@ export default class SetupPhase {
   // neighbours-of-hidden-neighbours.
   _revealAdjacentHiddenTerrain(regionId, terrainType) {
     const wt = this.gameStateManager.worldTerrainData
-    const hiddenIds = wt.hiddenNeighborsByRegion?.[regionId]
+    const hiddenIds = this._hiddenNeighborsOf(regionId)
     if (!hiddenIds?.length) return { revealedRegionIds: [], newEdgeIds: [] }
 
     const registry = this.gameStateManager.pointRegistry
@@ -753,15 +777,20 @@ export default class SetupPhase {
     // even though every plot kept from the start never does.
     const outerClipCircle = organicClipCircle(worldSize, 48, organicOuterClipRadius(worldSize))
 
+    // Flip `hidden` in place rather than moving objects between separate arrays —
+    // hidden regions/plots already live in wt.regions/wt.terrainPlots (merged, tagged
+    // via `.hidden`), so "revealing" them is exactly the one-field update the merge was
+    // meant to enable.
     const hiddenIdSet = new Set(hiddenIds)
-    const revealedPlots = wt.hiddenTerrainPlots.filter(p => hiddenIdSet.has(p.parentRegionId))
-    wt.hiddenTerrainPlots = wt.hiddenTerrainPlots.filter(p => !hiddenIdSet.has(p.parentRegionId))
-    wt.hiddenRegions = (wt.hiddenRegions || []).filter(r => !hiddenIdSet.has(r.id))
+    const revealedPlots = wt.terrainPlots.filter(p => p.hidden && hiddenIdSet.has(p.parentRegionId))
+    for (const p of revealedPlots) p.hidden = false
+    for (const r of wt.regions) if (hiddenIdSet.has(r.id)) r.hidden = false
 
     // Clip each revealed plot to the same organic outer clip circle every kept plot
-    // already gets at generation time — these plots were never clipped before since
-    // they were hidden (their raw polygon can reach well outside the world, a
-    // sentinel-triangulation artefact).
+    // already gets at generation time. Hidden plots already receive this exact clip
+    // uniformly with kept ones at generation (Step 5.5), so this is a re-clip against
+    // an unchanged polygon in the common case — kept for safety/idempotency rather than
+    // because hidden plots are known to still need it.
     //
     // Collect every brand-new (not-yet-id'd) clip vertex across ALL revealed plots
     // FIRST, then dedupe them together in one pass — the exact same technique
@@ -807,7 +836,8 @@ export default class SetupPhase {
       plot.pointIds = plot.polygon.map(v => v.id)
       plot.parentRegionId = regionId
       plot.assignedType = terrainType
-      wt.terrainPlots.push(plot)
+      // No push here — the plot is already resident in wt.terrainPlots (merged array),
+      // only its fields are updated in place.
     }
 
     // Rebuild the revealing region's own merged-hull polygon (click hit-testing
@@ -820,6 +850,12 @@ export default class SetupPhase {
       for (const v of p.polygon) if (isFinite(v.x) && isFinite(v.y)) allVerts.push(v)
     }
     region.polygon = this.worldGenerator.convexHull(allVerts)
+    // Staleness bug fix: the hull rebuild above used to update `.polygon` without ever
+    // refreshing `.pointIds` to match — every vertex here already carries a real
+    // registry id (they come from already-minted plot polygons), so this is a direct
+    // map, no fresh minting needed. Mirrors _recoverGeometryFromSeeds's own region-hull
+    // refresh (SetupPhase.js, its own `r.pointIds = hull.map(v => v.id)` line).
+    region.pointIds = region.polygon.map(v => v.id)
 
     // Recompute boundary edges fresh over the CURRENT plot set (kept + still-hidden)
     // — the exact same adjacency scan generate() used initially. generateBoundaryEdges
@@ -833,9 +869,11 @@ export default class SetupPhase {
     // has already assigned a type to. An edge with at least one side still hidden is
     // stored if missing (keeps the full graph complete for a future reveal) and
     // otherwise left alone.
-    const keptSet = new Set(wt.regions.map(r => r.id))
-    const allPlots = [...wt.terrainPlots, ...wt.hiddenTerrainPlots]
-    const raw = this.worldGenerator.generateBoundaryEdges(allPlots, keptSet)
+    // wt.regions now contains hidden regions too (merged, tagged via `.hidden`) — this
+    // used to be implicitly kept-only because hidden regions lived in a separate array;
+    // an explicit filter now preserves that original meaning.
+    const keptSet = new Set(wt.regions.filter(r => !r.hidden).map(r => r.id))
+    const raw = this.worldGenerator.generateBoundaryEdges(wt.terrainPlots, keptSet)
 
     const newEdgeIds = []
     for (const [key, edge] of Object.entries(raw.edges)) {
@@ -851,13 +889,10 @@ export default class SetupPhase {
     }
 
     // Only regionId's own adjacency changed (its footprint grew) — every other
-    // region's neighbours are unaffected, so only refresh isEdge/hiddenNeighbors for
-    // regionId itself.
+    // region's neighbours are unaffected. isEdge is the only per-region bookkeeping
+    // still refreshed here; "which hidden regions border regionId" is no longer
+    // persisted at all — _hiddenNeighborsOf computes it on demand from wt.edges.
     region.isEdge = raw.regionIdsTouchingVoid.has(regionId)
-    wt.hiddenNeighborsByRegion = wt.hiddenNeighborsByRegion || {}
-    const freshHidden = raw.hiddenNeighborsByRegion.get(regionId)
-    if (freshHidden?.size) wt.hiddenNeighborsByRegion[regionId] = [...freshHidden]
-    else delete wt.hiddenNeighborsByRegion[regionId]
 
     this.log.push(`Revealed ${revealedPlots.length} hidden terrain plot(s) (region${hiddenIds.length > 1 ? 's' : ''} ${hiddenIds.join(', ')}) into region ${regionId} (${terrainType}); added ${newEdgeIds.length} new Terrain Edge(s)`)
 
@@ -1393,19 +1428,23 @@ export default class SetupPhase {
   // (Wall/MainRoad/Canal/Docks) instead of worldTerrainData.edges (River/Cliff).
   // centrelinePointIds is the district Edge's own pointIds — already registry-backed
   // (district polygons/edges resolve through the shared GroundPointRegistry, same as
-  // terrain edges — see plan Stage A finding on edgePoints). surfaceIds is left EMPTY:
-  // unlike River/Cliff, a district linear feature has no filled DCEL face yet — its
-  // geometry still renders from junction/gutter miter data (DistrictRenderer), not a
-  // pullback+face pipeline. Giving these features real face Surfaces (matching the
-  // River/Cliff pattern) is follow-up work, gated on rebuilding that rendering path —
-  // out of scope for a blind pass. This still records the canonical Region (type,
-  // centreline, name/description) so it's queryable/persisted now, and reversion
-  // (clearing a district edge's type) works the same not-recreated way as linear
-  // terrain features, once edge clearing exists for district edges.
+  // terrain edges — see plan Stage A finding on edgePoints). surfaceIds is populated from
+  // _buildDistrictEdgeFaces (see that method) wherever a chain's street-graph junctions
+  // resolve cleanly — a chain that's still genuinely pending (fewer than 2 junctions,
+  // same as DistrictRenderer's own fallback) simply gets no Surface yet, same
+  // recompute-from-pristine philosophy as River/Cliff. This still always records the
+  // canonical Region (type, centreline, name/description) so it's queryable/persisted
+  // regardless, and reversion (clearing a district edge's type) works the same
+  // not-recreated way as linear terrain features, once edge clearing exists for
+  // district edges.
   _syncDistrictEdgeRegions() {
     const gp = this.gameStateManager.groundplane
-    const edges = this.gameStateManager.cityDistrictData?.edges
+    const cityData = this.gameStateManager.cityDistrictData
+    const edges = cityData?.edges
     if (!gp || !edges) return
+
+    const districtEdgeFaces = this._buildDistrictEdgeFaces()
+    cityData.districtEdgeFaces = districtEdgeFaces
 
     const districtEdgeRegions = []
     for (const [edgeKey, edge] of Object.entries(edges)) {
@@ -1416,10 +1455,14 @@ export default class SetupPhase {
       }
       const regionId = `district-edge:${edgeKey}`
       edge.regionId = regionId
+      const surfaces = districtEdgeFaces.filter(f => f.sourceEdgeId === edgeKey)
+      for (const f of surfaces) f.regionId = regionId
       districtEdgeRegions.push({
         id: regionId,
         type: t,
-        surfaceIds: [],   // see method doc comment — no face Surface for this kind yet
+        // Canonical Surface ids — `de:` prefix matches _syncGroundplaneSurfaces' record
+        // for the same faces.
+        surfaceIds: surfaces.map(f => `de:${f.id}`),
         centrelinePointIds: [...(edge.pointIds || [])],
         districtA: edge.districtA,
         districtB: edge.districtB ?? null,
@@ -2185,7 +2228,8 @@ export default class SetupPhase {
     return { results, matchedCount, cliffHighIds, cliffLowIds }
   }
 
-  // ADR-0020 Stage C (District Edge face Surfaces) — NOT YET IMPLEMENTED, stub only.
+  // ADR-0020 Stage C (District Edge face Surfaces) — implemented, see
+  // _buildDistrictEdgeFaces for the orchestrator that supplies chainConnections.
   // Contract (see SetupPhase.districtEdgeFaces.test.mjs for the full spec): assemble
   // one closed face polygon for a Wall/MainRoad/Canal/Docks district edge, directly
   // from the gutter offsets StreetVoronoiGenerator.buildJunctions already computed at
@@ -2201,7 +2245,62 @@ export default class SetupPhase {
   // Returns an ordered array of {x,y} points forming the closed face polygon, or null
   // if the input is degenerate (fewer than 2 junctions).
   _assembleDistrictEdgeFacePoints(chainConnections) {
-    throw new Error('_assembleDistrictEdgeFacePoints: not implemented yet (ADR-0020 Stage C, awaiting go-ahead after red tests)')
+    if (!chainConnections || chainConnections.length < 2) return null
+    const lefts = chainConnections.map(c => ({ x: c.gutterLeft.x, y: c.gutterLeft.y }))
+    const rights = chainConnections.map(c => ({ x: c.gutterRight.x, y: c.gutterRight.y }))
+    return [...lefts, ...rights.reverse()]
+  }
+
+  // For every Wall/MainRoad/Canal/Docks district edge, walk its street-graph boundary
+  // chain (extractBoundaryChain, shared/boundaryChain.js — same walk DistrictRenderer
+  // already uses client-side to build wall/canal/dock meshes) and assemble a real Face
+  // via _assembleDistrictEdgeFacePoints. Mints into the shared registry with
+  // reuseExisting so the face shares point ids with whatever CityBlockGenerator._traceFaces
+  // already minted at those exact gutter corners — gap-free adjacency with neighbouring
+  // blocks, same trick _buildRiverCliffFacesDirect uses against land faces.
+  //
+  // Orientation note: a chain's two ends walk the SAME physical boundary in opposite
+  // local directions, so naively taking "gutterLeft" off whichever connection matches at
+  // each junction does NOT stay on one consistent side (StreetVoronoiGenerator.buildJunctions
+  // computes gutterLeft/gutterRight relative to THIS junction's own local outgoing
+  // direction along that connection, which reverses across the chain). Anchored instead
+  // to the district-id pair on each connection (conn.left/conn.right, direction-
+  // independent) — the point on districtA's side is always treated as "left", districtB's
+  // side always "right", regardless of which connection object or which local direction
+  // supplied it.
+  _buildDistrictEdgeFaces() {
+    const registry = this.gameStateManager.pointRegistry
+    const cityData = this.gameStateManager.cityDistrictData
+    const streetGraph = cityData?.streetGraph
+    const edges = cityData?.edges
+    if (!registry || !streetGraph || !edges) return []
+
+    const norm = (v) => (v === 'terrain' ? null : v)
+    const built = []
+    for (const [edgeKey, edge] of Object.entries(edges)) {
+      const t = edge.assignedType
+      if (t !== 'Wall' && t !== 'MainRoad' && t !== 'Canal' && t !== 'Docks') continue
+
+      const chain = extractBoundaryChain(streetGraph, edge.districtA, edge.districtB, t)
+      if (!chain) continue
+
+      const chainConnections = []
+      for (const junction of chain) {
+        const conn = boundaryConnectionAt(junction, edge.districtA, edge.districtB, t)
+        if (!conn?.gutterLeft || !conn?.gutterRight) { chainConnections.length = 0; break }
+        const aSide = norm(conn.left) === edge.districtA ? conn.gutterLeft : conn.gutterRight
+        const bSide = norm(conn.left) === edge.districtA ? conn.gutterRight : conn.gutterLeft
+        chainConnections.push({ gutterLeft: aSide, gutterRight: bSide })
+      }
+      if (chainConnections.length < 2) continue
+
+      const loopPts = this._assembleDistrictEdgeFacePoints(chainConnections)
+      if (!loopPts || this._polygonSelfIntersects(loopPts)) continue
+
+      const pointIds = registry.mintDeduped(loopPts, 'gutter', 0.01, { reuseExisting: true })
+      built.push({ id: edgeKey, sourceEdgeId: edgeKey, assignedType: t, pointIds, polygon: loopPts })
+    }
+    return built
   }
 
   // Assemble a real Face for every River/Cliff chain DIRECTLY from the same per-point
@@ -2743,7 +2842,11 @@ export default class SetupPhase {
     // smaller still, so watch for that failure mode resurfacing.
     const RIVER_CLIFF_HALF_WIDTH = 0.35 / 3
     const { byId: boundaryById, boundaries, fillsOut, edges: riverCliffEdges } = this._computeRiverCliffBoundaryData(RIVER_CLIFF_HALF_WIDTH)
-    const terrainPlots = this.gameStateManager.worldTerrainData?.terrainPlots || []
+    // Kept plots only — the pullback/split mutation below stays kept-plots-only,
+    // unchanged (see the propagation-graph comment further down for the one place
+    // hidden plots ARE deliberately included). terrainPlots/hiddenTerrainPlots merged
+    // into one array (tagged via `.hidden`), so this needs an explicit filter now.
+    const terrainPlots = (this.gameStateManager.worldTerrainData?.terrainPlots || []).filter(p => !p.hidden)
     const registry = this.gameStateManager.pointRegistry
 
     // See _applyRiverCliffPullback's matching comment — split points are ephemeral and
@@ -2805,7 +2908,7 @@ export default class SetupPhase {
       // stays kept-plots-only, unchanged) — this is a read-only graph-walk, not a
       // geometry mutation, so there's no risk to the DCEL/split machinery from widening
       // it.
-      const plotsForPropagation = [...terrainPlots, ...(this.gameStateManager.worldTerrainData?.hiddenTerrainPlots || [])]
+      const plotsForPropagation = this.gameStateManager.worldTerrainData?.terrainPlots || []
       if (cliffHighIds.length) propagateFromPoints(registry, plotsForPropagation, cliffHighIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'up')
       if (cliffLowIds.length) propagateFromPoints(registry, plotsForPropagation, cliffLowIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'down')
     }
@@ -2889,15 +2992,7 @@ export default class SetupPhase {
     if (!gp || !wt) return
 
     const surfaces = []
-    for (const cell of wt.terrainPlots || []) {
-      surfaces.push({
-        id: `tp:${cell.id}`,
-        kind: 'terrain-plot',
-        type: cell.assignedType ?? null,
-        pointIds: [...(cell.pointIds || [])],
-      })
-    }
-    // Hidden (generated-but-unrendered) terrain plots, tagged distinctly (`htp:`) so
+    // Hidden (generated-but-unrendered) terrain plots are tagged distinctly (`htp:`) so
     // nothing downstream confuses them for real, interactive kept surfaces — included
     // ONLY so auditGroundplane can see the real geometry bordering a kept plot's outer
     // edge (user-confirmed 2026-07-14, "shouldn't those actually be ok, since they have
@@ -2908,9 +3003,9 @@ export default class SetupPhase {
     // auditGroundplane's onWorldBoundary check already excludes it via the same
     // organicOuterRadius-based radius test used everywhere else, now just measured
     // against the hidden ring's own farther-out rim instead of the kept ring's.
-    for (const cell of wt.hiddenTerrainPlots || []) {
+    for (const cell of wt.terrainPlots || []) {
       surfaces.push({
-        id: `htp:${cell.id}`,
+        id: `${cell.hidden ? 'htp' : 'tp'}:${cell.id}`,
         kind: 'terrain-plot',
         type: cell.assignedType ?? null,
         pointIds: [...(cell.pointIds || [])],
@@ -2925,6 +3020,27 @@ export default class SetupPhase {
         regionId: f.regionId,
       })
     }
+    // District Edge faces (ADR-0020 Stage C — _buildDistrictEdgeFaces): same treatment
+    // as riverCliffFaces above, `de:` prefix matching _syncDistrictEdgeRegions'
+    // surfaceIds. A chain still genuinely pending (street graph hasn't placed 2+
+    // junctions along it yet) simply has no entry here, same fallback as River/Cliff.
+    for (const f of this.gameStateManager.cityDistrictData?.districtEdgeFaces || []) {
+      surfaces.push({
+        id: `de:${f.id}`,
+        kind: 'district-edge-face',
+        type: f.assignedType,
+        pointIds: [...(f.pointIds || [])],
+        regionId: f.regionId,
+      })
+    }
+    // Landmark footprints (ADR-0020 Stage C — LandmarkPlacer's own `registry` param):
+    // same "omit if not registry-backed" fallback as blocks/plots below. `lm:${index}`
+    // matches the existing landmarkBuildings array-index convention already used
+    // elsewhere as a stable ref (see hq.refId lookups against this same array).
+    ;(this.gameStateManager.cityDistrictData?.landmarkBuildings || []).forEach((lm, i) => {
+      if (!lm.pointIds?.length) return
+      surfaces.push({ id: `lm:${i}`, kind: 'landmark', type: lm.name ?? null, pointIds: [...lm.pointIds] })
+    })
     // Blocks/plots (ADR-0020 Stage C): only present once pointIds are actually
     // registry-backed (CityBlockGenerator/PlotVoronoiGenerator threaded the shared
     // registry through — see their own doc comments) — a block/plot without pointIds
@@ -3054,11 +3170,14 @@ export default class SetupPhase {
     // real neighbours, every kept cell's half-plane clip only sees OTHER KEPT seeds and
     // the literal square, so it naturally expands to fill the square — visibly
     // reverting the whole map to the old square-clipped look on every load (confirmed
-    // live 2026-07-12). Only kept cells' recomputed polygons are actually used below
-    // (via polyBySeedKey, looked up only for `cells` = wt.terrainPlots). `worldRect`
-    // itself is ONLY ever passed to computeVoronoiCellsHalfPlane below, never used as a
-    // final clip target.
-    const seeds = [...cells.map(c => c.seedPoint), ...(wt.hiddenTerrainPlots || []).map(c => c.seedPoint)]
+    // live 2026-07-12). `cells = wt.terrainPlots` already contains both kept AND hidden
+    // entries (merged, tagged via `.hidden`) — the recovery loop below deliberately
+    // recomputes EVERY cell's polygon uniformly, kept or hidden, since hidden plots get
+    // the identical clip-circle treatment as kept ones at generation/reveal time; this
+    // is what gives hidden geometry a real load-time recovery path (see the loop's own
+    // comment below). `worldRect` itself is ONLY ever passed to
+    // computeVoronoiCellsHalfPlane below, never used as a final clip target.
+    const seeds = cells.map(c => c.seedPoint)
     const recomputed = computeVoronoiCellsHalfPlane(seeds, worldRect)
     // Same organic boundary generate()'s Step 5.5 clips kept plots to, and the same one
     // _revealAdjacentHiddenTerrain now uses for a freshly-revealed plot — even with
@@ -3092,6 +3211,15 @@ export default class SetupPhase {
     // fixed, known-correct sign directly fixes every cell regardless of history.
     const coerceWinding = (poly) => (signedArea(poly) > 0 ? [...poly].reverse() : poly)
 
+    // Deliberately NO `if (c.hidden) continue` guard here — `cells` now contains both
+    // kept and hidden plots merged together, and this loop recomputes EVERY one of them
+    // uniformly. This is what gives hidden (generated-but-unrendered) geometry a real
+    // load-time recovery path for the first time: hidden plots already get the exact
+    // same clip-circle treatment as kept plots at generation time (Step 5.5) and on
+    // reveal (_revealAdjacentHiddenTerrain), so recomputing them via this same seed-
+    // based Voronoi math is correct, not just convenient. Do not "fix" this by
+    // re-adding a hidden-skip guard — that would silently reintroduce the gap that made
+    // GameStateManager.serialize() unable to strip hidden geometry's `.polygon` safely.
     let fixedCells = 0
     for (const c of cells) {
       const poly = polyBySeedKey.get(keyOf(c.seedPoint))
@@ -3128,62 +3256,49 @@ export default class SetupPhase {
       fixedCells++
     }
 
+    // Refresh coarse region hulls' pointIds/polygon from the just-recovered cells above
+    // (Stage D, ADR-0020) — confirmed live (2026-07-16) this is NOT optional: a real
+    // save's terrain-plot pointIds churned ~5% (24/455 ids) across a single recovery
+    // pass (mintDeduped's reuseExisting missing tolerance on some corners and minting
+    // fresh ones instead) — a region.pointIds captured once at original generation and
+    // never refreshed would silently drift stale over repeated reloads, exactly the
+    // staleness class this whole migration exists to eliminate. Mirrors
+    // TerrainVoronoiGenerator's own Step 6 (vertsByRegion bucketing + convexHull), using
+    // this.worldGenerator (already instantiated) for the identical hull algorithm.
+    // Cell polygon vertices here are plain {x,y,z} (computeVoronoiCellsHalfPlane's
+    // output, unlike a fresh generation's registry-linked objects), so pointId is paired
+    // on positionally via each cell's own pointIds array before hulling. `wt.regions`
+    // now includes former-hidden regions too (merged, tagged via `.hidden`) — this loop
+    // refreshes those exactly the same way, no separate handling needed.
+    {
+      const vertsByRegion = new Map()
+      for (const c of cells) {
+        // A cell whose seedPoint failed to match polyBySeedKey above (rare) never got
+        // c.polygon reassigned this pass — under Stage D's stripped save shape that
+        // leaves it undefined (no fallback materialized copy to fall back to), where it
+        // used to just be stale-but-present; guard explicitly rather than crash, same
+        // "skip, don't fail loudly for a pre-existing rare miss" tolerance the poly
+        // lookup above already has.
+        if (!c.pointIds?.length || !Array.isArray(c.polygon) || c.polygon.length !== c.pointIds.length) continue
+        if (!vertsByRegion.has(c.parentRegionId)) vertsByRegion.set(c.parentRegionId, [])
+        const bucket = vertsByRegion.get(c.parentRegionId)
+        c.polygon.forEach((v, i) => { if (isFinite(v.x) && isFinite(v.y)) bucket.push({ x: v.x, y: v.y, id: c.pointIds[i] }) })
+      }
+      for (const r of (wt.regions || [])) {
+        const verts = vertsByRegion.get(r.id)
+        if (!verts?.length) continue
+        const hull = this.worldGenerator.convexHull(verts)
+        r.polygon = hull.map(v => ({ x: v.x, y: v.y }))
+        r.pointIds = hull.map(v => v.id)
+      }
+    }
+
     let fixedDistricts = 0
     const cityData = this.gameStateManager.cityDistrictData
     for (const d of (cityData?.districts || [])) {
       if (!d.seedPoint) continue
       const poly = polyBySeedKey.get(keyOf(d.seedPoint))
       if (!poly) continue
-      // Re-anchor any cityData.edgePoints that were part of this district's OLD polygon
-      // (however corrupted) to the corresponding vertex of its restored true polygon.
-      // computeVoronoiCellsHalfPlane's cell has the same vertex COUNT as the original
-      // (verified) but starts from a different vertex/winding, so index-for-index
-      // mapping isn't valid directly — find the rotation (and, defensively, reflection)
-      // of `poly` that best lines up with the OLD polygon's vertex sequence first. A
-      // per-point nearest-distance match (the previous approach) breaks once corruption
-      // exceeds its distance threshold; this only needs the overall cyclic SHAPE to
-      // still resemble the original; a uniform inward push preserves that even when the
-      // absolute drift is large.
-      const oldPoly = d._rawPolygon || d.polygon
-      if (cityData?.edgePoints && oldPoly?.length === poly.length && oldPoly.length >= 3) {
-        const n = poly.length
-        let bestRot = 0, bestFlip = 1, bestScore = Infinity
-        for (const flip of [1, -1]) {
-          for (let r = 0; r < n; r++) {
-            let score = 0
-            for (let i = 0; i < n; i++) {
-              const j = flip === 1 ? (i + r) % n : (((r - i) % n) + n) % n
-              const dx = oldPoly[i].x - poly[j].x, dy = oldPoly[i].y - poly[j].y
-              score += dx * dx + dy * dy
-            }
-            if (score < bestScore) { bestScore = score; bestRot = r; bestFlip = flip }
-          }
-        }
-        const mappedIndex = (i) => bestFlip === 1 ? (i + bestRot) % n : (((bestRot - i) % n) + n) % n
-
-        for (const ep of cityData.edgePoints) {
-          let bestI = -1, bestD2 = Infinity
-          for (let i = 0; i < oldPoly.length; i++) {
-            const dx = ep.x - oldPoly[i].x, dy = ep.y - oldPoly[i].y
-            const d2 = dx * dx + dy * dy
-            if (d2 < bestD2) { bestD2 = d2; bestI = i }
-          }
-          // Only re-anchor points that were actually near THIS district's boundary
-          // (some edgePoints belong to other districts entirely) — half the district's
-          // own shortest edge is a reasonable "could plausibly be one of my vertices,
-          // however corrupted" cutoff.
-          if (bestI < 0) continue
-          let minEdge = Infinity
-          for (let i = 0; i < oldPoly.length; i++) {
-            const a = oldPoly[i], b = oldPoly[(i + 1) % oldPoly.length]
-            minEdge = Math.min(minEdge, Math.hypot(b.x - a.x, b.y - a.y))
-          }
-          if (bestD2 > (minEdge * 2) ** 2) continue
-          const j = mappedIndex(bestI)
-          ep.x = poly[j].x; ep.y = poly[j].y
-          delete ep._rawX; delete ep._rawY
-        }
-      }
       d.polygon = coerceWinding(poly)
       // Terrain plot cells were already processed above, in the same registry — this
       // resolves against their just-refreshed 'terrain' points, so a district lands on
@@ -3197,6 +3312,22 @@ export default class SetupPhase {
     // the (now-reconciled) district pointIds above, instead of remapping through a
     // pre-recovery snapshot that may reference an id mintDeduped just merged away.
     for (const edge of Object.values(cityData?.edges || {})) delete edge._rawPointIds
+
+    // Rebuild cityData.edgePoints straight from the just-reconciled district/edge
+    // pointIds (see _rebuildEdgePoints's own doc comment: "safe to discard and recompute
+    // on every call"). Replaces a former ~50-line brute-force rotation/reflection search
+    // that tried to re-anchor OLD edgePoints coordinates onto the recovered polygon by
+    // SHAPE comparison — that workaround existed only because edgePoints had no id
+    // lineage back to their owning district corner. It was also provably redundant in
+    // the common case: server/index.js's load sequence always calls
+    // _applyRiverCliffPullback() (which itself calls _rebuildEdgePoints) immediately
+    // after this method returns, whenever any district is typed — silently overwriting
+    // whatever the rotation search had just computed. The ONE case that call doesn't
+    // cover — a save with districts created but none yet typed (server/index.js's
+    // `typedDistricts.length` gate) — still needs edgePoints correct (edge-type
+    // assignment/hover doesn't require a typed district), so call it directly here
+    // instead of relying on a later, conditional caller.
+    this._rebuildEdgePoints(cityData)
 
     // Re-resolve every .polygon from the registry AFTER every cell and district has
     // gone through mintDeduped above — not before. mintDeduped's "snap the reused point
@@ -3835,7 +3966,7 @@ export default class SetupPhase {
     // so plot generation can drop the ground beneath each Landmark (ADR-0005).
     const tLandmarks = performance.now()
     markSquareBlocks(blocks, cityData.districts)
-    const { landmarkBuildings, footprints } = new LandmarkPlacer().generate(blocks, cityData.districts)
+    const { landmarkBuildings, footprints } = new LandmarkPlacer().generate(blocks, cityData.districts, this.gameStateManager.pointRegistry)
     cityData.landmarkBuildings = landmarkBuildings
     const squareCount = blocks.filter(b => b.blockType === 'square').length
     console.log(`[perf]   landmarks: ${(performance.now()-tLandmarks).toFixed(1)}ms (${landmarkBuildings.length} landmarks, ${squareCount} squares)`)
@@ -3962,6 +4093,26 @@ export default class SetupPhase {
     const roadEdges = gutterRoadEdges(junctions)
 
     markSquareBlocks(blocks, districts)
+    // Stage D (ADR-0020): resolve blockCorners for square blocks BEFORE the LandmarkPlacer
+    // call below — its _clusterSquares needs real coordinates for centroid/area math, and
+    // once GameStateManager.serialize() conditionally strips blockCorners (any block with
+    // pointIds), a block loaded straight from the save may only have pointIds. Read-only
+    // registry.resolve() here, deliberately NOT passing the registry into generate()
+    // itself — see the next comment for why that stays forbidden.
+    const registry = this.gameStateManager.pointRegistry
+    for (const block of blocks) {
+      if (block.blockCorners || !block.pointIds?.length) continue
+      block.blockCorners = registry.resolve(block.pointIds).map(p => ({ x: p.x, y: p.y, z: p.z }))
+    }
+    // Deliberately NO registry passed into LandmarkPlacer.generate() (unlike
+    // _generateBuildings' own call) — this method re-derives plots on load without
+    // touching cityData.landmarkBuildings, which still holds pointIds minted by the
+    // ORIGINAL _generateBuildings() pass that produced this save. Passing the registry
+    // would clearKind('landmark') and re-mint fresh ids that this call then discards
+    // (footprints here is transient, feeding PlotVoronoiGenerator only) — leaving the
+    // saved landmarkBuildings[].pointIds dangling against deleted registry points.
+    // footprints.polygon (plain {x,y}, no pointIds) is all PlotVoronoiGenerator needs to
+    // drop plot cells under each Landmark.
     const { footprints } = new LandmarkPlacer().generate(blocks, districts)
     const { plots } = new PlotVoronoiGenerator().generate(blocks, districts, junctions, roadEdges, footprints, this.gameStateManager.pointRegistry)
 

@@ -271,5 +271,122 @@ function area(poly) {
   })())
 }
 
+// ── Test: rechainEdge splits a face's boundary segment through intermediate vertices ──
+// See plan "logical-booping-bonbon" (StreetVoronoiGenerator DCEL rewrite) §2(c) —
+// replaces absorbCollinearNodes' "delete edge A->B, insert A->N1,N1->N2,...,Nk->B".
+{
+  const reg = new GroundPointRegistry()
+  const dcel = new DCEL(reg)
+  const p1 = reg.create(0, 0, 0, 'street').id, p2 = reg.create(10, 0, 0, 'street').id
+  const p3 = reg.create(10, 10, 0, 'street').id, p4 = reg.create(0, 10, 0, 'street').id
+  const square = dcel.insertFace([p1, p2, p3, p4], 'terrain-plot', {})
+
+  const he12 = dcel.findHalfEdge(p1, p2)
+  check('starting half-edge p1->p2 exists', !!he12)
+
+  const v3 = reg.create(3, 0, 0, 'street').id, v7 = reg.create(7, 0, 0, 'street').id
+  dcel.rechainEdge(he12.id, [v3, v7])
+
+  const poly = dcel.walkFacePolygon(square.id)
+  check('face boundary now has 6 vertices (was 4)', poly.length === 6)
+  check('boundary order is p1,v3,v7,p2,p3,p4', JSON.stringify(poly) === JSON.stringify([p1, v3, v7, p2, p3, p4]))
+  const resolved = dcel.resolveFacePolygon(square.id)
+  check('area unchanged (10x10=100) — intermediate points are exactly collinear', Math.abs(area(resolved) - 100) < 1e-9)
+
+  check('old direct p1->p2 directed pair no longer resolves', dcel.findHalfEdge(p1, p2) === null)
+  check('new forward chain resolves: p1->v3', dcel.findHalfEdge(p1, v3)?.face === square.id)
+  check('new forward chain resolves: v3->v7', dcel.findHalfEdge(v3, v7)?.face === square.id)
+  check('new forward chain resolves: v7->p2', dcel.findHalfEdge(v7, p2)?.face === square.id)
+  check('reversed void chain resolves: p2->v7', dcel.findHalfEdge(p2, v7)?.face === null)
+  check('reversed void chain resolves: v7->v3', dcel.findHalfEdge(v7, v3)?.face === null)
+  check('reversed void chain resolves: v3->p1', dcel.findHalfEdge(v3, p1)?.face === null)
+
+  // A second face inserted against the FINER vertex sequence should cleanly reclaim
+  // every void placeholder the rechain left behind — proving the reversed chain is
+  // correctly stitched (next/prev), not just individually resolvable.
+  const p5 = reg.create(5, -5, 0, 'street').id
+  const belowFace = dcel.insertFace([p2, v7, v3, p1, p5], 'block', {})
+  const belowPoly = dcel.walkFacePolygon(belowFace.id)
+  check('second face against the finer sequence closes cleanly (5 vertices)', belowPoly.length === 5)
+  check('second face reclaimed the void placeholders (no fresh unrelated mint)', dcel.findHalfEdge(p2, v7).face === belowFace.id)
+
+  // outgoingFan sanity: the new intermediate vertices are real, walkable topology.
+  check('v3 has a valid outgoing fan (not orphaned)', dcel.outgoingFan(v3).length > 0)
+  check('v7 has a valid outgoing fan (not orphaned)', dcel.outgoingFan(v7).length > 0)
+
+  check('empty throughVertexIds is a no-op', (() => {
+    const before = dcel._halfEdgesById.size
+    dcel.rechainEdge(dcel.findHalfEdge(p1, v3).id, [])
+    return dcel._halfEdgesById.size === before
+  })())
+
+  check('rechainEdge throws on an unknown half-edge id', (() => {
+    try { dcel.rechainEdge(999999, [v3]); return false } catch { return true }
+  })())
+
+  check('rechainEdge throws when a new directed pair already exists elsewhere', (() => {
+    // p4->p1 is a real existing boundary edge; routing p3->p4's edge through p1 would
+    // collide with it.
+    const he34 = dcel.findHalfEdge(p3, p4)
+    try { dcel.rechainEdge(he34.id, [p1]); return false } catch { return true }
+  })())
+}
+
+// ── Test: deleteDanglingEdge on a standalone void-void chain ────────────────────────
+// See plan "logical-booping-bonbon" §2(e) — pruneAcuteStubs/removeOrphanComponents'
+// DCEL-native replacement. A real street-graph stub has no face on EITHER side (streets
+// aren't faces at all until buildJunctions closes gutters downstream), so this is built
+// directly via the same low-level mint/link calls insertFace itself uses internally —
+// not through insertFace, which always produces a real face on one side.
+{
+  const reg = new GroundPointRegistry()
+  const dcel = new DCEL(reg)
+  const p6 = reg.create(20, 0, 0, 'street').id
+  const p7 = reg.create(21, 0, 0, 'street').id
+  const p8 = reg.create(22, 0, 0, 'street').id
+
+  const he67 = dcel._mintHalfEdge(p6, null), he76 = dcel._mintHalfEdge(p7, null)
+  he67.twin = he76.id; he76.twin = he67.id
+  dcel._heByDirectedPair.set(`${p6},${p7}`, he67.id)
+  dcel._heByDirectedPair.set(`${p7},${p6}`, he76.id)
+
+  const he78 = dcel._mintHalfEdge(p7, null), he87 = dcel._mintHalfEdge(p8, null)
+  he78.twin = he87.id; he87.twin = he78.id
+  dcel._heByDirectedPair.set(`${p7},${p8}`, he78.id)
+  dcel._heByDirectedPair.set(`${p8},${p7}`, he87.id)
+
+  // Chain the forward walk p6->p7->p8 (he67.next = he78) and the reverse walk
+  // p8->p7->p6 (he87.next = he76) — exactly what rechainEdge itself produces for a
+  // multi-hop void chain.
+  he67.next = he78.id; he78.prev = he67.id
+  he87.next = he76.id; he76.prev = he87.id
+  dcel._setVertexAnchor(p6, he67.id)
+  dcel._setVertexAnchor(p7, he78.id)   // p7's anchor deliberately set to the segment being pruned
+  dcel._setVertexAnchor(p8, he87.id)
+
+  dcel.deleteDanglingEdge(he78.id)
+
+  check('deleted half-edge no longer resolves (forward)', dcel.getHalfEdge(he78.id) === undefined)
+  check('deleted half-edge no longer resolves (twin)', dcel.getHalfEdge(he87.id) === undefined)
+  check('p7->p8 directed pair gone', dcel.findHalfEdge(p7, p8) === null)
+  check('p8->p7 directed pair gone', dcel.findHalfEdge(p8, p7) === null)
+  check('remaining p6->p7 segment survives, now a true dead end (.next cleared)', dcel.getHalfEdge(he67.id)?.next === null)
+  check('remaining p7->p6 segment survives, .prev cleared', dcel.getHalfEdge(he76.id)?.prev === null)
+  check("p7's anchor (was the deleted segment) re-pointed to the surviving he76", reg.get(p7).halfEdge === he76.id)
+  check('p8 is now fully isolated (anchor -> null, no other edge originates there)', reg.get(p8).halfEdge === null)
+
+  check('throws deleting an edge with a real face on one side', (() => {
+    const a = reg.create(0, 100, 0).id, b = reg.create(1, 100, 0).id
+    const c = reg.create(1, 101, 0).id, d = reg.create(0, 101, 0).id
+    dcel.insertFace([a, b, c, d], 'terrain-plot', {})
+    const heAB = dcel.findHalfEdge(a, b)
+    try { dcel.deleteDanglingEdge(heAB.id); return false } catch { return true }
+  })())
+
+  check('throws on an unknown half-edge id', (() => {
+    try { dcel.deleteDanglingEdge(999999); return false } catch { return true }
+  })())
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

@@ -28,6 +28,39 @@ export function resolvePolygon(pointIds, pointsById) {
   return out.length ? out : null
 }
 
+// Remove a mesh (or a Group containing several, e.g. a wall-with-towers) from the scene
+// AND free its GPU-side geometry buffers/shader programs. scene.remove(obj) alone only
+// unlinks it from the render graph — geometry and material (and the compiled shader
+// program backing it) stay allocated on the GPU until explicitly disposed. Every "clear
+// and rebuild from scratch" loop across the renderer classes (TerrainRenderer/
+// GroundRenderer/DistrictRenderer) used to skip this, so every regeneration pass (Apply,
+// Regenerate streets, a fresh terrain sync — confirmed live 2026-07-16, setTerrainData
+// firing 3x on a single page load) leaked that pass's entire mesh set. Confirmed as the
+// direct cause of a live `THREE.WebGLProgram: Shader Error 0 - VALIDATE_STATUS false`
+// (GPU/driver resource exhaustion after repeated leaked rebuilds) — a failed shader
+// compile renders the affected mesh solid black/broken, matching the "dark scattered
+// shapes" visual report that motivated this fix.
+// Traverses so a Group (e.g. DistrictRenderer's wall-plus-tower groups) disposes every
+// child, not just itself. Does not dispose texture maps — every material disposed via
+// this helper (across Terrain/Ground/District) is a freshly-`new`'d, per-instance
+// MeshStandardMaterial/LineBasicMaterial with no texture map, confirmed by reading each
+// call site before wiring this in.
+// Skips any material tagged `userData.shared` (see PartLibrary.js) — GroundRenderer's
+// wood fences reassign their material to the library's shared `floorWoodMaterial`
+// singleton (also used by every building's floor); disposing it here on ONE fence's
+// clear would corrupt it for every other mesh still holding that same reference. Do NOT
+// reuse this helper for BuildingRenderer's own parametric building groups without
+// checking first — those also reuse shared PartLibrary GEOMETRY (not just materials,
+// via lib.get(slot)), a risk this flag alone doesn't cover.
+export function disposeMesh(obj) {
+  if (!obj) return
+  obj.traverse?.(child => {
+    child.geometry?.dispose()
+    const mats = Array.isArray(child.material) ? child.material : [child.material]
+    for (const m of mats) { if (m && !m.userData?.shared) m.dispose() }
+  })
+}
+
 // Ray-cast point-in-polygon test using the crossing-number algorithm.
 export function pointInPolygon(x, y, polygon) {
   let inside = false

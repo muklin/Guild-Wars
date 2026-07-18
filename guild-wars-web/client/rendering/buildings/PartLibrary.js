@@ -70,6 +70,17 @@ export default class PartLibrary {
     this.floorStoneMaterial = makeFloorMaterial({ stone: true })
     this.floorWoodMaterial  = makeFloorMaterial({ stone: false })
 
+    // Every material above is a library-owned singleton shared across every building
+    // (and, since GroundRenderer's fences reuse floorWoodMaterial directly — see its
+    // doc comment — every fence too), never a per-mesh instance. Tag them so
+    // renderUtils.disposeMesh (used by TerrainRenderer/GroundRenderer/DistrictRenderer's
+    // clear-and-rebuild loops) knows to skip disposing them — disposing a shared
+    // material here would break every OTHER mesh still using the same reference, not
+    // just the one being cleared.
+    for (const mat of [this.material, this.stoneMaterial, this.stoneColumnMaterial, this.brickMaterial, this.brickColumnMaterial, this.darkMaterial, this.floorStoneMaterial, this.floorWoodMaterial]) {
+      mat.userData.shared = true
+    }
+
     const loader = new GLTFLoader()
     for (const name of Object.keys(manifest.parts)) {
       const gltf = await loader.loadAsync(`${this.base}/${name}.glb`)

@@ -106,6 +106,7 @@ export default class FeatureManager {
     this._mixers = []
     this._billboardWrappers = []
     this._epoch = 0   // bumped on clear() so in-flight async spawns can self-cancel
+    this._flattened = false   // top-down mode's flat-ground state — see setFlattened
   }
 
   _loadGLTF(path) {
@@ -176,7 +177,8 @@ export default class FeatureManager {
     // keeps every other caller's existing uniform-scale behaviour unchanged.
     if (scaleY != null) wrapper.scale.set(scale, scaleY, scale)
     else wrapper.scale.setScalar(scale)
-    wrapper.position.set(x, worldY, z)
+    wrapper.userData.realY = worldY   // stashed for top-down flatten — see setFlattened
+    wrapper.position.set(x, this._flattened ? 0 : worldY, z)
     wrapper.add(inner)
     this.scene.add(wrapper)
     this._objects.push(wrapper)
@@ -290,10 +292,16 @@ export default class FeatureManager {
           // leaf") when the caller knows it, falling back to the shared baseY otherwise —
           // a fixed baseY for every building in the batch was fine while plots rendered
           // flat, but sinks/floats every house once plots carry real relief.
-          const groundY = p.y ?? baseY
+          const realGroundY = p.y ?? baseY
           wrapper.updateMatrixWorld(true)
           const wb = new THREE.Box3().setFromObject(wrapper)
-          if (isFinite(wb.min.y)) wrapper.position.y = groundY - wb.min.y
+          if (isFinite(wb.min.y)) {
+            // wb.min.y was measured while wrapper.position.y was still _spawnOne's default
+            // (0), so it's a translation-invariant offset — usable to compute the seat at
+            // EITHER the real ground height or the flattened (top-down) one.
+            wrapper.userData.realY = realGroundY - wb.min.y   // overrides _spawnOne's pre-seat stash
+            wrapper.position.y = this._flattened ? -wb.min.y : wrapper.userData.realY
+          }
         }
       }
       const dt = performance.now() - tInst
@@ -369,6 +377,17 @@ export default class FeatureManager {
     if (camera && this._billboardWrappers.length > 0) {
       const cameraYRot = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ').y
       for (const wrapper of this._billboardWrappers) wrapper.rotation.y = cameraYRot
+    }
+  }
+
+  // Top-down mode flattens the whole ground to y=0 (see GroundRenderer.setTerrainFlattened)
+  // — every spawned prop/building needs to drop with it, or trees/fences/GLB houses are
+  // left floating above (or buried under) the now-flat ground beneath them.
+  setFlattened(flat) {
+    this._flattened = flat   // applied to props/buildings not yet spawned — see _spawnOne, spawnBuildings
+    for (const obj of this._objects) {
+      if (obj.userData.realY == null) continue
+      obj.position.y = flat ? 0 : obj.userData.realY
     }
   }
 

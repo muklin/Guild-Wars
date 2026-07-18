@@ -55,7 +55,15 @@ export default class PlotVoronoiGenerator {
     const MAX_BLOCK_VERTS = 48
 
     for (const block of blocks) {
-      const { blockCorners, area, districtId } = block
+      const { area, districtId } = block
+      // Stage D (ADR-0020): regeneratePlots() on load hands this whatever came straight
+      // out of the save's cityData.blocks — once GameStateManager.serialize() stops
+      // persisting blockCorners, this block only has pointIds to work with. Resolve
+      // through the registry first, falling back to blockCorners for an old save that
+      // still carries it (or a registry-less throwaway/test call).
+      const blockCorners = block.blockCorners ?? (registry && block.pointIds
+        ? registry.resolve(block.pointIds).map(p => ({ x: p.x, y: p.y, z: p.z }))
+        : block.blockCorners)
 
       // Squares are pre-marked (markSquareBlocks) before Landmark placement; emit the
       // paved square plot and move on.

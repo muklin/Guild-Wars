@@ -3,6 +3,18 @@
 - Archways are not appearing in game.  I've not yet found one.  
 
 
+# Architecture
+(from the 2026-07-16 architecture review — full HTML report in temp; plan "logical-booping-bonbon" has the StreetVoronoiGenerator detail)
+
+- SetupPhase.js has become a kitchen-sink orchestrator: terrain gen, district assignment, street/block/plot pipeline, river/cliff pullback, District Edge faces, landmark sync, audit, and save/load are all just methods on one class sharing `this.gameStateManager`, no seams between any of them. 30 of the last 40 commits touched this one file. Split into separately-seamed modules (TerrainSetup, DistrictSetup, StreetBlockPlotPipeline, GroundplaneAudit) composed by a thin orchestrator.
+
+- StreetVoronoiGenerator.generate()'s 9 sequential repair passes mutate one shared coordinate array in place, no seams between them, zero test coverage before this session. Continues the DCEL/groundplane work noted below — already underway: DCEL-native operators (collapseNearbyVertices, rechainEdge, deleteDanglingEdge) built + unit-tested, a characterization harness is in place, 3 of 9 passes still need swapping. Top recommendation — already has momentum, not a new decision.
+
+- Mesh disposal is hand-rolled ~20x across TerrainRenderer/GroundRenderer/DistrictRenderer instead of living in one shared MeshLayer module. Fixed the symptom this session (a real GPU leak, confirmed live via a Shader Error) with a disposeMesh() helper called manually at each site — the actual cause (no module owns mesh lifecycle) is still open.
+
+- WorldRenderer.js (28 commits, second only to SetupPhase.js) may be the client-side mirror of the SetupPhase.js problem — camera, minimap, compass, elevation queries, plot/edge picking, flatten/unflatten toggling all on one class. Speculative — wasn't read closely enough this session to confirm before proposing anything.
+
+
 # Features:
 ## General 
  

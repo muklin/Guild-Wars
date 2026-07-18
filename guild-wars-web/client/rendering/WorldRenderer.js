@@ -180,7 +180,14 @@ export default class WorldRenderer {
     this.terrainRenderer  = new TerrainRenderer(this.scene)
     this.districtRenderer = new DistrictRenderer(this.scene)
     this.groundRenderer   = new GroundRenderer(this.scene, this.originalMaterials)
-    this.groundRenderer.getZHeight = (x, y) => this.terrainRenderer.getZHeightAtWorldPos(x, y) ?? 0
+    // Canonical elevation query (checks city plots' own baked z first, terrain plots as
+    // fallback — see getZHeightAtWorldPos below). Every consumer of "ground height at
+    // (x,y)" — ground/block/street fills, building placement, fences — must share this
+    // SAME function, or they silently disagree and buildings sink into/float above the
+    // terrain rendered under them (confirmed live 2026-07-16: walls buried, only roof
+    // ridges poking through risen ground).
+    this.groundRenderer.getZHeight = (x, y) => this.getZHeightAtWorldPos(x, y) ?? 0
+    this.groundRenderer.buildingRenderer.getZHeight = this.groundRenderer.getZHeight
     this.groundRenderer.buildingRenderer.setDirtyCallback(() => this.markDirty())
     this.minimap          = new Minimap()
     this.compass          = new Compass()
@@ -383,9 +390,9 @@ export default class WorldRenderer {
 
   // ── Terrain delegation ──────────────────────────────────────────────────────
 
-  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], hiddenRegions = []) {
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = []) {
     this.districtRenderer.setTerrainWaterData(regions, edges, edgePoints, terrainPlots, pointsById)
-    const result = this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces, hiddenRegions)
+    const result = this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces)
     this._reapplyTopDownFlatten()
     return result
   }
@@ -402,6 +409,7 @@ export default class WorldRenderer {
     if (!this.cameraController?._topDown) return
     this.terrainRenderer.setGroundFlattened(true)
     this.groundRenderer.setTerrainFlattened(true)
+    this.groundRenderer.buildingRenderer.setFlattened(true)
     this.terrainRenderer.terrainPolylines?.setFlattened(true)
     this.terrainRenderer.setDebugMarkersFlattened(true)
   }
@@ -519,6 +527,52 @@ export default class WorldRenderer {
     return this.terrainRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
   }
 
+  // Grid-bucketed spatial index over cityDistrictData.plots (same bounding-box-bucket
+  // technique server-side auditGroundplane.js uses), so getZHeightAtWorldPos/
+  // getPlotAtWorldPos don't linearly scan every plot (650+ in a real city) with a
+  // point-in-polygon test each. getZHeightAtWorldPos is called every camera-move frame
+  // via CameraController.getGroundY — confirmed live 2026-07-16 as a `[Violation]
+  // 'requestAnimationFrame' handler took 63ms` once buildings/fences started routing
+  // through this same query too (previously only a debug hover readout, called far less
+  // often). Lazily rebuilt, invalidated by array reference — setCityDistrictData always
+  // hands over a fresh plots array, so a stale index never survives a real update.
+  _plotSpatialIndex() {
+    const plots = this.cityDistrictData?.plots
+    if (this._plotIndexSource === plots) return this._plotIndexGrid
+    const cellSize = 6
+    const grid = new Map()
+    for (const p of (plots || [])) {
+      const poly = p.blockCorners
+      if (!poly?.length) continue
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const v of poly) {
+        if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x
+        if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y
+      }
+      for (let gx = Math.floor(minX / cellSize); gx <= Math.floor(maxX / cellSize); gx++) {
+        for (let gy = Math.floor(minY / cellSize); gy <= Math.floor(maxY / cellSize); gy++) {
+          const key = `${gx},${gy}`
+          if (!grid.has(key)) grid.set(key, [])
+          grid.get(key).push(p)
+        }
+      }
+    }
+    this._plotIndexSource = plots
+    this._plotIndexGrid = { cellSize, grid }
+    return this._plotIndexGrid
+  }
+
+  // Candidate plots whose bounding box overlaps worldX/worldY's grid cell, in the same
+  // relative order they appear in cityDistrictData.plots — preserves the original linear
+  // scan's "first match in array order wins" semantics for callers that stop at the
+  // first containing polygon, just without testing plots nowhere near the point.
+  _plotsNear(worldX, worldY) {
+    const idx = this._plotSpatialIndex()
+    if (!idx) return []
+    const key = `${Math.floor(worldX / idx.cellSize)},${Math.floor(worldY / idx.cellSize)}`
+    return idx.grid.get(key) || []
+  }
+
   // District z-height (plan "typed-gliding-leaf"): the debug Z readout used to only
   // ever consult terrainRenderer's own terrain-plot data — harmless for Terrain Setup,
   // but meaningless once inside a district, since city-footprint terrain plots are
@@ -530,14 +584,11 @@ export default class WorldRenderer {
   // real, correctly-set ground per that same report) first; fall back to terrain only
   // when nothing city-side contains the point.
   getZHeightAtWorldPos(worldX, worldY) {
-    const plots = this.districtRenderer?.cityDistrictData?.plots
-    if (plots?.length) {
-      for (const p of plots) {
-        if (!p.blockCorners?.length || !pointInPolygon(worldX, worldY, p.blockCorners)) continue
-        let sum = 0, n = 0
-        for (const v of p.blockCorners) { if (isFinite(v.z)) { sum += v.z; n++ } }
-        if (n) return sum / n
-      }
+    for (const p of this._plotsNear(worldX, worldY)) {
+      if (!p.blockCorners?.length || !pointInPolygon(worldX, worldY, p.blockCorners)) continue
+      let sum = 0, n = 0
+      for (const v of p.blockCorners) { if (isFinite(v.z)) { sum += v.z; n++ } }
+      if (n) return sum / n
     }
     return this.terrainRenderer.getZHeightAtWorldPos(worldX, worldY)
   }
@@ -697,7 +748,7 @@ export default class WorldRenderer {
   // ── Guild Headquarters picking ────────────────────────────────────────────────
   // The non-square plot whose polygon contains the point → { id, districtId }.
   getPlotAtWorldPos(worldX, worldY) {
-    for (const p of (this.cityDistrictData?.plots || [])) {
+    for (const p of this._plotsNear(worldX, worldY)) {
       if (p.blockType === 'square') continue
       if (p.blockCorners?.length && pointInPolygon(worldX, worldY, p.blockCorners)) {
         return { id: p.id, districtId: p.districtId }
@@ -989,6 +1040,7 @@ export default class WorldRenderer {
     // restores real relief from the realY stashed on each mesh at build time.
     this.terrainRenderer.setGroundFlattened(isTopDown)
     this.groundRenderer.setTerrainFlattened(isTopDown)
+    this.groundRenderer.buildingRenderer.setFlattened(isTopDown)
     this.terrainRenderer.terrainPolylines?.setFlattened(isTopDown)
     this.terrainRenderer.setDebugMarkersFlattened(isTopDown)
     this._lastAppliedFloorScrollUnits = null   // force _applyFloorScrollClip to re-sync next frame

@@ -150,6 +150,52 @@ export default class GameStateManager {
 
   // Serialize for save/load
   serialize() {
+    // Stage D (ADR-0020): strip materialized x,y coordinate copies that duplicate what
+    // each object's pointIds already resolves through the registry — kept regions/
+    // terrainPlots/riverCliffFaces, district polygons, block corners, and
+    // cityData.edgePoints. Every stripped field is safely reconstructible on load:
+    // SetupPhase._recoverGeometryFromSeeds already rebuilds kept-terrain/district
+    // geometry from seedPoints + the registry UNCONDITIONALLY, regardless of what's in
+    // the save (see its own doc comment), and now also unconditionally calls
+    // _rebuildEdgePoints for cityData.edgePoints (see that method's doc comment: "safe
+    // to discard and recompute on every call") — this changes what gets WRITTEN, not
+    // what a load can recover.
+    // Stripping is PER-OBJECT conditional on pointIds actually being present and
+    // non-empty, not blanket — confirmed live (2026-07-16) a real save has legacy
+    // blocks from before CityBlockGenerator's Stage C registry-threading existed, with
+    // no pointIds at all; for those, blockCorners is the ONLY source of truth and must
+    // survive. The same caution applies to every category here (a cell/district whose
+    // recovery-pass seed lookup misses, the rare case, also keeps stale pointIds with
+    // nothing to resolve against) — `keepOrStrip` encodes "only strip what pointIds can
+    // actually rebuild" once, for every category below.
+    // Hidden (generated-but-unrendered) regions/terrainPlots are merged into
+    // terrain.regions/terrain.terrainPlots (tagged via `.hidden`) rather than kept as
+    // separate arrays, so `keepOrStrip` above already strips their `.polygon` too —
+    // this is safe because `_recoverGeometryFromSeeds` now recomputes EVERY cell in
+    // `terrain.terrainPlots` (and every region in `terrain.regions`) uniformly,
+    // kept or hidden alike, giving hidden geometry a real load-time recovery path it
+    // never had before this merge.
+    // Explicitly NOT stripped at all: worldTerrainData.edgePoints — unlike
+    // cityData.edgePoints there is no _rebuildEdgePoints equivalent for the terrain
+    // side; nothing in the load sequence ever reassigns it, so it would go permanently
+    // empty after one save/reload if stripped. A future session could add that rebuild
+    // function first, then extend the strip here.
+    const keepOrStrip = (obj, coordField) =>
+      obj.pointIds?.length ? { ...obj, [coordField]: undefined } : obj
+    const strippedTerrain = this.groundplane.terrain ? {
+      ...this.groundplane.terrain,
+      regions: (this.groundplane.terrain.regions || []).map(r => keepOrStrip(r, 'polygon')),
+      terrainPlots: (this.groundplane.terrain.terrainPlots || []).map(c => keepOrStrip(c, 'polygon')),
+      riverCliffFaces: (this.groundplane.terrain.riverCliffFaces || []).map(f => keepOrStrip(f, 'polygon')),
+    } : this.groundplane.terrain
+    const strippedCity = this.groundplane.city ? {
+      ...this.groundplane.city,
+      plots: undefined,   // re-derived on load via regeneratePlots(); not saved
+      districts: (this.groundplane.city.districts || []).map(d => keepOrStrip(d, 'polygon')),
+      blocks: (this.groundplane.city.blocks || []).map(b => keepOrStrip(b, 'blockCorners')),
+      edgePoints: undefined,
+    } : this.groundplane.city
+
     return {
       guilds: Array.from(this.guilds.values()),
       districts: Array.from(this.districts.values()),
@@ -165,11 +211,8 @@ export default class GameStateManager {
       // reads the old keys for pre-migration saves.
       groundplane: {
         points: this.groundplane.points.toJSON(),
-        terrain: this.groundplane.terrain,
-        city: this.groundplane.city ? {
-          ...this.groundplane.city,
-          plots: undefined   // re-derived on load via regeneratePlots(); not saved
-        } : this.groundplane.city,
+        terrain: strippedTerrain,
+        city: strippedCity,
         surfaces: this.groundplane.surfaces,
         regions: this.groundplane.regions,
         outerRingEdgeKeys: this.groundplane.outerRingEdgeKeys,
@@ -205,6 +248,20 @@ export default class GameStateManager {
     this.cityLeader = data.cityLeader
     this.successionMethod = data.successionMethod
     this.worldTerrainData = (gp ? gp.terrain : data.worldTerrainData) || this.worldTerrainData
+    // Migrate pre-merge saves: hidden regions/terrainPlots used to be persisted as
+    // separate `hiddenRegions`/`hiddenTerrainPlots` arrays plus a `hiddenNeighborsByRegion`
+    // adjacency map. Nothing reads those separate fields anymore — fold them into
+    // `regions`/`terrainPlots` (tagged `hidden: true`) so an old save's hidden geometry
+    // doesn't silently vanish on load, then drop the legacy fields (hiddenNeighborsByRegion
+    // has no replacement value to migrate — it's recomputed on demand from `edges`).
+    const wt = this.worldTerrainData
+    if (wt && (wt.hiddenRegions?.length || wt.hiddenTerrainPlots?.length)) {
+      wt.regions = [...(wt.regions || []), ...(wt.hiddenRegions || []).map(r => ({ ...r, hidden: true }))]
+      wt.terrainPlots = [...(wt.terrainPlots || []), ...(wt.hiddenTerrainPlots || []).map(p => ({ ...p, hidden: true }))]
+      delete wt.hiddenRegions
+      delete wt.hiddenTerrainPlots
+      delete wt.hiddenNeighborsByRegion
+    }
     this.cityDistrictData = (gp ? gp.city : data.cityDistrictData) || this.cityDistrictData
     this.groundplane.surfaces = gp?.surfaces || []
     this.groundplane.regions = gp?.regions || []

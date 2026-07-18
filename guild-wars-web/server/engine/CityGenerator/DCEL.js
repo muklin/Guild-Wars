@@ -237,6 +237,138 @@ export default class DCEL {
     return faceA
   }
 
+  // Re-route half-edge heId (and its twin) through an ordered chain of intermediate
+  // vertices, splitting one boundary segment origin->dest into
+  // origin->v1->v2->...->vk->dest — without touching which face(s) (or void side) the
+  // edge belongs to on either side. Mechanically similar to mergeFaces's prev/next
+  // relinking, but through vertices unrelated to any shared boundary between two faces —
+  // see plan "logical-booping-bonbon" (StreetVoronoiGenerator DCEL rewrite) §2(c),
+  // replacing StreetVoronoiGenerator.absorbCollinearNodes' "delete edge A->B, insert
+  // edges A->N1,N1->N2,...,Nk->B".
+  //
+  // heId: an existing half-edge whose origin->[twin's origin] segment is being split.
+  // throughVertexIds: ordered intermediate vertex ids (v1..vk), origin->dest order. []
+  //   is a no-op. Both he and its twin keep their original .face/.chain unchanged —
+  //   only .next/.prev (and each new segment's own .origin) change; face=null (void)
+  //   sides are handled the same as real faces, no special-casing needed.
+  // Throws if heId/its twin is missing, or if any NEW directed pair this would create
+  // already exists elsewhere in the topology — refusing to silently overwrite, same
+  // discipline splitVertexGeneral's fwdKey/revKey guard uses.
+  rechainEdge(heId, throughVertexIds) {
+    if (!throughVertexIds?.length) return
+    const he = this._halfEdgesById.get(heId)
+    if (!he) throw new Error(`DCEL.rechainEdge: no half-edge ${heId}`)
+    const twin = this._halfEdgesById.get(he.twin)
+    if (!twin) throw new Error(`DCEL.rechainEdge: half-edge ${heId} has no twin`)
+
+    const origin = he.origin, dest = twin.origin
+    const chain = [origin, ...throughVertexIds, dest]
+    for (let i = 0; i < chain.length - 1; i++) {
+      const key = `${chain[i]},${chain[i + 1]}`, revKey = `${chain[i + 1]},${chain[i]}`
+      if (this._heByDirectedPair.has(key) || this._heByDirectedPair.has(revKey)) {
+        throw new Error(`DCEL.rechainEdge: directed pair ${key} already exists — refusing to overwrite`)
+      }
+    }
+
+    // A void (face:null) side that no face has reclaimed yet never had .next/.prev set
+    // in the first place (see insertFace's void-branch — it mints the placeholder but
+    // only a LATER reclaiming face's own loop-closing pass assigns them) — splice into
+    // an existing neighbor only when one actually exists; an unreclaimed side's new
+    // chain ends stay null, exactly like a freshly-minted void placeholder would.
+    const prevHe = he.prev != null ? this._halfEdgesById.get(he.prev) : null
+    const nextHe = he.next != null ? this._halfEdgesById.get(he.next) : null
+    const prevTwin = twin.prev != null ? this._halfEdgesById.get(twin.prev) : null
+    const nextTwin = twin.next != null ? this._halfEdgesById.get(twin.next) : null
+
+    this._deleteHalfEdgePair(he.id, twin.id)
+
+    // Forward chain (origin -> v1 -> ... -> dest) reuses he's face/chain; reversed chain
+    // (dest -> vk -> ... -> origin) reuses twin's. Twin them pairwise: fwd[i] (chain[i]
+    // -> chain[i+1]) pairs with rev[fwd.length-1-i] (chain[i+1] -> chain[i]).
+    const fwd = [], rev = []
+    for (let i = 0; i < chain.length - 1; i++) {
+      const f = this._mintHalfEdge(chain[i], he.face)
+      f.chain = he.chain
+      this._heByDirectedPair.set(`${chain[i]},${chain[i + 1]}`, f.id)
+      fwd.push(f)
+    }
+    for (let i = chain.length - 1; i > 0; i--) {
+      const r = this._mintHalfEdge(chain[i], twin.face)
+      r.chain = twin.chain
+      this._heByDirectedPair.set(`${chain[i]},${chain[i - 1]}`, r.id)
+      rev.push(r)
+    }
+    for (let i = 0; i < fwd.length; i++) {
+      const r = rev[fwd.length - 1 - i]
+      fwd[i].twin = r.id
+      r.twin = fwd[i].id
+    }
+    for (let i = 0; i < fwd.length - 1; i++) { fwd[i].next = fwd[i + 1].id; fwd[i + 1].prev = fwd[i].id }
+    for (let i = 0; i < rev.length - 1; i++) { rev[i].next = rev[i + 1].id; rev[i + 1].prev = rev[i].id }
+    if (prevHe) { prevHe.next = fwd[0].id; fwd[0].prev = prevHe.id }
+    if (nextHe) { fwd[fwd.length - 1].next = nextHe.id; nextHe.prev = fwd[fwd.length - 1].id }
+    if (prevTwin) { prevTwin.next = rev[0].id; rev[0].prev = prevTwin.id }
+    if (nextTwin) { rev[rev.length - 1].next = nextTwin.id; nextTwin.prev = rev[rev.length - 1].id }
+
+    // Either side's owning face (if real, not void) may have anchored its outerEdge on
+    // the exact half-edge just deleted — repoint to the new chain's first segment on
+    // that side, or the face's own walkFacePolygon would throw on a dangling reference.
+    const heFace = he.face != null ? this._facesById.get(he.face) : null
+    if (heFace?.outerEdge === he.id) heFace.outerEdge = fwd[0].id
+    const twinFace = twin.face != null ? this._facesById.get(twin.face) : null
+    if (twinFace?.outerEdge === twin.id) twinFace.outerEdge = rev[0].id
+
+    this._setVertexAnchor(origin, fwd[0].id)
+    this._setVertexAnchor(dest, rev[0].id)
+    for (let i = 0; i < throughVertexIds.length; i++) this._setVertexAnchor(throughVertexIds[i], fwd[i + 1].id)
+  }
+
+  // Delete a half-edge pair that is provably dangling — void (face:null) on BOTH sides —
+  // splicing any existing chain neighbors together so a longer void chain stays walkable
+  // after removing one hop, same splice shape rechainEdge uses when inserting one. See
+  // plan "logical-booping-bonbon" (StreetVoronoiGenerator DCEL rewrite) §2(e): the
+  // DCEL-native replacement for pruneAcuteStubs/removeOrphanComponents, which delete
+  // dead-end stub edges and small disconnected components respectively.
+  //
+  // Throws if either side has a REAL face — deleting an edge that's part of an actual
+  // face's boundary would corrupt that face (merge or rebuild the face instead; this
+  // primitive is only for topology that was never claimed by one), or if heId is
+  // unknown. Re-anchors either endpoint vertex if it was pointing at the deleted edge,
+  // to any other surviving half-edge originating there, or null if now fully isolated
+  // (a linear scan, not outgoingFan — this loose, not-yet-face-bound graph phase can't
+  // rely on outgoingFan's manifold-fan-walk assumptions holding).
+  deleteDanglingEdge(heId) {
+    const he = this._halfEdgesById.get(heId)
+    if (!he) throw new Error(`DCEL.deleteDanglingEdge: no half-edge ${heId}`)
+    const twin = this._halfEdgesById.get(he.twin)
+    if (!twin) throw new Error(`DCEL.deleteDanglingEdge: half-edge ${heId} has no twin`)
+    if (he.face !== null || twin.face !== null) {
+      throw new Error(`DCEL.deleteDanglingEdge: half-edge ${heId} is part of a real face — not dangling`)
+    }
+
+    const prevHe = he.prev != null ? this._halfEdgesById.get(he.prev) : null
+    const nextHe = he.next != null ? this._halfEdgesById.get(he.next) : null
+    const prevTwin = twin.prev != null ? this._halfEdgesById.get(twin.prev) : null
+    const nextTwin = twin.next != null ? this._halfEdgesById.get(twin.next) : null
+
+    if (prevHe && nextHe) { prevHe.next = nextHe.id; nextHe.prev = prevHe.id }
+    else { if (prevHe) prevHe.next = null; if (nextHe) nextHe.prev = null }
+    if (prevTwin && nextTwin) { prevTwin.next = nextTwin.id; nextTwin.prev = prevTwin.id }
+    else { if (prevTwin) prevTwin.next = null; if (nextTwin) nextTwin.prev = null }
+
+    for (const vId of [he.origin, twin.origin]) {
+      const v = this.points.get(vId)
+      if (!v || (v.halfEdge !== he.id && v.halfEdge !== twin.id)) continue
+      let replacement = null
+      for (const cand of this._halfEdgesById.values()) {
+        if (cand.id !== he.id && cand.id !== twin.id && cand.origin === vId) { replacement = cand.id; break }
+      }
+      v.halfEdge = replacement
+    }
+
+    this._deleteHalfEdgePair(he.id, twin.id)
+  }
+
   // ─── Ephemeral layer lifecycle ──────────────────────────────────────────────
 
   // Drop every half-edge/face built from vertices of the given kind(s) — the DCEL

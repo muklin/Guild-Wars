@@ -90,10 +90,29 @@ function isRealSegment(roadId) {
 
 export default class LandmarkPlacer {
   // blocks: from CityBlockGenerator (square blocks carry blockType==='square').
-  // Returns { landmarkBuildings: [{x,z,rotY,name,districtId}], footprints: [{polygon,districtId}] }.
-  generate(blocks, districts) {
+  // registry (optional, ADR-0020 Stage C): the SHARED GroundPointRegistry, threaded
+  // through exactly like CityBlockGenerator/PlotVoronoiGenerator's own `registry` param
+  // — when passed, every footprint's corners are minted (kind 'landmark', cleared at the
+  // top of this call) so _syncGroundplaneSurfaces can record a real `lm:` Surface per
+  // Landmark instead of the placement having no registry-backed geometry at all. Omit it
+  // (as regeneratePlots() deliberately does — see its own call site comment) when the
+  // caller only needs footprints transiently and must NOT touch already-persisted
+  // landmarkBuildings[].pointIds from a prior _generateBuildings() pass.
+  // Returns { landmarkBuildings: [{x,z,rotY,name,districtId,pointIds?}], footprints: [{polygon,districtId,pointIds?}] }.
+  generate(blocks, districts, registry = null) {
+    if (registry) registry.clearKind('landmark')
     const districtById = new Map((districts || []).map(d => [d.id, d]))
-    const squares = (blocks || []).filter(b => b.blockType === 'square')
+    // Stage D (ADR-0020): _clusterSquares needs real corner coordinates for its
+    // centroid/area math — resolve through the registry when blockCorners is missing
+    // (regeneratePlots() on load hands this whatever's in the save's cityData.blocks;
+    // once GameStateManager.serialize() stops persisting blockCorners, only pointIds
+    // remains), falling back to blockCorners for an old save or a registry-less call.
+    const squares = (blocks || [])
+      .filter(b => b.blockType === 'square')
+      .map(b => (b.blockCorners || !registry || !b.pointIds ? b : {
+        ...b,
+        blockCorners: registry.resolve(b.pointIds).map(p => ({ x: p.x, y: p.y, z: p.z })),
+      }))
     const clusters = this._clusterSquares(squares)
 
     const byDistrict = new Map()
@@ -121,7 +140,13 @@ export default class LandmarkPlacer {
       wanted.sort((a, b) => b.fpArea - a.fpArea)
       dClusters.sort((a, b) => b.area - a.area)   // biggest plaza first
 
-      const polygon = district?.polygon
+      // Stage D (ADR-0020): resolve through the registry first (regeneratePlots() on
+      // load hands this whatever's in the save's cityData.districts — once
+      // GameStateManager.serialize() stops persisting district.polygon, only pointIds
+      // remains), falling back to district.polygon for an old save or a registry-less call.
+      const polygon = (registry && district?.pointIds)
+        ? registry.resolve(district.pointIds).map(p => ({ x: p.x, y: p.y, z: p.z }))
+        : district?.polygon
       const placed = []   // footprints already placed in this district
       for (const { name, m } of wanted) {
         const mw = m.width * MODEL_SCALE, md = m.depth * MODEL_SCALE
@@ -142,10 +167,16 @@ export default class LandmarkPlacer {
         }
         if (!chosen) continue
         placed.push(chosen.fp)
-        landmarkBuildings.push({ x: chosen.pos.x, z: chosen.pos.y, rotY: chosen.rot, name, districtId })
         // Drop plots under the model's TRUE projection (body behind the front door),
         // not the centred placement footprint.
-        footprints.push({ polygon: bodyFootprint(chosen.pos.x, chosen.pos.y, mw, md, off, chosen.rot), districtId })
+        const footprintPolygon = bodyFootprint(chosen.pos.x, chosen.pos.y, mw, md, off, chosen.rot)
+        // Tolerance matches PlotVoronoiGenerator's own 'plot' mint (1e-4) — a landmark
+        // footprint has no adjacency-sharing requirement with neighbouring block/plot
+        // corners (unlike district-edge/river-cliff faces), so this only needs to be
+        // tight enough to dedup a landmark's own 4 corners consistently pass to pass.
+        const pointIds = registry ? registry.mintDeduped(footprintPolygon, 'landmark', 1e-4, { reuseExisting: true }) : null
+        landmarkBuildings.push({ x: chosen.pos.x, z: chosen.pos.y, rotY: chosen.rot, name, districtId, ...(pointIds ? { pointIds } : {}) })
+        footprints.push({ polygon: footprintPolygon, districtId, ...(pointIds ? { pointIds } : {}) })
       }
     }
     return { landmarkBuildings, footprints }

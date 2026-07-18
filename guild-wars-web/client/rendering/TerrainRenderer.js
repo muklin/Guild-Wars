@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import EdgeLineRenderer from './utils/EdgeLineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, clipPolygonToBox, triangulatePolygon, resolvePolygon, posHash } from './utils/renderUtils.js'
+import { disposeOne, disposeAll } from './utils/MeshLayer.js'
 
 const TERRAIN_COLORS = {
   City:          0x808080,
@@ -136,15 +137,13 @@ export default class TerrainRenderer {
     this._clearDebugGroup(this._terrainPlotCenterMeshes)
     this._clearDebugGroup(this._surfaceCornerMeshes)
     this._clearDebugGroup(this._auditFindingLines)
-    for (const obj of this.debugObjects) this.scene.remove(obj)
-    this.debugObjects = []
+    disposeAll(this.scene, this.debugObjects)
   }
 
   _clearDebugGroup(arr) {
-    for (const obj of arr) this.scene.remove(obj)
     const toRemove = new Set(arr)
+    disposeAll(this.scene, arr)
     this.debugObjects = this.debugObjects.filter(o => !toRemove.has(o))
-    arr.length = 0
   }
 
   setTerrainPlotSelected(cellId) {
@@ -280,11 +279,14 @@ export default class TerrainRenderer {
   // Lake/Sea (buildRegionMesh), replacing the stroked-polyline overlay for whichever
   // edges got a face — a chain that couldn't be built (confluence, etc) simply isn't in
   // this array and keeps stroke-rendering via EdgeLineRenderer, unchanged.
-  // hiddenRegions (outer-ring rewrite, 2026-07-13): stored on terrainData for a future
-  // "discover foreign lands" reveal, but currently inert — hover/click hit tests and
-  // renderEdges' "is this edge shown" gate deliberately only look at `regions` (kept),
-  // so the hidden ring stays invisible/non-interactive until that feature exists.
-  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], hiddenRegions = []) {
+  // Hidden (generated-but-unrendered) regions/terrainPlots (outer-ring rewrite,
+  // 2026-07-13; merged into `regions`/`terrainPlots` rather than kept as separate
+  // arrays as of the hidden-terrain-merge refactor) — stored on terrainData for a
+  // future "discover foreign lands" reveal, but currently inert — hover/click hit
+  // tests, renderEdges' "is this edge shown" gate, and renderTerrain all explicitly
+  // filter out `.hidden` entries, so the hidden ring stays invisible/non-interactive
+  // until that feature exists.
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = []) {
     this.clearMarkers()
     console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points,', riverCliffFaces.length, 'river/cliff faces')
     // District z-height (plan "typed-gliding-leaf") surfaced the same gap here as
@@ -298,8 +300,6 @@ export default class TerrainRenderer {
       const z = pointsById?.get(p.id)?.z
       return [p.id, z != null ? { ...p, z } : p]
     }))
-    // Kept for z lookups against data this method doesn't itself resolve (e.g. a coarse
-    // region's convex-hull polygon, still {x,y,id} — see getTerrainCornerAtWorldPos).
     this._pointsById = pointsById || this._pointsById
     if (pointsById) {
       for (const cell of (terrainPlots || [])) {
@@ -308,8 +308,18 @@ export default class TerrainRenderer {
       for (const face of riverCliffFaces) {
         face.polygon = resolvePolygon(face.pointIds, pointsById) ?? face.polygon
       }
+      // Coarse region hulls (Stage D, ADR-0020): TerrainVoronoiGenerator now mints
+      // region.pointIds straight from the same registry-linked vertices its convexHull
+      // reorders — resolve through the registry here too, same as terrainPlots/
+      // riverCliffFaces above, instead of trusting the server's materialized convenience
+      // copy. Falls back to the copy when pointIds is missing (e.g. an old save from
+      // before this field existed). One loop covers kept + hidden regions alike — both
+      // now live in the same `regions` array (tagged via `.hidden`).
+      for (const region of (regions || [])) {
+        region.polygon = resolvePolygon(region.pointIds, pointsById) ?? region.polygon
+      }
     }
-    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces, hiddenRegions: hiddenRegions || [] }
+    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces }
     this.renderTerrain(regions, terrainPlots || [])
     // Re-enabled in Terrain mode itself (plan "typed-gliding-leaf", user-confirmed
     // 2026-07-14 — the bank-path/confluence artifacts that motivated the 2026-07-11
@@ -331,8 +341,7 @@ export default class TerrainRenderer {
   // already renders Lake/Sea).
   renderRiverCliffFaces(faces) {
     this.riverCliffFaceMeshes ??= new Map()
-    this.riverCliffFaceMeshes.forEach(mesh => this.scene.remove(mesh))
-    this.riverCliffFaceMeshes.clear()
+    disposeAll(this.scene, this.riverCliffFaceMeshes)
     for (const face of faces || []) {
       const mesh = this.buildRegionMesh(face)
       if (!mesh) continue
@@ -342,11 +351,15 @@ export default class TerrainRenderer {
   }
 
   renderTerrain(regions, terrainPlots) {
-    this.regionMeshes.forEach(mesh => this.scene.remove(mesh))
-    this.regionMeshes.clear()
-    this.terrainPlotMeshes.forEach(mesh => this.scene.remove(mesh))
-    this.terrainPlotMeshes.clear()
+    disposeAll(this.scene, this.regionMeshes)
+    disposeAll(this.scene, this.terrainPlotMeshes)
     this.regionTerrainPlots.clear()
+
+    // regions/terrainPlots now carry hidden (generated-but-unrendered) entries merged
+    // in, tagged via `.hidden` — filter them out here rather than relying on their
+    // absence from the array, since presence-based exclusion no longer holds.
+    regions = regions.filter(r => !r.hidden)
+    terrainPlots = (terrainPlots || []).filter(p => !p.hidden)
 
     if (terrainPlots && terrainPlots.length > 0) {
       const regionMap = new Map(regions.map(r => [r.id, r]))
@@ -547,7 +560,10 @@ export default class TerrainRenderer {
     // boundary just cuts an ugly, meaningless line across what reads as one continuous
     // body of water.
     const WATER_TYPES = new Set(['Sea', 'Lake'])
-    const regionsById = new Map((this.terrainData?.regions || []).map(r => [r.id, r]))
+    // Kept regions only — regions/terrainPlots now carry hidden entries merged in
+    // (tagged via `.hidden`), so "is this edge shown" must filter explicitly instead of
+    // relying on hidden regions being absent from the array.
+    const regionsById = new Map((this.terrainData?.regions || []).filter(r => !r.hidden).map(r => [r.id, r]))
     const isWaterWaterEdge = (edge) => {
       const a = regionsById.get(edge.regionA), b = regionsById.get(edge.regionB)
       return !!a && !!b && WATER_TYPES.has(a.assignedType) && WATER_TYPES.has(b.assignedType)
@@ -905,8 +921,7 @@ export default class TerrainRenderer {
   // ── Threats and trades ──────────────────────────────────────────────────────
 
   renderThreats(threats, regions) {
-    this.threatMeshes.forEach(m => this.scene.remove(m))
-    this.threatMeshes = []
+    disposeAll(this.scene, this.threatMeshes)
     if (!threats?.length || !regions) return
     const regionMap = new Map(regions.map(r => [r.id, r]))
     const geo = new THREE.OctahedronGeometry(0.7)
@@ -922,10 +937,8 @@ export default class TerrainRenderer {
   }
 
   renderTrades(tradingDestinations, terrainData, featureManager) {
-    this.tradeMeshes.forEach(m => this.scene.remove(m))
-    this.tradeMeshes = []
-    this.roadMeshes.forEach(m => this.scene.remove(m))
-    this.roadMeshes = []
+    disposeAll(this.scene, this.tradeMeshes)
+    disposeAll(this.scene, this.roadMeshes)
     if (!tradingDestinations?.length || !terrainData?.regions) return
     const regionMap = new Map(terrainData.regions.map(r => [r.id, r]))
     const cellsByRegion = new Map()
@@ -1093,17 +1106,13 @@ export default class TerrainRenderer {
   // city phase the trade road is a real street-graph member rendered by
   // StreetRenderer, so the ribbon is cleared to avoid double-rendering the path.
   clearTradeRoadRibbon() {
-    this.roadMeshes.forEach(m => this.scene.remove(m))
-    this.roadMeshes = []
+    disposeAll(this.scene, this.roadMeshes)
   }
 
   clearMarkers() {
-    this.threatMeshes.forEach(m => this.scene.remove(m))
-    this.threatMeshes = []
-    this.tradeMeshes.forEach(m => this.scene.remove(m))
-    this.tradeMeshes = []
-    this.roadMeshes.forEach(m => this.scene.remove(m))
-    this.roadMeshes = []
+    disposeAll(this.scene, this.threatMeshes)
+    disposeAll(this.scene, this.tradeMeshes)
+    disposeAll(this.scene, this.roadMeshes)
     this.featureManager?.clear()
     this.spawnedFeatureRegions.clear()
   }
@@ -1127,11 +1136,11 @@ export default class TerrainRenderer {
     const cellIds = this.regionTerrainPlots.get(cityRegion.id) || []
     for (const cellId of cellIds) {
       const mesh = this.terrainPlotMeshes.get(cellId)
-      if (mesh) { this.scene.remove(mesh); this.terrainPlotMeshes.delete(cellId) }
+      if (mesh) { disposeOne(this.scene, mesh); this.terrainPlotMeshes.delete(cellId) }
     }
     this.regionTerrainPlots.delete(cityRegion.id)
     const regionMesh = this.regionMeshes.get(cityRegion.id)
-    if (regionMesh) { this.scene.remove(regionMesh); this.regionMeshes.delete(cityRegion.id) }
+    if (regionMesh) { disposeOne(this.scene, regionMesh); this.regionMeshes.delete(cityRegion.id) }
   }
 
   // Remove all non-city terrain plot meshes — called when ground terrain plots take over
@@ -1143,24 +1152,27 @@ export default class TerrainRenderer {
       if (regionId === cityRegionId) continue
       for (const cellId of cellIds) {
         const mesh = this.terrainPlotMeshes.get(cellId)
-        if (mesh) { this.scene.remove(mesh); this.terrainPlotMeshes.delete(cellId) }
+        if (mesh) { disposeOne(this.scene, mesh); this.terrainPlotMeshes.delete(cellId) }
       }
       this.regionTerrainPlots.delete(regionId)
     }
     // GroundRenderer takes over river/cliff face rendering too, from this point on (see
     // TerrainPlotConverter's riverCliffFaces param) — retire these meshes the same way
     // terrain-plot fills above are retired, or the two would double-render.
-    this.riverCliffFaceMeshes?.forEach(mesh => this.scene.remove(mesh))
-    this.riverCliffFaceMeshes?.clear()
+    if (this.riverCliffFaceMeshes) disposeAll(this.scene, this.riverCliffFaceMeshes)
   }
 
   // ── Hit testing ─────────────────────────────────────────────────────────────
 
   getRegionAtWorldPos(worldX, worldY) {
     if (!this.terrainData) return null
-    const terrainPlots = this.terrainData.terrainPlots
-    if (terrainPlots && terrainPlots.length > 0) {
-      const regionMap = new Map(this.terrainData.regions.map(r => [r.id, r]))
+    // Kept only — regions/terrainPlots now carry hidden entries merged in (tagged via
+    // `.hidden`); a hidden plot/region must stay non-interactive, same as before the
+    // merge when it simply wasn't present in these arrays at all.
+    const terrainPlots = (this.terrainData.terrainPlots || []).filter(p => !p.hidden)
+    const keptRegions = this.terrainData.regions.filter(r => !r.hidden)
+    if (terrainPlots.length > 0) {
+      const regionMap = new Map(keptRegions.map(r => [r.id, r]))
       for (const cell of terrainPlots) {
         if (cell.polygon && pointInPolygon(worldX, worldY, cell.polygon)) {
           return regionMap.get(cell.parentRegionId) || null
@@ -1168,7 +1180,7 @@ export default class TerrainRenderer {
       }
       return null
     }
-    for (const region of this.terrainData.regions) {
+    for (const region of keptRegions) {
       if (pointInPolygon(worldX, worldY, region.polygon)) return region
     }
     return null
@@ -1185,9 +1197,9 @@ export default class TerrainRenderer {
     let closestDistance = threshold
     // Same "both sides shown" gate as renderEdges — this hit-test scans
     // terrainData.edges directly (proximity-based, not mesh raycasting), so it isn't
-    // automatically covered by renderEdges' filtering. A hidden region never appears in
-    // terrainData.regions, so regionsById simply won't have it.
-    const regionsById = new Map((this.terrainData?.regions || []).map(r => [r.id, r]))
+    // automatically covered by renderEdges' filtering. Filter out `.hidden` regions
+    // explicitly — they're merged into terrainData.regions now, not absent from it.
+    const regionsById = new Map((this.terrainData?.regions || []).filter(r => !r.hidden).map(r => [r.id, r]))
     for (const edgeId in this.terrainData.edges) {
       const edge = this.terrainData.edges[edgeId]
       if (!regionsById.has(edge.regionA) || !regionsById.has(edge.regionB)) continue

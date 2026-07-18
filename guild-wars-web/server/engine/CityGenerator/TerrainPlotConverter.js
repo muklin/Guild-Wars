@@ -71,7 +71,18 @@ export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = []
   let plotId = 0
 
   for (const cell of terrainPlots) {
-    const poly = cell.polygon.map((v, i) => ({ x: v.x, y: v.y, z: v.z ?? zOf(cell.pointIds?.[i]) }))
+    // Stage D (ADR-0020): prefer cell.polygon when it's already present — it's the
+    // freshly-computed value for THIS pass and must win over a registry read, which
+    // could disagree if some other kind's mintDeduped call touched a shared vertex
+    // between when cell.polygon was set and now (self-heal snaps by kind, but a stale
+    // read here would still be wrong-by-construction to prefer). Only resolve through
+    // the registry when polygon is genuinely absent (a save with blockCorners-style
+    // fields stripped) — same priority order as every other site touched this stage.
+    const poly = cell.polygon
+      ? cell.polygon.map((v, i) => ({ x: v.x, y: v.y, z: v.z ?? zOf(cell.pointIds?.[i]) }))
+      : (cell.pointIds?.length && registry
+        ? cell.pointIds.map(id => registry.get(id)).filter(Boolean).map(p => ({ x: p.x, y: p.y, z: p.z }))
+        : null)
     if (!poly || poly.length < 3) continue
 
     const hasRoad = roadSegments.some(seg => polygonCrossesSegment(poly, seg.a, seg.b))
@@ -91,7 +102,11 @@ export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = []
   }
 
   for (const face of riverCliffFaces) {
-    const poly = (face.polygon || []).map((v, i) => ({ x: v.x, y: v.y, z: v.z ?? zOf(face.pointIds?.[i]) }))
+    const poly = face.polygon?.length
+      ? face.polygon.map((v, i) => ({ x: v.x, y: v.y, z: v.z ?? zOf(face.pointIds?.[i]) }))
+      : (face.pointIds?.length && registry
+        ? face.pointIds.map(id => registry.get(id)).filter(Boolean).map(p => ({ x: p.x, y: p.y, z: p.z }))
+        : [])
     if (poly.length < 3) continue
     plots.push({
       id: `rcf${face.id}`,

@@ -394,6 +394,12 @@ export default class TerrainVoronoiGenerator {
     // future "discover foreign lands" feature).
     const hiddenTerrainPlots = validTerrainPlots.filter(plot => !keptSet.has(plot.parentRegionId))
     validTerrainPlots = validTerrainPlots.filter(plot => keptSet.has(plot.parentRegionId))
+    // Tag `hidden` in place rather than keeping two permanently separate collections —
+    // generate()'s return merges these into one `terrainPlots` array (see the `return`
+    // below); every downstream consumer distinguishes kept vs hidden via this flag now,
+    // not by which array an object lives in.
+    for (const plot of validTerrainPlots) plot.hidden = false
+    for (const plot of hiddenTerrainPlots) plot.hidden = true
     console.log(`Kept ${validTerrainPlots.length} terrain plots across ${selectedSeeds.length} inside regions (hid ${hiddenTerrainPlots.length} outside plots across ${outsideSeeds.length} outside regions)`)
 
     const edges = raw.edges
@@ -497,14 +503,26 @@ export default class TerrainVoronoiGenerator {
     // boundary, never shared with another Surface, so no reconciliation risk to justify
     // registry membership.
     for (let i = 0; i < selectedSeeds.length; i++) selectedSeeds[i].z = regionBaseZ.get(i) ?? BASE_TERRAIN_Z
-    const regions = selectedSeeds.map((seed, i) => ({
-      id: i,
-      seedPoint: seed,
-      polygon: this.convexHull(vertsByRegion.get(i) || []),
-      assignedType: null,
-      isEdge: regionIdsTouchingVoid.has(i),
-      description: ''
-    }))
+    // pointIds: every vertex bucketed above already carries a real registry `.id` (Step
+    // 4 minted the originals, Step 5.5 minted new clip-boundary vertices — every plot's
+    // polygon is fully id'd by the time this step runs) and convexHull only reorders/
+    // subsets the SAME objects (see its own doc comment on the Step-4-adjacent call
+    // above), so `.id` is read directly here — no re-mint, no tolerance-based dedup,
+    // exact by construction (Stage D, ADR-0020: gives terrain regions a real Surface
+    // reference instead of an orphaned coordinate-only hull).
+    const regions = selectedSeeds.map((seed, i) => {
+      const polygon = this.convexHull(vertsByRegion.get(i) || [])
+      return {
+        id: i,
+        seedPoint: seed,
+        polygon,
+        pointIds: polygon.map(v => v.id),
+        assignedType: null,
+        isEdge: regionIdsTouchingVoid.has(i),
+        description: '',
+        hidden: false
+      }
+    })
 
     // Step 6b: same merged-hull treatment for the OUTSIDE regions — not rendered or
     // exposed to the client today, but retained on the return value rather than
@@ -524,25 +542,31 @@ export default class TerrainVoronoiGenerator {
       }
     }
     for (let i = 0; i < outsideSeeds.length; i++) outsideSeeds[i].z = regionBaseZ.get(i + regionCount) ?? BASE_TERRAIN_Z
-    const hiddenRegions = outsideSeeds.map((seed, i) => ({
-      id: i + regionCount,
-      seedPoint: seed,
-      polygon: this.convexHull(hiddenVertsByRegion.get(i) || []),
-      assignedType: null,
-      isEdge: false,
-      description: ''
-    }))
+    const hiddenRegions = outsideSeeds.map((seed, i) => {
+      const polygon = this.convexHull(hiddenVertsByRegion.get(i) || [])
+      return {
+        id: i + regionCount,
+        seedPoint: seed,
+        polygon,
+        pointIds: polygon.map(v => v.id),
+        assignedType: null,
+        isEdge: false,
+        description: '',
+        hidden: true
+      }
+    })
 
-    // Plain-object form (id → array of hidden ids) — Maps don't survive JSON
-    // serialization (save files, worldTerrainData), and this needs to persist so a
-    // later terrain assignment (SetupPhase.js's _revealAdjacentHiddenTerrain) can
-    // look up what to reveal.
-    const hiddenNeighborsByRegion = {}
-    for (const [regionId, hiddenIds] of raw.hiddenNeighborsByRegion) {
-      hiddenNeighborsByRegion[regionId] = [...hiddenIds]
+    // Hidden regions/plots are merged into the same arrays as kept ones (tagged via
+    // `hidden`), not returned as separate collections — "which hidden regions border
+    // a kept region" is answered on demand from `edges`' regionA/regionB fields
+    // (SetupPhase._hiddenNeighborsOf) instead of a separately persisted adjacency map.
+    return {
+      worldSize,
+      regions: [...regions, ...hiddenRegions],
+      terrainPlots: [...validTerrainPlots, ...hiddenTerrainPlots],
+      edges,
+      edgePoints
     }
-
-    return { worldSize, regions, terrainPlots: validTerrainPlots, edges, edgePoints, hiddenRegions, hiddenTerrainPlots, hiddenNeighborsByRegion }
   }
 
   // Trims the leading/trailing run of out-of-bounds points from every edge chain,
@@ -869,12 +893,12 @@ export default class TerrainVoronoiGenerator {
     // A KEPT region with a segment whose only neighbour(s) are HIDDEN (or genuinely
     // nothing) is an edge region — the new, adjacency-based isEdge (see generate()'s
     // Step 6), replacing the old post-hoc square-touching geometry test entirely.
+    // "Which specific hidden region(s) does a kept region border" (needed by
+    // SetupPhase.js's _revealAdjacentHiddenTerrain) is no longer tracked here — it's
+    // computed on demand from wt.edges' regionA/regionB fields (SetupPhase._hiddenNeighborsOf),
+    // since regions/terrainPlots merged hidden entries into the kept arrays with a
+    // `hidden` flag instead of persisting a separate adjacency index.
     const regionIdsTouchingVoid = new Set()
-    // Which specific hidden region(s) each kept region borders — needed for the
-    // "assigning Sea/Mountains/Desert/Ice Sheet reveals adjacent hidden terrain"
-    // feature (SetupPhase.js's _revealAdjacentHiddenTerrain): regionIdsTouchingVoid
-    // alone is just a boolean, this tracks WHICH hidden region(s) to reveal.
-    const hiddenNeighborsByRegion = new Map()
 
     // Every cell (kept OR hidden) is processed as regionA now — a hidden region's
     // own edges (to another hidden region, or to a kept one) are generated too, not
@@ -915,7 +939,7 @@ export default class TerrainVoronoiGenerator {
         if (otherCells.length === 0) {
           // No neighbouring fine cell shares this edge at all — a true topological
           // boundary (literal generation-area edge, or a convex-hull artefact).
-          // isEdge/hiddenNeighborsByRegion are KEPT-region concepts only.
+          // isEdge is a KEPT-region concept only.
           if (regionAKept) regionIdsTouchingVoid.add(regionA)
           continue
         }
@@ -927,17 +951,12 @@ export default class TerrainVoronoiGenerator {
         // no void flag).
         if (neighborIds.every(r => r === regionA)) continue
 
-        // isEdge/hiddenNeighborsByRegion bookkeeping stays KEPT-regionA-only, exactly
-        // as before — a hidden region never gets an isEdge flag or reveal tracking.
+        // isEdge bookkeeping stays KEPT-regionA-only, exactly as before — a hidden
+        // region never gets an isEdge flag.
         if (regionAKept) {
           const keptNeighborIds = neighborIds.filter(r => r !== regionA && keptSet.has(r))
           if (keptNeighborIds.length === 0) {
             regionIdsTouchingVoid.add(regionA)
-            for (const nid of neighborIds) {
-              if (nid === regionA || keptSet.has(nid)) continue
-              if (!hiddenNeighborsByRegion.has(regionA)) hiddenNeighborsByRegion.set(regionA, new Set())
-              hiddenNeighborsByRegion.get(regionA).add(nid)
-            }
           }
         }
 
@@ -976,7 +995,7 @@ export default class TerrainVoronoiGenerator {
       }
     }
 
-    return { edges, edgePoints: Array.from(edgePointsMap.values()), regionIdsTouchingVoid, hiddenNeighborsByRegion }
+    return { edges, edgePoints: Array.from(edgePointsMap.values()), regionIdsTouchingVoid }
   }
 
   sortSegmentsIntoPolyline(segments) {

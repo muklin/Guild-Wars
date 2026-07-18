@@ -165,6 +165,80 @@ export default class GroundPointRegistry {
     return ids
   }
 
+  // Cluster a batch of EXISTING point ids by proximity and pick one survivor per cluster
+  // — the registry-native replacement for a hand-rolled union-find near-duplicate merge
+  // (see plan "logical-booping-bonbon", StreetVoronoiGenerator DCEL rewrite §2(a); the
+  // pattern being replaced is StreetVoronoiGenerator.generate()'s own union-find pass +
+  // snapPerimeterJunctionsToBoundary, both "collapse nearby vertices into one, biased
+  // toward a preferred member" operations).
+  //
+  // Unlike mintDeduped, this NEVER mints a new point — every survivor is one of the
+  // input ids, unchanged, at its own existing position. It does not move/average
+  // anything; a caller that needs the old union-find's "average toward boundary
+  // members" position behavior must do that itself, explicitly, after choosing which
+  // survivor id to keep — this primitive only decides WHICH id survives, not WHERE it
+  // ends up. That split matters here: this registry has no face/topology awareness of
+  // its own, so it cannot know whether relocating a survivor is safe (a vertex already
+  // referenced by an inserted DCEL face would corrupt that face's geometry if moved
+  // silently) — only the caller, who knows what's been built so far, can decide that.
+  //
+  // candidateIds: point ids to consider clustering (ids missing from the registry are
+  //   silently skipped, same as resolve()).
+  // tolerance: clustering radius — points within this distance may collapse together.
+  // bias: optional (id) => boolean. A cluster containing at least one id where bias(id)
+  //   is true survives as that id (first such id found, in candidateIds order); every
+  //   other cluster survives as its first member in candidateIds order. No bias means
+  //   "first member wins" throughout — same underspecified-but-deterministic semantics
+  //   the union-find code being replaced already has (its own doc comment: "a voronoi id
+  //   often wins" — arbitrary but stable given a fixed input order).
+  // Returns Map<inputId, survivorId> — every candidate id maps to itself (if solo) or to
+  // its cluster's survivor. Does not mutate the registry.
+  collapseNearbyVertices(candidateIds, tolerance, { bias } = {}) {
+    const entries = candidateIds.map(id => ({ id, p: this._byId.get(id) })).filter(e => e.p)
+    const tol2 = tolerance * tolerance
+    const cellSize = tolerance * 4
+    const cellKey = (x, y) => `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`
+
+    const parent = entries.map((_, i) => i)
+    const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i] } return i }
+    const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb }
+
+    const buckets = new Map()
+    entries.forEach((e, i) => {
+      const key = cellKey(e.p.x, e.p.y)
+      if (!buckets.has(key)) buckets.set(key, [])
+      buckets.get(key).push(i)
+    })
+    entries.forEach((e, i) => {
+      const [gx, gy] = cellKey(e.p.x, e.p.y).split(',').map(Number)
+      for (let dgx = -1; dgx <= 1; dgx++) {
+        for (let dgy = -1; dgy <= 1; dgy++) {
+          const bucket = buckets.get(`${gx + dgx},${gy + dgy}`)
+          if (!bucket) continue
+          for (const j of bucket) {
+            if (j <= i) continue
+            const other = entries[j]
+            const dx = e.p.x - other.p.x, dy = e.p.y - other.p.y
+            if (dx * dx + dy * dy < tol2) union(i, j)
+          }
+        }
+      }
+    })
+
+    const groups = new Map()
+    entries.forEach((e, i) => {
+      const r = find(i)
+      if (!groups.has(r)) groups.set(r, [])
+      groups.get(r).push(e.id)
+    })
+    const result = new Map()
+    for (const members of groups.values()) {
+      const survivor = (bias && members.find(id => bias(id))) || members[0]
+      for (const id of members) result.set(id, survivor)
+    }
+    return result
+  }
+
   get size() {
     return this._byId.size
   }

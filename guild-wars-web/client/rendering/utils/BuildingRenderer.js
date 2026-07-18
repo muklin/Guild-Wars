@@ -275,6 +275,7 @@ export default class BuildingRenderer {
     this._roofsVisible = true    // roofs shown by default; hidden in top-down mode
     this._interbuildingVisible = false  // party walls between buildings kept but hidden by default; shown in top-down mode
     this._seedOffset = 0         // mixed into position hashes; 0 = stable (main game default)
+    this._flattened = false      // top-down mode's flat-ground state — see setFlattened
   }
 
   // Randomise the seed offset so the next render() produces a different layout.
@@ -291,9 +292,20 @@ export default class BuildingRenderer {
   _plotGroundZ(plot) {
     const poly = plot?.blockCorners
     if (!poly?.length) return GROUND_Y
-    let sum = 0, n = 0
-    for (const v of poly) { if (v.z != null && isFinite(v.z)) { sum += v.z; n++ } }
-    return n ? sum / n : GROUND_Y
+    let sum = 0, n = 0, cx = 0, cy = 0
+    for (const v of poly) {
+      cx += v.x; cy += v.y
+      if (v.z != null && isFinite(v.z)) { sum += v.z; n++ }
+    }
+    if (n) return sum / n
+    // No corner carries a baked z (CityBlockGenerator's idwZ found no nearby control
+    // point for this plot) — previously fell back to flat GROUND_Y (0) here, while
+    // GroundRenderer._makeFill's OWN fallback for the same unset vertices samples the
+    // live terrain height instead. On hilly ground the two disagreed and buildings sank
+    // into the (correctly) risen ground fill around them — confirmed live 2026-07-16,
+    // walls buried with only the roof ridge poking through. Sample the same canonical
+    // source (this.getZHeight, wired by WorldRenderer) so both agree.
+    return this.getZHeight?.(cx / poly.length, cy / poly.length) ?? GROUND_Y
   }
 
   clear(scene) {
@@ -308,6 +320,15 @@ export default class BuildingRenderer {
     if (this.featureManager) {
       for (const obj of this.featureManager._objects) obj.visible = on
     }
+  }
+
+  // Top-down mode flattens the ground to y=0 (see GroundRenderer.setTerrainFlattened) —
+  // buildings (parametric AND GLB) need to drop with it or they're left sitting at real
+  // terrain height above/below the now-flat ground.
+  setFlattened(flat) {
+    this._flattened = flat   // applied to buildings not yet assembled — see the paraQueue loop in render()
+    for (const g of this._paraGroups) g.position.y = flat ? GROUND_Y : (g.userData.realY ?? GROUND_Y)
+    this.featureManager?.setFlattened(flat)
   }
 
   // Roofs are a tagged child sub-group (userData.isRoof) inside each parametric building's
@@ -354,7 +375,10 @@ export default class BuildingRenderer {
     const gen = ++this._renderGen
     this.clear(scene)
     if (!plots?.length) return
-    if (!this.featureManager) this.featureManager = new FeatureManager(scene)
+    if (!this.featureManager) {
+      this.featureManager = new FeatureManager(scene)
+      this.featureManager._flattened = this._flattened   // sync in case setFlattened() was called before this lazy create
+    }
 
     const districtById = new Map((districtData?.districts || []).map(d => [d.id, d]))
     const housePlacements = []
@@ -446,7 +470,8 @@ export default class BuildingRenderer {
             continue
           }
           g.scale.setScalar(PARA_SCALE)
-          g.position.set(x, y ?? GROUND_Y, z)
+          g.userData.realY = y ?? GROUND_Y   // stashed for top-down flatten — see setFlattened
+          g.position.set(x, this._flattened ? GROUND_Y : g.userData.realY, z)
           g.rotation.y = rotY
           g.visible = this._visible
           this._applyRoofVisible(g, this._roofsVisible)

@@ -1,11 +1,13 @@
 {
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "45000"
+  },
   "permissions": {
     "allow": [
-      "Bash(npm run lint)",
-      "Bash(npm run test)",
       "Bash(npm run build)",
       "Bash(git status)",
-      "Bash(git diff *)"
+      "Bash(git diff *)",
+      "Skill(update-config)"
     ],
     "deny": [
       "Read(.env*)",
@@ -13,11 +15,5 @@
       "Write(package-lock.json)",
       "Write(node_modules/*)"
     ]
-  },
-  "hooks": {
-    "afterWrite": "npm run lint -- --fix {{file}}"
-  },
-  "env": {
-    "BASH_DEFAULT_TIMEOUT_MS": "45000"
   }
 }

@@ -2,7 +2,9 @@ import * as THREE from 'three'
 import EdgeLineRenderer from './utils/EdgeLineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, centroid, triangulatePolygon, resolvePolygon } from './utils/renderUtils.js'
+import { disposeOne, disposeAll } from './utils/MeshLayer.js'
 import { DISTRICTS, DEFAULTS } from '../../shared/districtConfig.js'
+import { extractBoundaryChain } from '../../shared/boundaryChain.js'
 
 // Sub-class colours ('Noble', 'Monarchy', etc., as looked up via DISTRICT_COLORS.get())
 // and plain district-type colours ('Market', 'Military', ...) are derived from
@@ -78,15 +80,13 @@ export default class DistrictRenderer {
 
   clearDebugObjects() {
     this._clearDebugGroup(this._districtDebugMeshes)
-    for (const obj of this.debugObjects) this.scene.remove(obj)
-    this.debugObjects = []
+    disposeAll(this.scene, this.debugObjects)
   }
 
   _clearDebugGroup(arr) {
-    for (const obj of arr) this.scene.remove(obj)
     const toRemove = new Set(arr)
+    disposeAll(this.scene, arr)
     this.debugObjects = this.debugObjects.filter(o => !toRemove.has(o))
-    arr.length = 0
   }
 
   clearHover() {
@@ -174,8 +174,7 @@ export default class DistrictRenderer {
   }
 
   renderDistricts(districts) {
-    this.districtMeshes.forEach(mesh => this.scene.remove(mesh))
-    this.districtMeshes.clear()
+    disposeAll(this.scene, this.districtMeshes)
 
     for (const district of districts) {
       if (district.assignedType) continue   // assigned districts are covered by streets + plots; no polygon needed
@@ -234,54 +233,17 @@ export default class DistrictRenderer {
   // Returns null if no boundary junctions for this pair exist yet.
   // Uses per-connection edgeKind/left/right (not junction-level) so that corner
   // junctions shared with other boundary edges are handled correctly.
+  // Pure graph walk lives in shared/boundaryChain.js (also used server-side by
+  // SetupPhase._buildDistrictEdgeFaces — see plan "typed-giggling-giraffe" Addendum 2
+  // Stage C) — this stays a thin wrapper over this renderer's own live cityDistrictData.
   _extractBoundaryChain(districtA, districtB, edgeKind) {
-    const junctions = this.cityDistrictData?.streetGraph?.junctions
-    if (!junctions?.length) return null
-
-    // StreetVoronoiGenerator rewrites a connection's null left/right (outer edge, facing
-    // unclaimed land) to the string 'terrain' once terrain plots exist nearby — which is
-    // as soon as any building generation has run, i.e. essentially always. An outer edge
-    // here is passed in with districtB === null (see callers), so treat 'terrain' the
-    // same as null or every Docks/Wall/Canal/MainRoad chain on an outer boundary silently
-    // fails to resolve (no chain found → no mesh built, even though the junctions exist).
-    const norm = (v) => (v === 'terrain' ? null : v)
-    const matchesConn = (c) =>
-      c.edgeKind === edgeKind &&
-      ((norm(c.left) === districtA && norm(c.right) === districtB) ||
-       (norm(c.left) === districtB && norm(c.right) === districtA))
-
-    // A junction is in the chain if it has at least one connection along this boundary.
-    const matches = junctions.filter(j => (j.connections || []).some(matchesConn))
-    if (matches.length < 2) return null
-
-    const jMap = new Map(matches.map(j => [j.id, j]))
-    const adj = new Map()
-    for (const j of matches) {
-      adj.set(j.id, (j.connections || []).filter(c => matchesConn(c) && jMap.has(c.toId)).map(c => c.toId))
-    }
-
-    // Start from an endpoint (degree 1 within the chain) or any node if it's a loop
-    const start = matches.find(j => (adj.get(j.id) || []).length <= 1) ?? matches[0]
-    const chain = [start]
-    const visited = new Set([start.id])
-    let curr = start
-    while (true) {
-      const next = (adj.get(curr.id) || []).find(id => !visited.has(id))
-      if (next == null) break
-      const nj = jMap.get(next)
-      if (!nj) break
-      chain.push(nj)
-      visited.add(nj.id)
-      curr = nj
-    }
-    return chain.length >= 2 ? chain : null
+    return extractBoundaryChain(this.cityDistrictData?.streetGraph, districtA, districtB, edgeKind)
   }
 
   renderCityEdges(edges) {
     this.cityPolylines?.dispose()
     this.cityPolylines = null
-    this.cityEdgeMeshes.forEach(mesh => this.scene.remove(mesh))
-    this.cityEdgeMeshes.clear()
+    disposeAll(this.scene, this.cityEdgeMeshes)
     this.wallAnimations.clear()
     this.selectedCityEdgeIds.clear()
     this._districtById = null  // invalidate cached map
@@ -815,8 +777,7 @@ export default class DistrictRenderer {
   }
 
   clearDistrictLayer() {
-    this.districtMeshes.forEach(m => this.scene.remove(m))
-    this.districtMeshes.clear()
+    disposeAll(this.scene, this.districtMeshes)
   }
 
   updateDistrictColor(districtId, districtType) {
@@ -887,7 +848,7 @@ export default class DistrictRenderer {
       const polyMesh = this.cityPolylines?.getEdgeMesh(edgeId)
       if (polyMesh) polyMesh.visible = false
       const old = this.cityEdgeMeshes.get(edgeId)
-      if (old) this.scene.remove(old)
+      if (old) disposeOne(this.scene, old)
       const chain = this._extractBoundaryChain(edge.districtA, edge.districtB, 'Wall')
       const group = this.buildWallMesh(edge, edgeId, chain ?? null)
       if (group) {
@@ -910,7 +871,7 @@ export default class DistrictRenderer {
         const polyMesh = this.cityPolylines?.getEdgeMesh(edgeId)
         if (polyMesh) polyMesh.visible = false
         const old = this.cityEdgeMeshes.get(edgeId)
-        if (old) this.scene.remove(old)
+        if (old) disposeOne(this.scene, old)
         const mesh = this.buildCanalMesh(chain, edgeId)
         if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
         else console.warn(`[canal-debug] updateCityEdgeColor ${edgeId}: buildCanalMesh returned null for a ${chain.length}-point chain — nothing rendered`)
@@ -925,7 +886,7 @@ export default class DistrictRenderer {
         : null
       if (chain?.length >= 2) {
         const old = this.cityEdgeMeshes.get(edgeId)
-        if (old) this.scene.remove(old)
+        if (old) disposeOne(this.scene, old)
         const mesh = this.buildDocksMesh(chain, edgeId)
         if (mesh) { this.scene.add(mesh); this.cityEdgeMeshes.set(edgeId, mesh) }
         // Base polyline stays visible — buildDocksMesh only covers water-adjacent segments.

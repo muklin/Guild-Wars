@@ -6,6 +6,7 @@ import { makeBrickMaterial } from './buildings/brickMaterial.js'
 import { DISTRICT_COLORS } from './DistrictRenderer.js'
 import BuildingRenderer, { PARA_SCALE } from './utils/BuildingRenderer.js'
 import { posHash, pointInPolygon } from './utils/renderUtils.js'
+import { disposeOne, disposeAll } from './utils/MeshLayer.js'
 
 // Merged renderer for everything that sits on the ground plane: streets,
 // junction caps, city squares, plot fills, block outlines, and fences.
@@ -346,10 +347,9 @@ export default class GroundRenderer {
   }
 
   _clearDebugGroup(arr) {
-    for (const obj of arr) this.scene.remove(obj)
     const toRemove = new Set(arr)
+    disposeAll(this.scene, arr)
     this.debugObjects = this.debugObjects.filter(o => !toRemove.has(o))
-    arr.length = 0
   }
 
   clearDebugObjects() {
@@ -358,8 +358,7 @@ export default class GroundRenderer {
     this._clearDebugGroup(this._blockSeedMeshes)
     this._clearDebugGroup(this._plotDebugMeshes)
     this._clearDebugGroup(this._surfaceCornerMeshes)
-    for (const obj of this.debugObjects) this.scene.remove(obj)
-    this.debugObjects = []
+    disposeAll(this.scene, this.debugObjects)
   }
 
 
@@ -540,8 +539,7 @@ export default class GroundRenderer {
 
   clearStreetLayer() {
     this.clearBoundaryChainHighlight()
-    for (const m of this.streetMeshes) this.scene.remove(m)
-    this.streetMeshes = []
+    disposeAll(this.scene, this.streetMeshes)
   }
 
   renderGutters(streetGraph) {
@@ -587,8 +585,7 @@ export default class GroundRenderer {
   }
 
   clearGutterLayer() {
-    for (const m of this.gutterMeshes) this.scene.remove(m)
-    this.gutterMeshes = []
+    disposeAll(this.scene, this.gutterMeshes)
   }
 
 
@@ -804,8 +801,7 @@ export default class GroundRenderer {
   }
 
   clearBlockLayer() {
-    for (const m of this.blockMeshes) this.scene.remove(m)
-    this.blockMeshes = []
+    disposeAll(this.scene, this.blockMeshes)
   }
 
   setBlockHover(blockId) {
@@ -966,7 +962,6 @@ export default class GroundRenderer {
     // strip), just split into 3 vertex buffers by material instead of one flat tan colour.
     // Segments are also kept on `this._fenceSegments` (world-space {a,b} pairs) so other
     // systems (e.g. WalkMode's collision) can treat them as solid without re-deriving them.
-    const top = FENCE_BASE_Y + FENCE_HEIGHT
     const woodVerts = [], stoneVerts = [], brickVerts = []
     this._fenceSegments = []
     // Two adjacent plots both have the SAME shared boundary edge in their own
@@ -987,7 +982,6 @@ export default class GroundRenderer {
     const stoneWallHalfThick = stonePostHalfW * 0.6   // stone/brick: a proper two-sided wall, not a zero-thickness plane
     const woodBeamHalfThick = woodPostHalfW
     const woodBeamHeight = FENCE_HEIGHT * 0.3
-    const woodBeamBaseY = FENCE_BASE_Y + FENCE_HEIGHT - woodBeamHeight * 0.5   // straddles the top edge
 
     // This plot's own building's ground-floor wall material, where known — the fence
     // matches it (wood/plaster -> wood fence; stone/granite -> stone fence; brick ->
@@ -1015,6 +1009,13 @@ export default class GroundRenderer {
       const seed = posHash(fcx / poly.length, fcy / poly.length)
       if (this._rand(seed) >= FENCE_FRACTION) continue
 
+      // Follows the SAME ground height this plot's own building sits at (previously a
+      // flat FENCE_BASE_Y=0 always — a fence stayed at true Y=0 while its plot's ground
+      // fill and building rose/fell with terrain relief, floating or burying it).
+      const plotY = FENCE_BASE_Y + (this.buildingRenderer._plotGroundZ(plot) ?? 0)
+      const top = plotY + FENCE_HEIGHT
+      const woodBeamBaseY = plotY + FENCE_HEIGHT - woodBeamHeight * 0.5   // straddles the top edge
+
       const wallMat = wallMatByPlot.get(plot)
       let fenceType
       if (wallMat === 'brick') fenceType = 'brick'
@@ -1039,13 +1040,13 @@ export default class GroundRenderer {
           if (fenceType === 'wood') {
             // Thin single plane (unchanged) + a top rail/beam running its full length.
             targetVerts.push(
-              ax, FENCE_BASE_Y, ay,  bx, FENCE_BASE_Y, by,  bx, top, by,
-              ax, FENCE_BASE_Y, ay,  bx, top, by,           ax, top, ay,
+              ax, plotY, ay,  bx, plotY, by,  bx, top, by,
+              ax, plotY, ay,  bx, top, by,    ax, top, ay,
             )
             pushWallBox(targetVerts, ax, ay, bx, by, woodBeamBaseY, woodBeamHeight, woodBeamHalfThick)
           } else {
             // Stone/brick: a proper two-sided wall with a flat top, not a zero-thickness plane.
-            pushWallBox(targetVerts, ax, ay, bx, by, FENCE_BASE_Y, FENCE_HEIGHT, stoneWallHalfThick)
+            pushWallBox(targetVerts, ax, ay, bx, by, plotY, FENCE_HEIGHT, stoneWallHalfThick)
           }
           this._fenceSegments.push({ a: { x: ax, y: ay }, b: { x: bx, y: by } })
 
@@ -1057,20 +1058,22 @@ export default class GroundRenderer {
             const nPosts = Math.max(1, Math.round(segLen / postSpacing))
             for (let p = 0; p <= nPosts; p++) {
               const t = (p / nPosts) * segLen
-              pushPostQuads(targetVerts, ax + pux * t, ay + puy * t, FENCE_BASE_Y, FENCE_HEIGHT, postHalfW, pux, puy)
+              pushPostQuads(targetVerts, ax + pux * t, ay + puy * t, plotY, FENCE_HEIGHT, postHalfW, pux, puy)
             }
           }
         }
       }
     }
 
-    for (const m of this._fenceMeshes) this.scene.remove(m)
-    this._fenceMeshes = []
+    disposeAll(this.scene, this._fenceMeshes)
     const buildFenceMesh = (verts, fallbackColor) => {
       if (!verts.length) return null
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
       geom.computeVertexNormals()
+      // Real per-vertex height (verts already carry each plot's own ground Y — see the
+      // fence loop above), kept for top-down flatten/unflatten (see setTerrainFlattened).
+      geom.userData.realY = verts.filter((_, i) => i % 3 === 1)
       const mat = new THREE.MeshStandardMaterial({ color: fallbackColor, roughness: 0.9, metalness: 0, side: THREE.DoubleSide, emissive: fallbackColor, emissiveIntensity: 0.12 })
       const mesh = new THREE.Mesh(geom, mat)
       this.scene.add(mesh)
@@ -1111,8 +1114,7 @@ export default class GroundRenderer {
   // Geometry is batched per material into a handful of merged meshes (mergeGeometries),
   // not one mesh per post/panel — a city has hundreds of fenced plots.
   _buildFences(plots, lib) {
-    for (const m of (this._fenceMeshes || [])) this.scene.remove(m)
-    this._fenceMeshes = []
+    disposeAll(this.scene, this._fenceMeshes)
     this._fenceSegments = []
 
     const charHeight = PARA_SCALE                          // matches WalkMode.CHAR_HEIGHT (1 * PARA_SCALE)
@@ -1251,16 +1253,16 @@ export default class GroundRenderer {
 
   clearPlotLayer({ preserveTerrainPlots = false } = {}) {
     for (const m of this.plotMeshes) {
-      // When preserving terrain plots, skip removing their meshes from the scene.
+      // When preserving terrain plots, skip removing (and disposing!) their meshes —
+      // they're still in active use, not being rebuilt this call.
       if (preserveTerrainPlots && this._terrainPlots.some(p => this._terrainPlotMeshMap.get(p.id) === m)) continue
-      this.scene.remove(m)
+      disposeOne(this.scene, m)
     }
     this.plotMeshes    = preserveTerrainPlots ? [...this.plotMeshes.filter(m => this._terrainPlots.some(p => this._terrainPlotMeshMap.get(p.id) === m))] : []
     this._plotFills    = []
     this._squareFills  = []
     this._fenceSegments = []
-    for (const m of this._fenceMeshes) this.scene.remove(m)
-    this._fenceMeshes = []
+    disposeAll(this.scene, this._fenceMeshes)
     this._districtHighlight = []
     this.buildingRenderer.clear(this.scene)
     if (!preserveTerrainPlots) {
@@ -1321,19 +1323,23 @@ export default class GroundRenderer {
 
   // Top-down mode reinstates the floor-scroll clip plane (user-confirmed 2026-07-13),
   // which only behaves correctly against a flat world — see TerrainRenderer's matching
-  // method. Only terrain-type fills (_terrainPlotMeshMap) ever carry real per-vertex
-  // relief; block/plot/street/square fills are already flat (GROUND_Y = 0), so this is
-  // a no-op for them.
+  // method. Block/plot/street/square fills are NO LONGER always flat (getZHeight now
+  // gives them real relief too — see _makeFill) so they need flattening exactly like
+  // terrain-type fills; confirmed live 2026-07-16 that skipping them here left streets/
+  // blocks/buildings sitting at real height while top-down expected everything at y=0.
   setTerrainFlattened(flat) {
-    for (const mesh of this._terrainPlotMeshMap.values()) {
+    const flattenMesh = (mesh) => {
       const geo = mesh?.geometry
       const realY = geo?.userData?.realY
-      if (!realY) continue
+      if (!realY) return
       const pos = geo.attributes.position
       for (let i = 0; i < realY.length; i++) pos.array[i * 3 + 1] = flat ? 0 : realY[i]
       pos.needsUpdate = true
       geo.computeVertexNormals()
     }
+    for (const mesh of this._terrainPlotMeshMap.values()) flattenMesh(mesh)
+    for (const f of this._plotFills) flattenMesh(f.mesh)
+    for (const mesh of this._fenceMeshes) flattenMesh(mesh)
   }
 
   // Switch plot bases between per-district colours (during setup) and uniform grassy brown.
