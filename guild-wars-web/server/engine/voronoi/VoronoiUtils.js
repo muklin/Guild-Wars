@@ -254,7 +254,10 @@ export function clipPolygonToSide(poly, la, lb, ref) {
     if (inA) out.push(A)
     if ((dA < 0) !== (dB < 0)) {
       const t = dA / (dA - dB)
-      out.push({ x: A.x + t * (B.x - A.x), y: A.y + t * (B.y - A.y) })
+      // z lerped when both endpoints carry one — see _clipByHalfEdge's fix note (same
+      // dropped-z bug, same fallout: plot corners silently flattened downstream).
+      const z = (A.z != null && B.z != null) ? A.z + t * (B.z - A.z) : undefined
+      out.push({ x: A.x + t * (B.x - A.x), y: A.y + t * (B.y - A.y), z })
     }
   }
   return out.length >= 3 ? out : null
@@ -323,6 +326,18 @@ function _clipByHalfEdge(poly, A, ABx, ABy, cSide) {
   if (ins.every(Boolean)) return [poly]
   if (ins.every(v => !v)) return []
 
+  // z, when both endpoints have one — lerped for a new crossing point, copied straight
+  // through for a kept vertex (t=0 case below). Missing on either side (a caller that
+  // never carries z at all) yields undefined, same as omitting the field entirely — a
+  // later IDW/getZHeight fallback fills it in, same convention as every other z-less
+  // vertex in this pipeline. Fixed 2026-07-19: this function used to always drop z,
+  // silently flattening every subdivided plot corner to whatever a downstream registry
+  // mint defaulted to (z ?? 0) — a REAL 0, not absent, so the z-fill pass after it
+  // treated the corner as already-resolved and never IDW-interpolated the correct
+  // height (confirmed live: blocks/streets correctly elevated, every plot/building/
+  // tree/fence built from a clipped plot corner flat at 0).
+  const lerpZ = (P, Q, t) => (P.z != null && Q.z != null) ? P.z + t * (Q.z - P.z) : undefined
+
   // Collect inside arcs. Starting at an outside vertex makes every arc a clean
   // entry → inside-verts → exit run.
   let start = 0
@@ -335,18 +350,18 @@ function _clipByHalfEdge(poly, A, ABx, ABy, cSide) {
     const inA = ins[i], inB = ins[j]
     if (!inA && inB) {                                   // entry crossing → new arc
       const t = sc[i] / (sc[i] - sc[j])
-      const e = { x: Av.x + t * (Bv.x - Av.x), y: Av.y + t * (Bv.y - Av.y) }
+      const e = { x: Av.x + t * (Bv.x - Av.x), y: Av.y + t * (Bv.y - Av.y), z: lerpZ(Av, Bv, t) }
       arc = { pts: [e], entryT: tAlong(e.x, e.y), exitT: 0 }
     } else if (inA && !inB) {                            // exit crossing → close arc
       if (arc) {
-        arc.pts.push({ x: Av.x, y: Av.y })
+        arc.pts.push({ x: Av.x, y: Av.y, z: Av.z })
         const t = sc[i] / (sc[i] - sc[j])
-        const e = { x: Av.x + t * (Bv.x - Av.x), y: Av.y + t * (Bv.y - Av.y) }
+        const e = { x: Av.x + t * (Bv.x - Av.x), y: Av.y + t * (Bv.y - Av.y), z: lerpZ(Av, Bv, t) }
         arc.pts.push(e); arc.exitT = tAlong(e.x, e.y)
         arcs.push(arc); arc = null
       }
     } else if (inA && inB && arc) {                      // interior vertex
-      arc.pts.push({ x: Av.x, y: Av.y })
+      arc.pts.push({ x: Av.x, y: Av.y, z: Av.z })
     }
   }
   if (!arcs.length) return []

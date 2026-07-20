@@ -81,6 +81,7 @@ try {
   }
   // Regenerate all plots (city block + terrain) from saved blocks and junctions.
   let regeneratedCount = 0
+  console.log(`[zheight-diag] boot: cityDistrictData.blocks=${gameStateManager.cityDistrictData?.blocks?.length ?? 'none'} streetGraph=${!!gameStateManager.cityDistrictData?.streetGraph} plots=${gameStateManager.cityDistrictData?.plots?.length ?? 'none'}`)
   if (gameStateManager.cityDistrictData?.blocks?.length) {
     regeneratedCount = setupPhase.regeneratePlots()
   }
@@ -90,8 +91,12 @@ try {
   } else if (pulledBack) {
     await autoSave()
   }
-} catch {
-  console.log('No auto-save found, starting fresh')
+} catch (e) {
+  if (e.code === 'ENOENT') {
+    console.log('No auto-save found, starting fresh')
+  } else {
+    console.error('[manifold-diag] auto-load threw AFTER a save was found — state may be partially loaded:', e.stack || e)
+  }
 }
 
 // ── Multiplayer middleware ─────────────────────────────────────────────────────
@@ -307,6 +312,7 @@ app.post('/api/setup/terrain/assign', requireActiveSeat, async (req, res) => {
       edges: wt.edges,
       edgePoints: wt.edgePoints,
       riverCliffFaces: wt.riverCliffFaces || [],
+      hillsWallFaces: wt.hillsWallFaces || [],
       pointRegistry: gameStateManager.pointRegistry.toJSON(),
       auditFindings: gameStateManager.lastAuditFindings || [],
       auditCounts: gameStateManager.lastAuditCounts || null,
@@ -342,6 +348,7 @@ app.post('/api/setup/terrain/edge', requireActiveSeat, async (req, res) => {
       edges: wt.edges,
       edgePoints: wt.edgePoints,
       riverCliffFaces: wt.riverCliffFaces || [],
+      hillsWallFaces: wt.hillsWallFaces || [],
       pointRegistry: gameStateManager.pointRegistry.toJSON(),
       auditFindings: gameStateManager.lastAuditFindings || [],
       auditCounts: gameStateManager.lastAuditCounts || null,
@@ -376,6 +383,7 @@ app.post('/api/setup/terrain/edges', requireActiveSeat, async (req, res) => {
       edges: wt.edges,
       edgePoints: wt.edgePoints,
       riverCliffFaces: wt.riverCliffFaces || [],
+      hillsWallFaces: wt.hillsWallFaces || [],
       pointRegistry: gameStateManager.pointRegistry.toJSON(),
       auditFindings: gameStateManager.lastAuditFindings || [],
       auditCounts: gameStateManager.lastAuditCounts || null,

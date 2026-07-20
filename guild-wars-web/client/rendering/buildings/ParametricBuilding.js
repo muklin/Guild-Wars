@@ -291,6 +291,16 @@ export function assemble(spec, lib) {
     // — see BuildingRenderer.setRoofsVisible.
     const roofGroup = new THREE.Group()
     const wallsGroup = new THREE.Group()
+    // Walk Mode collision (2026-07-19, "hitbox tracking to prevent the character going
+    // on the roof", same mechanism as GroundRenderer._fenceSegments): one entry per
+    // drawn wall interval, in BUILDING-LOCAL space (BuildingRenderer transforms these to
+    // world space using the same x/z/rotY/PARA_SCALE it places the group with — see its
+    // own comment at the assemble() call site). yMin/yMax (local, ×PARA_SCALE by the
+    // caller) make collision height-aware: PgUp/PgDn above/below a wall's own floor
+    // passes through it, matching the ask. Archway spans are excluded (real passages);
+    // door bays within an otherwise-solid interval are NOT excluded (bay-level door
+    // gaps aren't tracked here) — a known limitation, not attempted this pass.
+    const wallSegments = []
     // Party walls shared with a NEIGHBOUR BUILDING (not a sibling wing of this same
     // building) are kept rather than suppressed, but routed here instead of wallsGroup —
     // hidden by default, shown only in top-down (see BuildingRenderer.setInterbuildingWallsVisible).
@@ -437,6 +447,13 @@ export function assemble(spec, lib) {
               const [aStart, aEnd] = archEdges[i]
               const clipStart = Math.max(aStart, t0), clipEnd = Math.min(aEnd, t1)
               if (clipEnd > clipStart) archBayRange = [((clipStart - t0) / (t1 - t0)) * nBays, ((clipEnd - t0) / (t1 - t0)) * nBays]
+            }
+            // Collision segment for this wall interval (see wallSegments' own comment) —
+            // skipped for an archway span (real passage), kept for every other interval
+            // that reaches this point (party walls included — you can't walk through
+            // those either).
+            if (!archBayRange) {
+              wallSegments.push({ ax: s0x, ay: s0y, bx: s0x + ux * segL, by: s0y + uy * segL, yMin: yBase, yMax: yBase + floorH })
             }
             // Uprights snapped to bay boundaries (both ends + up to 4 interior, ≤6 total),
             // so windows/doors at bay CENTRES always sit between uprights, never on one.
@@ -658,6 +675,7 @@ export function assemble(spec, lib) {
     const builtInterbuilding = mergeBuilding(interbuildingGroup)
     builtInterbuilding.userData.interbuilding = true
     built.add(builtInterbuilding)
+    built.userData.wallSegments = wallSegments
     return built
   }
 

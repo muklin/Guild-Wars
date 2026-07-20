@@ -270,6 +270,7 @@ export default class BuildingRenderer {
     this._lib = null             // PartLibrary once loaded
     this._libPromise = null      // loading promise (singleton)
     this._paraGroups = []        // THREE.Groups added for parametric buildings
+    this._wallSegments = []      // { ax, ay, bx, by, yMin, yMax } world-space — Walk Mode collision, mirrors GroundRenderer._fenceSegments
     this._renderGen = 0          // incremented each render; async callbacks abort if stale
     this._visible = true         // buildings shown by default; persists across regenerations
     this._roofsVisible = true    // roofs shown by default; hidden in top-down mode
@@ -291,7 +292,10 @@ export default class BuildingRenderer {
   // per-footprint-corner precision.
   _plotGroundZ(plot) {
     const poly = plot?.blockCorners
-    if (!poly?.length) return GROUND_Y
+    if (!poly?.length) {
+      if (!this._diagNoPoly) { this._diagNoPoly = true; console.log('[zheight-diag] _plotGroundZ: plot has no blockCorners at all — plot:', plot?.id, plot) }
+      return GROUND_Y
+    }
     let sum = 0, n = 0, cx = 0, cy = 0
     for (const v of poly) {
       cx += v.x; cy += v.y
@@ -305,6 +309,7 @@ export default class BuildingRenderer {
     // into the (correctly) risen ground fill around them — confirmed live 2026-07-16,
     // walls buried with only the roof ridge poking through. Sample the same canonical
     // source (this.getZHeight, wired by WorldRenderer) so both agree.
+    if (!this._diagNoZ) { this._diagNoZ = true; console.log('[zheight-diag] _plotGroundZ: no corner had finite z — plot:', plot?.id, 'corners:', poly, 'getZHeight wired:', !!this.getZHeight) }
     return this.getZHeight?.(cx / poly.length, cy / poly.length) ?? GROUND_Y
   }
 
@@ -312,6 +317,7 @@ export default class BuildingRenderer {
     this.featureManager?.clear()
     for (const g of this._paraGroups) scene?.remove(g)
     this._paraGroups = []
+    this._wallSegments = []
   }
 
   setBuildingsVisible(on) {
@@ -478,6 +484,24 @@ export default class BuildingRenderer {
           this._applyInterbuildingVisible(g, this._interbuildingVisible)
           scene.add(g)
           this._paraGroups.push(g)
+          // Walk Mode wall collision (see ParametricBuilding.js's wallSegments comment) —
+          // transform this building's local-space segments into world space using the
+          // SAME x/z/rotY/PARA_SCALE/realY it was just placed with. realY (not
+          // g.position.y) is used for the Y basis so collision stays correct even if a
+          // rebuild happens to run while top-down-flattened (an edge case this session
+          // never actually exercises, but cheap to get right).
+          const cosR = Math.cos(rotY), sinR = Math.sin(rotY)
+          for (const s of (g.userData.wallSegments || [])) {
+            const wax = x + (s.ax * PARA_SCALE) * cosR + (s.ay * PARA_SCALE) * sinR
+            const waz = z - (s.ax * PARA_SCALE) * sinR + (s.ay * PARA_SCALE) * cosR
+            const wbx = x + (s.bx * PARA_SCALE) * cosR + (s.by * PARA_SCALE) * sinR
+            const wbz = z - (s.bx * PARA_SCALE) * sinR + (s.by * PARA_SCALE) * cosR
+            this._wallSegments.push({
+              ax: wax, ay: waz, bx: wbx, by: wbz,
+              yMin: g.userData.realY + s.yMin * PARA_SCALE,
+              yMax: g.userData.realY + s.yMax * PARA_SCALE,
+            })
+          }
         }
         console.log(`[perf] BuildingRenderer para assembly done: ${(performance.now() - tPara).toFixed(1)}ms (${paraQueue.length} buildings)`)
         this._markDirty?.()
@@ -1215,7 +1239,7 @@ export default class BuildingRenderer {
         if (!pointInPolygon(px, pz, poly)) continue
         const scale = 0.104 + this._rand(seed + 3) * 0.064   // small (−20%)
         const treeGlb = TREE_GLBS[Math.floor(this._rand(seed + 5) * TREE_GLBS.length)]
-        placements.push({ x: px, z: pz, rotY: this._rand(seed + 4) * Math.PI * 2, glbPath: treeGlb, scale })
+        placements.push({ x: px, z: pz, y: plotZ, rotY: this._rand(seed + 4) * Math.PI * 2, glbPath: treeGlb, scale })
         placed++
       }
     }

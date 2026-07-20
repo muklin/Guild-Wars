@@ -298,12 +298,14 @@ export default class CityBlockGenerator {
     // District z-height Tier 2 (plan "typed-gliding-leaf"): IDW-interpolate each block
     // corner's z from the nearby, already-z-aware junctions/gutters (Tier 1, see
     // StreetVoronoiGenerator.generate()) belonging to the same district. Block corners
-    // are ephemeral gutter-graph points with no durable registry-backed z of their own
-    // (unlike a District's own boundary corners), so this interpolates fresh every call
-    // rather than resolving anything by id. Junctions without a Tier-1 z (e.g. a caller
-    // that ran StreetVoronoiGenerator without a registry) simply yield no control points
-    // for their district, and blockCorners are left without z — same fallback GroundRenderer
-    // already uses for any z-less vertex.
+    // ARE registry-backed (block.pointIds, minted by _traceFaces — but at a hardcoded
+    // z=0, before this pass ever runs), so every corner's computed z is written to both
+    // the ephemeral blockCorners array AND its registry point below — leaving the
+    // registry copy at its z=0 mint value would silently undo this for any consumer that
+    // resolves corners via pointIds instead of blockCorners. Junctions without a Tier-1 z
+    // (e.g. a caller that ran StreetVoronoiGenerator without a registry) simply yield no
+    // control points for their district, and blockCorners are left without z — same
+    // fallback GroundRenderer already uses for any z-less vertex.
     {
       const controlPointsByDistrict = new Map()
       const controlPointsFor = (districtId) => {
@@ -321,12 +323,34 @@ export default class CityBlockGenerator {
         controlPointsByDistrict.set(districtId, pts)
         return pts
       }
+      const _loggedDistricts = new Set()   // TEMP diagnostic — remove once root cause confirmed
       for (const block of blocks) {
         const controls = controlPointsFor(block.districtId)
-        for (const v of block.blockCorners) {
-          if (v.z != null) continue
-          const z = idwZ(v.x, v.y, controls)
-          if (z != null) v.z = z
+        if (!_loggedDistricts.has(block.districtId)) {
+          _loggedDistricts.add(block.districtId)
+          console.log(`[zheight-diag] block Tier2 district=${block.districtId} controls=${controls.length} sampleZ=${controls.slice(0, 3).map(c => c.z.toFixed(2)).join(',')}`)
+        }
+        for (let i = 0; i < block.blockCorners.length; i++) {
+          const v = block.blockCorners[i]
+          if (v.z == null) {
+            const z = idwZ(v.x, v.y, controls)
+            if (z != null) v.z = z
+            else if (!_loggedDistricts.has(`null-${block.districtId}`)) {
+              _loggedDistricts.add(`null-${block.districtId}`)
+              console.log(`[zheight-diag] idwZ returned null for block ${block.id} corner (${v.x.toFixed(2)},${v.y.toFixed(2)}) district=${block.districtId} controls=${controls.length}`)
+            }
+          }
+          // Keep the registry-backed copy (block.pointIds, minted at z=0 in _traceFaces'
+          // pointIdFor before this Tier-2 pass ever runs) in sync with blockCorners —
+          // otherwise any consumer that resolves corners via pointIds/registry instead of
+          // the ephemeral blockCorners array (e.g. DCEL walks, the registry-native render
+          // path) sees the stale z=0 mint value forever, regardless of what got computed
+          // here. See GroundPointRegistry.js's own doc comment: Point id is meant to be
+          // the one authoritative corner reference, not a second copy that can drift.
+          if (v.z != null && registry && block.pointIds?.[i] != null) {
+            const rp = registry.get(block.pointIds[i])
+            if (rp) rp.z = v.z
+          }
         }
       }
     }

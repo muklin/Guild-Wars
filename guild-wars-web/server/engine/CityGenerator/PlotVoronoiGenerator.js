@@ -130,7 +130,10 @@ export default class PlotVoronoiGenerator {
         // the root cause of plots leaking into the street on concave blocks).
         const pieces = clipPolygonByConvex(blockCorners, cell.polygon)
         if (!pieces.length) {
-          console.error('[PlotVoronoiGenerator] plot clipped to zero — seed', cell.seedPoint, 'block', block.id)
+          console.error('[manifold-diag] plot clipped to zero — seed', cell.seedPoint, 'block', block.id,
+            'blockArea', area.toFixed(4), 'blockCorners', JSON.stringify(blockCorners.map(v => [+v.x.toFixed(3), +v.y.toFixed(3)])),
+            'cellPoly', JSON.stringify(cell.polygon.map(v => [+v.x.toFixed(3), +v.y.toFixed(3)])),
+            'totalSeeds', seeds.length)
           return acc
         }
         // Keep EVERY piece, not just the largest. A concave block (the notch on the inner
@@ -212,7 +215,11 @@ export default class PlotVoronoiGenerator {
     // polygon (cell.polygon) — vertices kept from the original block boundary already
     // carry z, but new intersection points minted by the clip do not. Fill those in the
     // same way CityBlockGenerator did for block corners: IDW from the nearby, already-
-    // z-aware Tier-1 junctions/gutters belonging to the plot's district.
+    // z-aware Tier-1 junctions/gutters belonging to the plot's district. Those new
+    // intersection points were already minted into the registry (via mintDeduped in
+    // _mergeSmallPlots, at z ?? 0) before this z was known, so — same fix as
+    // CityBlockGenerator's Tier 2 — the computed z is written back to the registry
+    // point (plot.pointIds) too, not just the blockCorners array.
     {
       const controlPointsByDistrict = new Map()
       const controlPointsFor = (districtId) => {
@@ -230,14 +237,34 @@ export default class PlotVoronoiGenerator {
         controlPointsByDistrict.set(districtId, pts)
         return pts
       }
+      const _loggedPlotDistricts = new Set()   // TEMP diagnostic — remove once root cause confirmed
+      let _missingCount = 0, _filledCount = 0, _alreadyCount = 0
       for (const plot of plots) {
         const controls = controlPointsFor(plot.districtId)
-        for (const v of plot.blockCorners) {
-          if (v.z != null) continue
-          const z = idwZ(v.x, v.y, controls)
-          if (z != null) v.z = z
+        if (!_loggedPlotDistricts.has(plot.districtId)) {
+          _loggedPlotDistricts.add(plot.districtId)
+          console.log(`[zheight-diag] plot Tier3 district=${plot.districtId} controls=${controls.length} sampleZ=${controls.slice(0, 3).map(c => c.z.toFixed(2)).join(',')}`)
+        }
+        for (let i = 0; i < plot.blockCorners.length; i++) {
+          const v = plot.blockCorners[i]
+          if (v.z == null) {
+            const z = idwZ(v.x, v.y, controls)
+            if (z != null) { v.z = z; _filledCount++ } else { _missingCount++ }
+          } else {
+            _alreadyCount++
+          }
+          // Same registry/array desync as CityBlockGenerator's Tier-2 pass: a subdivided
+          // plot's intersection corners were minted into the registry (via mintDeduped in
+          // _mergeSmallPlots, at z ?? 0) before this z was ever computed — keep the
+          // registry-backed copy (plot.pointIds) in sync or any consumer resolving via
+          // pointIds sees the stale mint-time value forever.
+          if (v.z != null && registry && plot.pointIds?.[i] != null) {
+            const rp = registry.get(plot.pointIds[i])
+            if (rp) rp.z = v.z
+          }
         }
       }
+      console.log(`[zheight-diag] plot Tier3 corners: already-had-z=${_alreadyCount} filled=${_filledCount} STILL-NULL=${_missingCount}`)
     }
 
     return { plots }
@@ -375,7 +402,8 @@ export default class PlotVoronoiGenerator {
       let face
       try { face = dcel.insertFace(ids, 'plot', {}) }
       catch (e) {
-        console.warn(`[PlotVoronoiGenerator._mergeSmallPlots] insertFace failed for a plot cell — dropping it: ${e.message}`)
+        const resolved = ids.map(id => { const p = registry.get(id); return p ? [id, +p.x.toFixed(4), +p.y.toFixed(4)] : [id, null, null] })
+        console.warn(`[manifold-diag] insertFace failed for a plot cell — dropping it: ${e.message}`, 'ids+pos', JSON.stringify(resolved), 'origPoly', JSON.stringify(poly.map(v => [+v.x.toFixed(4), +v.y.toFixed(4)])))
         return { faceId: null, area: Math.abs(signedArea(poly)), alive: false }
       }
       return { faceId: face.id, area: Math.abs(signedArea(poly)), alive: true }

@@ -206,6 +206,16 @@ export default class DistrictRenderer {
     geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
     geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(triangles), 1))
     geometry.computeVertexNormals()
+    // Real per-vertex height, same stash-and-swap pattern as every other ground-fill
+    // mesh (TerrainRenderer.buildRegionMesh, GroundRenderer street/plot fills) — needed
+    // by setFlattened so top-down mode can flatten fresh district meshes too. Fixed
+    // 2026-07-19: entering District Setup ("Done" in Terrain mode) while already in
+    // top-down rebuilt these meshes at real relief with no flatten applied, against a
+    // floor-scroll clip plane still calibrated for a flat world — confirmed live as the
+    // whole unassigned-district area rendering solid black (same bug class as the
+    // 2026-07-13 fix in WorldRenderer._reapplyTopDownFlatten, just never wired up for
+    // districts specifically since this mesh didn't exist yet at that time).
+    geometry.userData.realY = vertices.filter((_, i) => i % 3 === 1)
 
     const colorKey = district.assignedType || (district.isLeadershipDistrict ? 'Leadership' : null)
     const color = colorKey ? DISTRICT_COLORS.get(colorKey) : DISTRICT_COLORS.Neutral
@@ -218,6 +228,23 @@ export default class DistrictRenderer {
     const mesh = new THREE.Mesh(geometry, material)
     mesh.userData = { districtId: district.id }
     return mesh
+  }
+
+  // Top-down mode's floor-scroll clip plane assumes a flat world — see buildDistrictMesh's
+  // realY doc comment. Same stash-and-swap pattern as TerrainRenderer.setGroundFlattened/
+  // GroundRenderer.setTerrainFlattened: swap every district mesh's Y channel between real
+  // relief and flat 0, in place, reversible, no rebuild.
+  setFlattened(flat) {
+    this._flattened = flat
+    for (const mesh of this.districtMeshes.values()) {
+      const geo = mesh.geometry
+      const realY = geo?.userData?.realY
+      if (!realY) continue
+      const pos = geo.attributes.position
+      for (let i = 0; i < realY.length; i++) pos.array[i * 3 + 1] = flat ? 0 : realY[i]
+      pos.needsUpdate = true
+      geo.computeVertexNormals()
+    }
   }
 
   // Returns true if either adjacent district has been locked (assignedType set),
@@ -601,13 +628,21 @@ export default class DistrictRenderer {
     const stoneColor = 0x888888
     const waterColor = DISTRICT_COLORS.Canal
 
-    const buildStrip = (hw, Y) => {
+    // yOffset (fixed 2026-07-20, "canal drops the z-height drastically and then draws
+    // the canal where the district height was"): Y used to be a flat world-space
+    // constant for every vertex — the whole canal sank to near-0 wherever the
+    // surrounding district/terrain sat at any real (nonzero) elevation, cutting a
+    // trench-shaped gap into the visible ground. Each corner now uses its OWN source
+    // point's real z (polyline points already carry it — see cityEdgePointsById) plus
+    // the same small stoneY/waterY offset above that, not instead of it.
+    const buildStrip = (hw, yOffset) => {
       const { left, right } = this._getMiteredCorners(polyline, hw)
       const verts = [], idx = []
       for (let i = 0; i < polyline.length - 1; i++) {
+        const zA = (polyline[i].z ?? 0) + yOffset, zB = (polyline[i + 1].z ?? 0) + yOffset
         const b = verts.length / 3
-        verts.push(right[i].x, Y, right[i].y,  left[i].x, Y, left[i].y,
-                   left[i+1].x, Y, left[i+1].y,  right[i+1].x, Y, right[i+1].y)
+        verts.push(right[i].x, zA, right[i].y,  left[i].x, zA, left[i].y,
+                   left[i+1].x, zB, left[i+1].y,  right[i+1].x, zB, right[i+1].y)
         idx.push(b, b+1, b+2,  b, b+2, b+3)
       }
       return { verts, idx }
@@ -660,10 +695,9 @@ export default class DistrictRenderer {
     const halfWall  = bothSides ? G * 0.45 : G * 0.70   // internal narrower; external fills gutter
     const wallH     = bothSides ? G * 3.0  : G * 4.5    // internal 2×; external 1.5× original heights
     const alleyW    = bothSides ? G * 0.20 : G * 0.30   // alley strip; total stays ≤ G per side
-    // group.position.y = 0 (ground level) is the scale-animation pivot.
-    // All local Y coords are relative to that base.
-    const wallBase  = 0        // local Y where wall body starts (world 0)
-    const alleyLY   = 0.002    // local Y for alley floor — just above ground
+    // Every vertex now carries its OWN real ground z (see the per-segment loop below) —
+    // group.position.y stays 0 as just the scale-animation pivot, not a shared baseline.
+    const alleyLY   = 0.002    // offset ABOVE each corner's own ground z — alley floor sits just above ground
 
     const { left: wallL, right: wallR } = this._getMiteredCorners(pts, halfWall)
     const { left: alleyL, right: alleyR } = this._getMiteredCorners(pts, halfWall + alleyW)
@@ -694,12 +728,22 @@ export default class DistrictRenderer {
       const bL = insetB > 0 ? { x: bx + px*halfWall, y: by + py*halfWall } : wallL[i+1]
       const bR = insetB > 0 ? { x: bx - px*halfWall, y: by - py*halfWall } : wallR[i+1]
 
+      // Real per-point ground height (fixed 2026-07-20, "walls are not following the
+      // zheight of the districts"): wallBase used to be a flat local-0 constant for
+      // EVERY vertex regardless of position, so a wall spanning any real district/
+      // terrain slope either floated above ground at one end or sank into it at the
+      // other — by construction, not a rare edge case. pts[i]/pts[i+1] already carry
+      // real z (cityEdgePointsById resolves it from the point registry, same source
+      // streets/junctions use) — a mitered corner's tiny XY offset from its source
+      // point doesn't need its own z lookup, reusing the source point's is the same
+      // approximation every other small-offset corner in this codebase makes.
+      const zA = pts[i].z ?? 0, zB = pts[i + 1].z ?? 0
       const B = wv.length / 3
       wv.push(
-        aL.x, wallBase,       aL.y,  aR.x, wallBase,       aR.y,
-        bR.x, wallBase,       bR.y,  bL.x, wallBase,       bL.y,
-        aL.x, wallBase+wallH, aL.y,  aR.x, wallBase+wallH, aR.y,
-        bR.x, wallBase+wallH, bR.y,  bL.x, wallBase+wallH, bL.y,
+        aL.x, zA,         aL.y,  aR.x, zA,         aR.y,
+        bR.x, zB,         bR.y,  bL.x, zB,         bL.y,
+        aL.x, zA+wallH,   aL.y,  aR.x, zA+wallH,   aR.y,
+        bR.x, zB+wallH,   bR.y,  bL.x, zB+wallH,   bL.y,
       )
       wi.push(B+4, B+5, B+6, B+4, B+6, B+7)                                // top
       wi.push(B+3, B+0, B+4, B+3, B+4, B+7)                                // left face
@@ -711,17 +755,18 @@ export default class DistrictRenderer {
     // ── Alley floor strips (local Y = alleyLY ≈ -0.022, world Y ≈ 0.053) ────
     const av = [], ai = []
     for (let i = 0; i < pts.length - 1; i++) {
+      const zA = (pts[i].z ?? 0) + alleyLY, zB = (pts[i + 1].z ?? 0) + alleyLY
       const B = av.length / 3
       av.push(
-        wallL[i].x,    alleyLY, wallL[i].y,    alleyL[i].x,    alleyLY, alleyL[i].y,
-        alleyL[i+1].x, alleyLY, alleyL[i+1].y, wallL[i+1].x,  alleyLY, wallL[i+1].y
+        wallL[i].x,    zA, wallL[i].y,    alleyL[i].x,    zA, alleyL[i].y,
+        alleyL[i+1].x, zB, alleyL[i+1].y, wallL[i+1].x,   zB, wallL[i+1].y
       )
       ai.push(B, B+1, B+2, B, B+2, B+3)
       if (bothSides) {
         const C = av.length / 3
         av.push(
-          wallR[i].x,    alleyLY, wallR[i].y,    alleyR[i].x,    alleyLY, alleyR[i].y,
-          alleyR[i+1].x, alleyLY, alleyR[i+1].y, wallR[i+1].x,  alleyLY, wallR[i+1].y
+          wallR[i].x,    zA, wallR[i].y,    alleyR[i].x,    zA, alleyR[i].y,
+          alleyR[i+1].x, zB, alleyR[i+1].y, wallR[i+1].x,   zB, wallR[i+1].y
         )
         ai.push(C, C+1, C+2, C, C+2, C+3)
       }

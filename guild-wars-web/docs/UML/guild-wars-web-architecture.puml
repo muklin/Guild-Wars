@@ -30,7 +30,11 @@ Container_Boundary(serverCB, "Game Server") {
     Code(guild, "Guild", "Plain Object", "A player's guild: HQ, tokens, resources, standing, traits and character roster")
   }
   ' chartroom:boundaryLevel=component
-  Container_Boundary(setupPhaseCB, "SetupPhase", $descr="Orchestrates the Terrain -> CitySubdivision -> GuildCreation setup pipeline") {
+  Container_Boundary(setupPhaseCB, "SetupPhase", $descr="Thin orchestrating facade (Terrain -> CitySubdivision -> GuildCreation) over 4 seamed modules, each holding a this.sp back-reference to this instance for cross-module calls") {
+    Code(groundplaneAudit, "GroundplaneAudit", "JS Class", "River/Cliff/District-Edge pullback, DCEL materialize/parity checks, and groundplane Surface/Region syncing")
+    Code(terrainSetup, "TerrainSetup", "JS Class", "Terrain generation, region/edge type assignment, and hidden-terrain reveal")
+    Code(districtSetup, "DistrictSetup", "JS Class", "District type/class/edge assignment, resource wiring, threats/trade, leadership, guild/faction bookkeeping, and worldbuilding (Gods/Magic/Foreign Powers)")
+    Code(streetBlockPlotPipeline, "StreetBlockPlotPipeline", "JS Class", "Street graph/block/plot generation pipeline, district promotion, and building generation orchestration")
     ' chartroom:field=f_dId|id|number|District id
     ' chartroom:field=f_dAssignedType|assignedType|string\|null|District type (Residential, Leadership, Market, ...)
     ' chartroom:field=f_dResidentialClass|residentialClass|string\|null|Sub-class when assignedType is Residential
@@ -164,6 +168,7 @@ Rel(apiRoutes, multiplayerManagerCB, "Requires")
 Rel(apiRoutes, persistenceCB, "Requires")
 Rel(setupPhaseCB, gameStateManagerCB, "Requires")
 Rel(setupPhaseCB, cityGeneratorCB, "Requires")
+Rel(districtSetup, district, "Owns", "assigns type/class/edge, creates/mutates District records")
 Rel(persistenceCB, saveStore, "Owns")
 Rel(dcelFace, groundPointRegistry, "References", "Face vertex ids resolve through GroundPointRegistry (DCEL Vertex == Point)")
 Rel(f_gHeadquarters, district, "References", "headquarters.districtId")

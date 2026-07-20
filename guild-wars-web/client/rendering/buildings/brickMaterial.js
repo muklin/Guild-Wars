@@ -34,9 +34,9 @@ export function makeBrickMaterial({ scaleU = 8, scaleV = 4, palette = [[0x999999
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uScale     = { value: new THREE.Vector2(scaleU, scaleV) }
     shader.uniforms.uRoughEdge = { value: roughEdge }
-    shader.vertexShader = 'varying vec3 vLocalPos;\nvarying vec3 vLocalNormal;\nvarying float vWorldY;\n' + shader.vertexShader.replace(
+    shader.vertexShader = 'varying vec3 vLocalPos;\nvarying vec3 vLocalNormal;\nvarying float vWorldY;\nvarying vec2 vModelXZ;\n' + shader.vertexShader.replace(
       '#include <begin_vertex>',
-      '#include <begin_vertex>\n  vLocalPos = transformed;\n  vWorldY = (modelMatrix * vec4(transformed, 1.0)).y;',
+      '#include <begin_vertex>\n  vLocalPos = transformed;\n  vWorldY = (modelMatrix * vec4(transformed, 1.0)).y;\n  vModelXZ = modelMatrix[3].xz;',
     ).replace(
       '#include <beginnormal_vertex>',
       '#include <beginnormal_vertex>\n  vLocalNormal = objectNormal;',
@@ -120,8 +120,8 @@ export function makeBrickMaterial({ scaleU = 8, scaleV = 4, palette = [[0x999999
     const apply = '  diffuseColor.rgb = brickTri(vLocalPos, vLocalNormal, uScale, uRoughEdge);\n' +
       `  float gGrime = smoothstep(${baseY.toFixed(5)}, ${(baseY + grimeHeight).toFixed(5)}, vWorldY);\n` +
       '  diffuseColor.rgb *= mix(0.40, 1.0, gGrime);\n' +
-      '  { float hJ = (gwHash1(modelMatrix[3].xz) - 0.5) * 0.10; diffuseColor.rgb = clamp(diffuseColor.rgb + hJ, 0.0, 1.0); }\n'
-    shader.fragmentShader = 'varying vec3 vLocalPos;\nvarying vec3 vLocalNormal;\nvarying float vWorldY;\nuniform vec2 uScale;\nuniform float uRoughEdge;\n' + brickFn +
+      '  { float hJ = (gwHash1(vModelXZ) - 0.5) * 0.10; diffuseColor.rgb = clamp(diffuseColor.rgb + hJ, 0.0, 1.0); }\n'
+    shader.fragmentShader = 'varying vec3 vLocalPos;\nvarying vec3 vLocalNormal;\nvarying float vWorldY;\nvarying vec2 vModelXZ;\nuniform vec2 uScale;\nuniform float uRoughEdge;\n' + brickFn +
       shader.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n' + apply)
   }
   mat.customProgramCacheKey = () => `gw-brick:${scaleU}:${scaleV}:${palette.map(p => p.join(',')).join('|')}:${grimeHeight.toFixed(5)}:${baseY.toFixed(5)}:${roughEdge.toFixed(3)}`

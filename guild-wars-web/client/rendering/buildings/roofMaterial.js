@@ -21,9 +21,9 @@ function _makeSlate(hexColor) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSlateColor = { value: new THREE.Vector3(color.r, color.g, color.b) }
 
-    shader.vertexShader = 'varying vec3 vRoofLocalPos;\nvarying vec3 vRoofLocalNorm;\n' +
+    shader.vertexShader = 'varying vec3 vRoofLocalPos;\nvarying vec3 vRoofLocalNorm;\nvarying vec2 vModelXZ;\n' +
       shader.vertexShader
-        .replace('#include <begin_vertex>',     '#include <begin_vertex>\n  vRoofLocalPos  = transformed;')
+        .replace('#include <begin_vertex>',     '#include <begin_vertex>\n  vRoofLocalPos  = transformed;\n  vModelXZ = modelMatrix[3].xz;')
         .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n  vRoofLocalNorm = objectNormal;')
 
     const fn = `
@@ -87,12 +87,12 @@ function _makeSlate(hexColor) {
     `
 
     shader.fragmentShader =
-      'varying vec3 vRoofLocalPos;\nvarying vec3 vRoofLocalNorm;\nuniform vec3 uSlateColor;\n' +
+      'varying vec3 vRoofLocalPos;\nvarying vec3 vRoofLocalNorm;\nvarying vec2 vModelXZ;\nuniform vec3 uSlateColor;\n' +
       fn + '\n' +
       shader.fragmentShader.replace(
         '#include <map_fragment>',
         '#include <map_fragment>\n  diffuseColor.rgb = slateColor(vRoofLocalPos, vRoofLocalNorm, uSlateColor);\n' +
-        '  { float hJ = (fract(sin(dot(modelMatrix[3].xz, vec2(127.1,311.7)))*43758.5) - 0.5) * 0.10; diffuseColor.rgb = clamp(diffuseColor.rgb + hJ, 0.0, 1.0); }\n'
+        '  { float hJ = (fract(sin(dot(vModelXZ, vec2(127.1,311.7)))*43758.5) - 0.5) * 0.10; diffuseColor.rgb = clamp(diffuseColor.rgb + hJ, 0.0, 1.0); }\n'
       )
   }
   mat.customProgramCacheKey = () => `gw-slate:${hexColor}`

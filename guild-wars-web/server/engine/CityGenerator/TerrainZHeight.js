@@ -24,17 +24,23 @@
 // already handled by the domain write, must not be pushed the "wrong" way for this type).
 export const TERRAIN_TYPE_Z_RULES = {
   Sea:        { mode: 'set',   amount: 0,    cornerAmount: 0,    hopCount: 8, curve: 'scurve', direction: 'down' },
-  Lake:       { mode: 'delta', amount: -2/3, cornerAmount: -2/3, hopCount: 6,  curve: 'scurve', direction: 'down' },
-  Hills:      { mode: 'delta', amount: 1,  cornerAmount: 2/3,  hopCount: 6,  curve: 'linear', direction: 'up' },
-  Mountains:  { mode: 'delta', amount: 5/3,  cornerAmount: 1,  hopCount: 8,  curve: 'linear', direction: 'up' },
-  Swamp:      { mode: 'flattenThenDelta', amount: -1/3, floor: 1/3, hopCount: 0, curve: 'linear', direction: 'down' },
+  // Lake's own flat height is no longer `mode`/`amount`/`cornerAmount` (superseded
+  // 2026-07-19 — see the dedicated `region.assignedType === 'Lake'` branch in
+  // applyTerrainTypeZEffect: settles to its lowest shore corner instead). Those three
+  // fields are dead for Lake now, kept only so this entry stays truthy for the
+  // `if (!rule) return` guard; hopCount/curve/direction still govern how the lake's
+  // (now corner-derived) height propagates into the surrounding terrain.
+  Lake:       { mode: 'delta', amount: -1/3, cornerAmount: -1/3, hopCount: 1,  curve: 'linear', direction: 'down' },
+  Hills:      { mode: 'delta', amount: 2/3,  cornerAmount: 1/3,  hopCount: 1,  curve: 'linear', direction: 'up' },
+  Mountains:  { mode: 'delta', amount: 1,  cornerAmount: 2/3,  hopCount: 3,  curve: 'linear', direction: 'up' },
+  Swamp:      { mode: 'flattenThenDelta', amount: -1/3, floor: 1/3, hopCount: 1, curve: 'linear', direction: 'down' },
   // Ice Sheet (superseded 2026-07-13 — see the dedicated branch in
   // applyTerrainTypeZEffect): map-average-of-centres+3 (or the average of already-
   // placed Ice Sheets), +/-0.25 jitter, permanently locked. This entry only needs to
   // stay truthy so the `if (!rule) return` guard doesn't treat Ice Sheet as a no-op —
   // none of these fields are read for it anymore.
   'Ice Sheet':{ mode: 'delta' },
-  Desert:     { mode: 'delta', amount: -1/3, floor: 1/3, cornerAmount: -1/3, hopCount: 4, curve: 'linear', direction: 'down' },
+  Desert:     { mode: 'delta', amount: -1/3, floor: 1/3, cornerAmount: -1/3, hopCount: 1, curve: 'linear', direction: 'down' },
   Plains:     null,
   Forest:     null,
 }
@@ -261,9 +267,16 @@ function dist(a, b) {
 // Point/Edge graph for propagation, and (Sea/Lake/Ice Sheet) to find the region's full
 // domain. `allRegions`: worldTerrainData.regions — every kept region's own seedPoint.z,
 // needed only for Ice Sheet's map-average calculation (see below).
+const _zEffectCallCount = new Map()   // TEMP diagnostic — remove once root cause confirmed
 export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlots, allRegions = []) {
   const rule = TERRAIN_TYPE_Z_RULES[region.assignedType]
   if (!rule) return   // Plains/Forest/unrecognized: no effect
+  {
+    const n = (_zEffectCallCount.get(region.id) ?? 0) + 1
+    _zEffectCallCount.set(region.id, n)
+    console.log(`[zheight-diag] applyTerrainTypeZEffect region=${region.id} type=${region.assignedType} call#${n} seedZ-before=${region.seedPoint?.z?.toFixed?.(3)} zLocked=${!!region.seedPoint?.zLocked} rule.amount=${rule.amount} hopCount=${rule.hopCount}`)
+    if (n > 1) console.warn(`[zheight-diag] region ${region.id} (${region.assignedType}) has had its terrain z-effect applied ${n} times — deltas compound on repeat calls`)
+  }
 
   // Sea/Lake (user-confirmed 2026-07-12): EVERY point in the region's full domain (not
   // just its boundary corners) is set to one flat value, then permanently locked —
@@ -277,7 +290,21 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     // already-locked points here too (fixed 2026-07-13), or whichever region gets
     // Applied second silently clobbers the first's permanent lock at their shared edge.
     const domainPoints = domainIds.map(id => registry.get(id)).filter(p => p && !p.zLocked)
-    const target = rule.mode === 'set' ? rule.amount : region.seedPoint.z + rule.amount
+    let target
+    if (region.assignedType === 'Lake') {
+      // Lake settles to its lowest shore corner's height (water finds its own level) —
+      // user-confirmed 2026-07-19, replacing the old seedPoint+delta rule, which set the
+      // lake's flat height relative to wherever its seed happened to land pre-effect —
+      // arbitrary relative to the actual shore, and could still read as visibly tilted/
+      // faceted once neighbouring Hills/Mountains propagation reshaped the shore after
+      // generation. Reads cornerIds (this region's own boundary corners) BEFORE any of
+      // this block's writes below, same corners `propagateFromRegion` already blends
+      // outward from.
+      const cornerZs = (cornerIds || []).map(id => registry.get(id)).filter(p => p && isFinite(p.z)).map(p => p.z)
+      target = cornerZs.length ? Math.min(...cornerZs) : region.seedPoint.z
+    } else {
+      target = rule.mode === 'set' ? rule.amount : region.seedPoint.z + rule.amount
+    }
     region.seedPoint.z = target
     region.seedPoint.zLocked = true
     for (const p of domainPoints) {

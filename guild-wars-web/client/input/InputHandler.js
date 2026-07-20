@@ -88,7 +88,7 @@ export default class InputHandler {
   }
 
   onMouseClick(e) {
-    if (document.getElementById('ui-container')?.contains(e.target)) return
+    if (e.target !== this.renderer?.renderer?.domElement) return
     const worldPos = this.screenToWorld(e.clientX, e.clientY)
 
     if (this.renderer.mode === 'city') {
@@ -103,15 +103,15 @@ export default class InputHandler {
       // In Guild Setup the city is final: terrain regions and district (city) edges are
       // no longer selectable — only Headquarters picking above remains.
       if (!this.renderer.guildSetupActive) {
-        const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
+        const cityEdge = this.renderer.districtRenderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
         if (cityEdge) { this.eventBus.emit('CITY_EDGE_CLICKED', cityEdge); return }
       }
-      const district = this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
+      const district = this.renderer.districtRenderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
       if (district) { this.eventBus.emit('DISTRICT_CLICKED', district.id); return }
       if (!this.renderer.guildSetupActive) {
-        const rawPlot = this.renderer.getTerrainSetupPlotAtWorldPos(worldPos.x, worldPos.y)
+        const rawPlot = this.renderer.terrainRenderer.getTerrainPlotAtWorldPos(worldPos.x, worldPos.y)
         if (rawPlot) { this.eventBus.emit('TERRAIN_PLOT_CLICKED', rawPlot); return }
-        const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+        const region = this.renderer.terrainRenderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
         if (region) { this.eventBus.emit('REGION_CLICKED', region.id); return }
       }
       this.eventBus.emit('MAP_EMPTY_CLICKED')
@@ -119,9 +119,9 @@ export default class InputHandler {
     }
 
     // Terrain mode
-    const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
+    const edge = this.renderer.terrainRenderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
     if (edge) { this.eventBus.emit('EDGE_CLICKED', edge); return }
-    const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+    const region = this.renderer.terrainRenderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
     if (region) { this.eventBus.emit('REGION_CLICKED', region.id); return }
     this.eventBus.emit('MAP_EMPTY_CLICKED')
   }
@@ -138,7 +138,17 @@ export default class InputHandler {
   }
 
   onMouseMove(e) {
-    if (document.getElementById('ui-container')?.contains(e.target)) {
+    // Not the canvas itself → the pointer is over SOME floating UI surface. Most
+    // panels (TerrainTypePanel/GuildPanel/FactionsPanel/action-panel/help window/etc.)
+    // mount straight to document.body rather than inside #ui-container (see
+    // UIManager.setWalkMode's own doc comment — deliberate, so they can float/toggle
+    // independently), so an #ui-container-only containment check missed all of them:
+    // moving the mouse over e.g. the "N Edges Selected" panel kept raycasting the
+    // scene underneath it, showing a phantom hover highlight instead of leaving the
+    // real selection visible (confirmed live 2026-07-19). Checking the actual event
+    // target against the canvas element itself covers every current and future
+    // floating panel by construction, not just whichever ones happen to be registered.
+    if (e.target !== this.renderer?.renderer?.domElement) {
       this.renderer.clearHover()
       this._hideTooltip()
       if (this.renderer.hqPickMode) document.body.style.cursor = ''
@@ -169,8 +179,8 @@ export default class InputHandler {
       // (2026-07-12) so highlighting a whole district's colour doesn't fight visually
       // with precisely positioning over a small debug dot (confirmed live: this branch
       // used to run unconditionally, INCLUDING while debug was on).
-      const district = debug ? null : this.renderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
-      if (district) { this.renderer.setDistrictHover(district.id); this._hideTooltip() }
+      const district = debug ? null : this.renderer.districtRenderer.getDistrictAtWorldPos(worldPos.x, worldPos.y)
+      if (district) { this.renderer.districtRenderer.setDistrictHover(district.id); this._hideTooltip() }
 
       if (debug) {
         // Debug dot priority: block > plot > street junction seed > district center >
@@ -178,17 +188,17 @@ export default class InputHandler {
         // priority since that's the more common thing being inspected in city mode;
         // terrain centers are checked last since they're coarser/less specific and
         // still persist in the background under city geometry.
-        const blockCenter    = this.renderer.getBlockCenterAtWorldPos(worldPos.x, worldPos.y, 0.05)
-        const plotCenter     = blockCenter ? null : this.renderer.getPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.04)
-        const streetSeed     = (!blockCenter && !plotCenter) ? this.renderer.getStreetSeedAtWorldPos(worldPos.x, worldPos.y, 0.03) : null
-        const districtCenter = (!blockCenter && !plotCenter && !streetSeed) ? this.renderer.getDistrictCenterAtWorldPos(worldPos.x, worldPos.y, 0.1) : null
+        const blockCenter    = this.renderer.groundRenderer.getBlockCenterAtWorldPos(worldPos.x, worldPos.y, 0.05)
+        const plotCenter     = blockCenter ? null : this.renderer.groundRenderer.getPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.04)
+        const streetSeed     = (!blockCenter && !plotCenter) ? this.renderer.groundRenderer.getStreetSeedAtWorldPos(worldPos.x, worldPos.y, 0.03) : null
+        const districtCenter = (!blockCenter && !plotCenter && !streetSeed) ? this.renderer.districtRenderer.getDistrictCenterAtWorldPos(worldPos.x, worldPos.y, 0.1) : null
         const priorSoFar = blockCenter || plotCenter || streetSeed || districtCenter
-        const surfaceCorner = priorSoFar ? null : this.renderer.getSurfaceCornerAtWorldPos(worldPos.x, worldPos.y, 0.05)
+        const surfaceCorner = priorSoFar ? null : this.renderer.terrainRenderer.getSurfaceCornerAtWorldPos(worldPos.x, worldPos.y, 0.05)
         const priorSoFar2 = priorSoFar || surfaceCorner
-        const terrainVertex = priorSoFar2 ? null : this.renderer.getTerrainCornerAtWorldPos(worldPos.x, worldPos.y, 0.06)
+        const terrainVertex = priorSoFar2 ? null : this.renderer.terrainRenderer.getTerrainCornerAtWorldPos(worldPos.x, worldPos.y, 0.06)
         const priorSoFar3 = priorSoFar2 || terrainVertex
-        const terrainPlotCenter = priorSoFar3 ? null : this.renderer.getTerrainPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.06)
-        const terrainCenter     = (priorSoFar3 || terrainPlotCenter) ? null : this.renderer.getTerrainCenterAtWorldPos(worldPos.x, worldPos.y, 0.12)
+        const terrainPlotCenter = priorSoFar3 ? null : this.renderer.terrainRenderer.getTerrainPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.06)
+        const terrainCenter     = (priorSoFar3 || terrainPlotCenter) ? null : this.renderer.terrainRenderer.getTerrainCenterAtWorldPos(worldPos.x, worldPos.y, 0.12)
         const dot = priorSoFar3 || terrainPlotCenter || terrainCenter
         if (dot === terrainVertex && terrainVertex) {
           this.renderer.clearHover()
@@ -214,7 +224,7 @@ export default class InputHandler {
         if (dot) {
           this.renderer.clearHover()
           if (dot.kind === 'block') {
-            this.renderer.setBlockHover(dot.id)
+            this.renderer.groundRenderer.setBlockHover(dot.id)
             this._showTooltip(
               `<div style="font-weight:bold">Block ${dot.id}</div>` +
               `<div style="font-size:0.9em;margin-top:2px">type: ${dot.blockType ?? '?'} &nbsp;|&nbsp; district: ${dot.districtId ?? '?'}</div>`,
@@ -253,17 +263,17 @@ export default class InputHandler {
           return
         }
         // Street graph hover (junction nodes and edges)
-        const junction = this.renderer.getJunctionAtWorldPos(worldPos.x, worldPos.y, 0.05)
+        const junction = this.renderer.groundRenderer.getJunctionAtWorldPos(worldPos.x, worldPos.y, 0.05)
         if (junction) {
           this._showTooltip(
             `<div style="font-weight:bold">Junction ${junction.id}</div>` +
             `<div style="font-size:0.9em;margin-top:2px">type: ${junction.type ?? '?'} &nbsp;|&nbsp; district: ${junction.districtId ?? '?'}</div>` +
             `<div style="font-size:0.85em;margin-top:2px;opacity:0.85">connections: ${junction.connections.length} &nbsp;|&nbsp; (${junction.x.toFixed(3)}, ${junction.y.toFixed(3)})</div>`,
             e)
-          this.renderer.setJunctionHover(junction.id)
+          this.renderer.groundRenderer.setJunctionHover(junction.id)
           return
         }
-        const edge = this.renderer.getStreetEdgeAtWorldPos(worldPos.x, worldPos.y)
+        const edge = this.renderer.groundRenderer.getStreetEdgeAtWorldPos(worldPos.x, worldPos.y)
         if (edge) {
           const idStr = edge.id !== null && edge.id !== undefined ? String(edge.id) : '?'
           this._showTooltip(
@@ -271,7 +281,7 @@ export default class InputHandler {
             `<div style="font-size:0.9em;margin-top:2px">type: ${edge.type ?? '?'} &nbsp;|&nbsp; district: ${edge.districtId != null ? edge.districtId : (edge.left != null || edge.right != null) ? `${edge.left ?? '?'} → ${edge.right ?? 'ext'}` : '?'}</div>` +
             `<div style="font-size:0.85em;margin-top:2px;opacity:0.85">nodes: ${edge.nodeA}→${edge.nodeB} &nbsp;|&nbsp; len: ${edge.length.toFixed(3)}</div>`,
             e)
-          this.renderer.setStreetEdgeHover(edge)
+          this.renderer.groundRenderer.setStreetEdgeHover(edge)
           return
         }
         // Debug mode with nothing under the cursor: stay quiet — do NOT fall through
@@ -306,11 +316,11 @@ export default class InputHandler {
       // clearHover() only fires when nothing is under the cursor.
       if (district) return  // district hover already set; don't clear it
       if (!this.renderer.guildSetupActive) {
-        const cityEdge = this.renderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
+        const cityEdge = this.renderer.districtRenderer.getCityEdgeAtWorldPos(worldPos.x, worldPos.y)
         if (cityEdge) { this.renderer.setCityEdgeHover(cityEdge.id); this._hideTooltip(); return }
-        const rawPlot = this.renderer.getTerrainSetupPlotAtWorldPos(worldPos.x, worldPos.y)
+        const rawPlot = this.renderer.terrainRenderer.getTerrainPlotAtWorldPos(worldPos.x, worldPos.y)
         if (rawPlot) { this.renderer.setTerrainPlotHover(rawPlot.id); this._hideTooltip(); return }
-        const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+        const region = this.renderer.terrainRenderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
         if (region) { this.renderer.setRegionHover(region.id); this._hideTooltip(); return }
       }
       this.renderer.clearHover()
@@ -320,7 +330,7 @@ export default class InputHandler {
 
     // Terrain mode — check Surface corner points first (finest granularity, off by
     // default — see DebugPanel), then terrain PLOT centers, then coarse region centers.
-    const surfaceCorner = this.renderer.getSurfaceCornerAtWorldPos(worldPos.x, worldPos.y, 0.05)
+    const surfaceCorner = this.renderer.terrainRenderer.getSurfaceCornerAtWorldPos(worldPos.x, worldPos.y, 0.05)
     if (surfaceCorner) {
       this.renderer.clearHover()
       if (debug) {
@@ -336,7 +346,7 @@ export default class InputHandler {
     // Both terrain PLOT centers and region centers are debug-only dots
     // (drawVoronoiCenters/drawTerrainPlotCenters) but stay hoverable outside debug mode
     // too, same as before, for the tooltip-off/region-hover-only legacy behaviour.
-    const terrainPlotCenter = this.renderer.getTerrainPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.06)
+    const terrainPlotCenter = this.renderer.terrainRenderer.getTerrainPlotCenterAtWorldPos(worldPos.x, worldPos.y, 0.06)
     if (terrainPlotCenter) {
       this.renderer.clearHover()
       if (debug) {
@@ -349,7 +359,7 @@ export default class InputHandler {
       return
     }
 
-    const regionCenter = this.renderer.getTerrainSeedAtWorldPos(worldPos.x, worldPos.y, 0.1)
+    const regionCenter = this.renderer.terrainRenderer.getTerrainSeedAtWorldPos(worldPos.x, worldPos.y, 0.1)
     if (regionCenter) {
       // Region hover highlight is disabled in debug mode (2026-07-12) — see the
       // city-mode branch's matching comment; only the tooltip should show while
@@ -367,7 +377,7 @@ export default class InputHandler {
       return
     }
 
-    const corner = this.renderer.getTerrainCornerAtWorldPos(worldPos.x, worldPos.y, 0.1)
+    const corner = this.renderer.terrainRenderer.getTerrainCornerAtWorldPos(worldPos.x, worldPos.y, 0.1)
     if (corner) {
       this.renderer.clearHover()
       if (debug) {
@@ -387,10 +397,10 @@ export default class InputHandler {
     // positioning over a small debug dot.
     if (debug) { this.renderer.clearHover(); this._hideTooltip(); return }
 
-    const edge = this.renderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
+    const edge = this.renderer.terrainRenderer.getEdgeAtWorldPos(worldPos.x, worldPos.y)
     if (edge) { this.renderer.setEdgeHover(edge.id); this._hideTooltip(); return }
 
-    const region = this.renderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
+    const region = this.renderer.terrainRenderer.getRegionAtWorldPos(worldPos.x, worldPos.y)
     if (region) {
       this.renderer.setRegionHover(region.id)
       this._hideTooltip()

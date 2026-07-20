@@ -128,14 +128,14 @@ export default class App {
     this.eventBus.on('DISTRICT_TYPE_PREVIEW',       (t)    => this._handleDistrictPreview(t))
     this.eventBus.on('DISTRICT_RESIDENTIAL_CLASS',  ({ residentialClass }) => {
       this.pendingResidentialClass = residentialClass
-      if (this.selectedDistrictId !== null) this.renderer.previewDistrictType(this.selectedDistrictId, residentialClass)
+      if (this.selectedDistrictId !== null) this.renderer.districtRenderer.previewDistrictType(this.selectedDistrictId, residentialClass)
       this._refreshDistrictPanel()
       this._previewDistrictStreets()
     })
 
     this.eventBus.on('DISTRICT_RULING_BODY_CLASS', ({ LeadershipClass }) => {
       this.pendingLeadershipClass = LeadershipClass
-      if (this.selectedDistrictId !== null) this.renderer.previewDistrictType(this.selectedDistrictId, LeadershipClass)
+      if (this.selectedDistrictId !== null) this.renderer.districtRenderer.previewDistrictType(this.selectedDistrictId, LeadershipClass)
       this._refreshDistrictPanel()
       this._previewDistrictStreets()
     })
@@ -170,8 +170,8 @@ export default class App {
           if (response.resourceRegistry) { this.resourceRegistry = response.resourceRegistry; this.uiManager.updateResources(this.resourceRegistry) }
           if (response.resourceDefinitions) this.resourceDefinitions = response.resourceDefinitions
           if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
-          this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData)
-          this.renderer.deselectRegion(regionId)
+          this.renderer.terrainRenderer.renderTrades(this.tradingDestinations, this.renderer.terrainRenderer.terrainData)
+          this.renderer.terrainRenderer.deselectRegion(regionId)
           this.selectedTerrainRegionId = null
           this.selectedTerrainPlotId = null
           this.pendingTerrainAction = null
@@ -187,8 +187,8 @@ export default class App {
         const response = await GameAPI.addThreat(regionId, description, name)
         if (response.ok) {
           this.threats = response.threats
-          this.renderer.renderThreats(this.threats, this.renderer.terrainData?.regions)
-          this.renderer.deselectRegion(regionId)
+          this.renderer.terrainRenderer.renderThreats(this.threats, this.renderer.terrainRenderer.terrainData?.regions)
+          this.renderer.terrainRenderer.deselectRegion(regionId)
           this.selectedTerrainRegionId = null
           this.selectedTerrainPlotId = null
           this.pendingTerrainAction = null
@@ -198,7 +198,7 @@ export default class App {
     })
 
     this.eventBus.on('TERRAIN_PLOT_CLICKED', (rawPlot) => {
-      const regions = this.renderer.terrainData?.regions
+      const regions = this.renderer.terrainRenderer.terrainData?.regions
       if (!regions) return
       const parent = regions.find(r => r.id === rawPlot.parentRegionId)
       if (!parent) return
@@ -223,7 +223,7 @@ export default class App {
         // Toggle deselect if clicking the same plot that's already selected
         if (this.selectedTerrainPlotId !== null && this.selectedTerrainPlotId === plotId) {
           this.renderer.clearTerrainPlotSelected()
-          this.renderer.deselectRegion(parent.id)
+          this.renderer.terrainRenderer.deselectRegion(parent.id)
           this.selectedTerrainRegionId = null
           this.selectedTerrainPlotId = null
           this.pendingTerrainAction = null
@@ -231,10 +231,10 @@ export default class App {
           return
         }
 
-        if (this.selectedTerrainRegionId !== null) this.renderer.deselectRegion(this.selectedTerrainRegionId)
+        if (this.selectedTerrainRegionId !== null) this.renderer.terrainRenderer.deselectRegion(this.selectedTerrainRegionId)
         if (this.selectedDistrictId !== null) {
           this._revertProvisionalDistrict(this.selectedDistrictId)
-          this.renderer.deselectDistrict(this.selectedDistrictId)
+          this.renderer.districtRenderer.deselectDistrict(this.selectedDistrictId)
           this.selectedDistrictId = null
           this.pendingDistrictType = null
         }
@@ -332,7 +332,7 @@ export default class App {
           this.uiManager.showSetupPhase('Complete')
           this.uiManager.guildPanel.setData({
             guild: res.guild, factions: this.factions, resourceDefinitions: this.resourceDefinitions,
-            districts: this.renderer.cityDistrictData?.districts || [],
+            districts: this.renderer.districtRenderer.cityDistrictData?.districts || [],
             tokens: this._myTokens(), playerName: this._myPlayerName(),
           })
           this.uiManager.updateGuild(res.guild)
@@ -456,16 +456,16 @@ export default class App {
     this.renderer.renderGutters(cityData.streetGraph)
     this.renderer.renderBlocks(cityData.blocks)
     this.renderer.renderPlots(cityData.plots, cityData, { preserveTerrainPlots })
-    this.renderer.drawBlockCenters(cityData.blocks)
-    this.renderer.drawPlotCenters(cityData.plots || [])
-    this.renderer.drawStreetSeeds(cityData.streetGraph)
-    this.renderer.drawCitySurfaceCorners(cityData.streetGraph, cityData.blocks, cityData.plots)
+    this.renderer.groundRenderer.drawBlockCenters(cityData.blocks)
+    this.renderer.groundRenderer.drawPlotCenters(cityData.plots || [])
+    this.renderer.groundRenderer.drawStreetSeeds(cityData.streetGraph)
+    this.renderer.groundRenderer.drawSurfaceCorners(cityData.streetGraph, cityData.blocks, cityData.plots)
   }
 
   // ── Terrain region ──────────────────────────────────────────────────────────
 
   _clearRegionSelection() {
-    if (this.selectedRegionId !== null) this.renderer.deselectRegion(this.selectedRegionId)
+    if (this.selectedRegionId !== null) this.renderer.terrainRenderer.deselectRegion(this.selectedRegionId)
     this.selectedRegionId = null
     this.pendingTerrainType = null
   }
@@ -479,7 +479,7 @@ export default class App {
       let changed = false
       if (this.selectedDistrictId !== null) {
         this._revertProvisionalDistrict(this.selectedDistrictId)
-        this.renderer.deselectDistrict(this.selectedDistrictId)
+        this.renderer.districtRenderer.deselectDistrict(this.selectedDistrictId)
         this.selectedDistrictId = null
         this.pendingDistrictType = null
         this.pendingResidentialClass = null
@@ -488,7 +488,7 @@ export default class App {
       }
       if (this.selectedCityEdgeIds.size > 0) { this._clearCityEdgeSelection(); changed = true }
       if (this.selectedTerrainRegionId !== null) {
-        this.renderer.deselectRegion(this.selectedTerrainRegionId)
+        this.renderer.terrainRenderer.deselectRegion(this.selectedTerrainRegionId)
         this.renderer.clearTerrainPlotSelected?.()
         this.selectedTerrainRegionId = null
         this.selectedTerrainPlotId = null
@@ -505,7 +505,7 @@ export default class App {
   }
 
   _handleRegionClick(regionId) {
-    const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
+    const region = this.renderer.terrainRenderer.terrainData?.regions?.find(r => r.id === regionId)
     if (!region) return
 
     if (this.currentPhase === 'CitySubdivision') {
@@ -521,19 +521,19 @@ export default class App {
     if (region.assignedType) return
 
     if (this.selectedRegionId === regionId) {
-      this.renderer.deselectRegion(regionId)
+      this.renderer.terrainRenderer.deselectRegion(regionId)
       this.selectedRegionId = null
       this.pendingTerrainType = null
       this._refreshTerrainPanel()
       return
     }
 
-    if (this.selectedRegionId !== null) this.renderer.deselectRegion(this.selectedRegionId)
+    if (this.selectedRegionId !== null) this.renderer.terrainRenderer.deselectRegion(this.selectedRegionId)
     this._clearEdgeSelection()
 
     this.selectedRegionId = regionId
     this.pendingTerrainType = null
-    this.renderer.selectRegion(regionId)
+    this.renderer.terrainRenderer.selectRegion(regionId)
     this._refreshTerrainPanel()
   }
 
@@ -559,7 +559,7 @@ export default class App {
         if (newId !== undefined) {
           // Clear terrain selection so _refreshDistrictPanel shows the district panel
           this.renderer.clearTerrainPlotSelected?.()
-          if (this.selectedTerrainRegionId !== null) this.renderer.deselectRegion(this.selectedTerrainRegionId)
+          if (this.selectedTerrainRegionId !== null) this.renderer.terrainRenderer.deselectRegion(this.selectedTerrainRegionId)
           this.selectedTerrainRegionId = null
           this.selectedTerrainPlotId = null
           this.pendingTerrainAction = null
@@ -567,7 +567,7 @@ export default class App {
           this.pendingDistrictType = pendingType
           this.pendingResidentialClass = null
           this.pendingLeadershipClass = 'Monarchy'
-          this.renderer.selectDistrict(newId)
+          this.renderer.districtRenderer.selectDistrict(newId)
           this._refreshDistrictPanel()
         }
       } else this.uiManager.showError(response.error)
@@ -577,7 +577,7 @@ export default class App {
   _handleTerrainPreview(terrainType) {
     if (this.selectedRegionId === null) return
     this.pendingTerrainType = terrainType
-    this.renderer.previewRegionType(this.selectedRegionId, terrainType)
+    this.renderer.terrainRenderer.previewRegionType(this.selectedRegionId, terrainType)
     this._refreshTerrainPanel()
   }
 
@@ -604,25 +604,26 @@ export default class App {
           response.terrainPlots || [],
           response.edgePoints || [],
           pointsById,
-          response.riverCliffFaces || []
+          response.riverCliffFaces || [],
+          response.hillsWallFaces || []
         )
 
-        const region = this.renderer.terrainData?.regions?.find(r => r.id === regionId)
+        const region = this.renderer.terrainRenderer.terrainData?.regions?.find(r => r.id === regionId)
         if (region) { region.assignedType = terrainType; region.name = name; region.description = description }
-        this.renderer.updateRegionColor(regionId, terrainType)
-        this.renderer.deselectRegion(regionId)
+        this.renderer.terrainRenderer.updateRegionColor(regionId, terrainType)
+        this.renderer.terrainRenderer.deselectRegion(regionId)
         this.renderer.clearHover()
 
         for (const edgeId of response.clearedEdgeIds || []) {
-          const edge = this.renderer.terrainData?.edges?.[edgeId]
+          const edge = this.renderer.terrainRenderer.terrainData?.edges?.[edgeId]
           if (edge) { edge.assignedType = null; edge.description = '' }
           this.selectedEdgeIds.delete(edgeId)
-          this.renderer.deselectEdge(edgeId)
+          this.renderer.terrainRenderer.deselectEdge(edgeId)
         }
         for (const edgeId of response.autoCliffEdgeIds || []) {
-          const edge = this.renderer.terrainData?.edges?.[edgeId]
+          const edge = this.renderer.terrainRenderer.terrainData?.edges?.[edgeId]
           if (edge) { edge.assignedType = 'Cliff' }
-          this.renderer.updateEdgeColor(edgeId, 'Cliff')
+          this.renderer.terrainRenderer.updateEdgeColor(edgeId, 'Cliff')
         }
 
         this.selectedRegionId = null
@@ -638,11 +639,11 @@ export default class App {
   }
 
   _countCustomizedTerrain() {
-    return (this.renderer.terrainData?.regions || []).filter(r => r.assignedType && r.assignedType !== 'City' && r.assignedType !== 'Plains').length
+    return (this.renderer.terrainRenderer.terrainData?.regions || []).filter(r => r.assignedType && r.assignedType !== 'City' && r.assignedType !== 'Plains').length
   }
 
   _countAssignedDistricts() {
-    return (this.renderer.cityDistrictData?.districts || []).filter(d => d.assignedType).length
+    return (this.renderer.districtRenderer.cityDistrictData?.districts || []).filter(d => d.assignedType).length
   }
 
   async _doFinishTerrain() {
@@ -651,7 +652,7 @@ export default class App {
       if (response.ok) {
         this.gameState = response
         this.currentPhase = 'CitySubdivision'
-        if (this.selectedRegionId !== null) this.renderer.deselectRegion(this.selectedRegionId)
+        if (this.selectedRegionId !== null) this.renderer.terrainRenderer.deselectRegion(this.selectedRegionId)
         this.selectedRegionId = null
         this.pendingTerrainType = null
         this._clearEdgeSelection()
@@ -668,7 +669,7 @@ export default class App {
         this.renderer.setCityDistrictData(cityData, pointsById)
         this.renderer.setMode('city')
         this.renderer.setFinishedGround(false)   // per-district colours during setup
-        this.renderer.drawDistrictCenters(cityData.districts)
+        this.renderer.districtRenderer.drawDistrictCenters(cityData.districts)
         this.uiManager.showSetupPhase('CitySubdivision')
       } else {
         this.uiManager.showError(response.error)
@@ -742,57 +743,60 @@ export default class App {
   // `lastSelectedEdgeId` is the anchor for mode 2's path search — updated on every click,
   // and pushed to the renderer (setEdgePathAnchor) so hover knows which mode it's in.
   _handleEdgeClick(edge) {
-    const edgeData = this.renderer.terrainData?.edges?.[edge.id]
+    const edgeData = this.renderer.terrainRenderer.terrainData?.edges?.[edge.id]
     if (edgeData?.assignedType) return
 
     if (this.selectedEdgeIds.has(edge.id)) {
       // Toggle off. If it was the path anchor, fall back to any other still-selected edge.
       this.selectedEdgeIds.delete(edge.id)
-      this.renderer.deselectEdge(edge.id)
+      this.renderer.terrainRenderer.deselectEdge(edge.id)
       if (this.lastSelectedEdgeId === edge.id) {
         this.lastSelectedEdgeId = [...this.selectedEdgeIds].pop() ?? null
-        this.renderer.setEdgePathAnchor(this.lastSelectedEdgeId)
+        this.renderer.terrainRenderer.setEdgePathAnchor(this.lastSelectedEdgeId, this.selectedEdgeIds)
       }
     } else if (this.selectedEdgeIds.size === 0) {
       // Mode 1: plain single select.
       if (this.selectedRegionId !== null) {
-        this.renderer.deselectRegion(this.selectedRegionId)
+        this.renderer.terrainRenderer.deselectRegion(this.selectedRegionId)
         this.selectedRegionId = null
         this.pendingTerrainType = null
       }
       this.selectedEdgeIds.add(edge.id)
       this.lastSelectedEdgeId = edge.id
-      this.renderer.setEdgePathAnchor(edge.id)
-      if (this.pendingEdgeType) this.renderer.previewEdgeType(edge.id, this.pendingEdgeType)
-      else this.renderer.selectEdge(edge.id)
+      this.renderer.terrainRenderer.setEdgePathAnchor(edge.id, this.selectedEdgeIds)
+      if (this.pendingEdgeType) this.renderer.terrainRenderer.previewEdgeType(edge.id, this.pendingEdgeType)
+      else this.renderer.terrainRenderer.selectEdge(edge.id)
     } else {
       // Mode 2: add the whole shortest path from the anchor to this click. An
       // unreachable target (disconnected graph — rare) just adds the clicked edge alone,
-      // leaving the existing selection intact rather than discarding it.
-      const path = this.renderer.getShortestEdgePath(this.lastSelectedEdgeId, edge.id)
+      // leaving the existing selection intact rather than discarding it. The path may
+      // never traverse an already-selected edge (user-confirmed 2026-07-19, "no Y
+      // selections") — passing selectedEdgeIds through keeps this call in sync with the
+      // hover-preview's own identical exclusion (setEdgePathAnchor below).
+      const path = this.renderer.terrainRenderer.getShortestEdgePath(this.lastSelectedEdgeId, edge.id, this.selectedEdgeIds)
       const toAdd = (path && path.length) ? path : [edge.id]
       for (const id of toAdd) {
         if (this.selectedEdgeIds.has(id)) continue
-        if (this.renderer.terrainData?.edges?.[id]?.assignedType) continue   // already typed — not selectable
+        if (this.renderer.terrainRenderer.terrainData?.edges?.[id]?.assignedType) continue   // already typed — not selectable
         this.selectedEdgeIds.add(id)
-        if (this.pendingEdgeType) this.renderer.previewEdgeType(id, this.pendingEdgeType)
-        else this.renderer.selectEdge(id)
+        if (this.pendingEdgeType) this.renderer.terrainRenderer.previewEdgeType(id, this.pendingEdgeType)
+        else this.renderer.terrainRenderer.selectEdge(id)
       }
       this.lastSelectedEdgeId = edge.id
-      this.renderer.setEdgePathAnchor(edge.id)
+      this.renderer.terrainRenderer.setEdgePathAnchor(edge.id, this.selectedEdgeIds)
     }
 
     if (this.selectedEdgeIds.size === 0) {
       this.pendingEdgeType = null
       this.lastSelectedEdgeId = null
-      this.renderer.setEdgePathAnchor(null)
+      this.renderer.terrainRenderer.setEdgePathAnchor(null, null)
     }
     this._refreshTerrainPanel()
   }
 
   _handleEdgePreview(edgeType) {
     this.pendingEdgeType = edgeType
-    for (const edgeId of this.selectedEdgeIds) this.renderer.previewEdgeType(edgeId, edgeType)
+    for (const edgeId of this.selectedEdgeIds) this.renderer.terrainRenderer.previewEdgeType(edgeId, edgeType)
     this._refreshTerrainPanel()
   }
 
@@ -818,7 +822,8 @@ export default class App {
           response.terrainPlots || [],
           response.edgePoints || [],
           pointsById,
-          response.riverCliffFaces || []
+          response.riverCliffFaces || [],
+          response.hillsWallFaces || []
         )
         this.renderer.renderAuditFindings?.(response.auditFindings || [])
         this.auditFindingsPopup?.update(response.auditCounts, response.auditFindings)
@@ -832,16 +837,16 @@ export default class App {
   }
 
   _clearEdgeSelection() {
-    for (const edgeId of this.selectedEdgeIds) this.renderer.deselectEdge(edgeId)
+    for (const edgeId of this.selectedEdgeIds) this.renderer.terrainRenderer.deselectEdge(edgeId)
     this.selectedEdgeIds.clear()
     this.pendingEdgeType = null
     this.lastSelectedEdgeId = null
-    this.renderer.setEdgePathAnchor(null)
+    this.renderer.terrainRenderer.setEdgePathAnchor(null)
   }
 
   _getAdjacentRegions(regionId) {
-    const edges = this.renderer.terrainData?.edges || {}
-    const regions = this.renderer.terrainData?.regions || []
+    const edges = this.renderer.terrainRenderer.terrainData?.edges || {}
+    const regions = this.renderer.terrainRenderer.terrainData?.regions || []
     const regionMap = new Map(regions.map(r => [r.id, r]))
     const seen = new Set()
     const result = []
@@ -857,9 +862,9 @@ export default class App {
   }
 
   _getEdgeAdjacentTypes(edgeId) {
-    const edge = this.renderer.terrainData?.edges?.[edgeId]
+    const edge = this.renderer.terrainRenderer.terrainData?.edges?.[edgeId]
     if (!edge) return []
-    const regions = this.renderer.terrainData?.regions || []
+    const regions = this.renderer.terrainRenderer.terrainData?.regions || []
     return [edge.regionA, edge.regionB]
       .filter(id => id != null)
       .map(id => regions.find(r => r.id === id)?.assignedType)
@@ -867,8 +872,8 @@ export default class App {
   }
 
   _getRiverDisabledReason(selectedEdgeIds) {
-    const edges = this.renderer.terrainData?.edges || {}
-    const regions = this.renderer.terrainData?.regions || []
+    const edges = this.renderer.terrainRenderer.terrainData?.edges || {}
+    const regions = this.renderer.terrainRenderer.terrainData?.regions || []
     const regionMap = new Map(regions.map(r => [r.id, r]))
 
     for (const edgeId of selectedEdgeIds) {
@@ -947,7 +952,7 @@ export default class App {
   }
 
   _isValidRiverEndpoint(ptId, selectedEdgeIds, edges, regionMap) {
-    const terrainPlots = this.renderer.terrainData?.terrainPlots
+    const terrainPlots = this.renderer.terrainRenderer.terrainData?.terrainPlots
     if (terrainPlots && this._getVoidBoundaryPointIds(terrainPlots).has(ptId)) return true
 
     for (const [edgeId, edge] of Object.entries(edges)) {
@@ -974,10 +979,10 @@ export default class App {
     if (!panel) return
 
     if (this.selectedRegionId !== null) {
-      const region = this.renderer.terrainData?.regions?.find(r => r.id === this.selectedRegionId)
+      const region = this.renderer.terrainRenderer.terrainData?.regions?.find(r => r.id === this.selectedRegionId)
       if (region?.vertices?.length) panel.setAnchorPoints(region.vertices)
       else if (region?.seedPoint) panel.setAnchorPoints([{ x: region.seedPoint.x, y: region.seedPoint.y }])
-      const allRegions = this.renderer.terrainData?.regions || []
+      const allRegions = this.renderer.terrainRenderer.terrainData?.regions || []
       panel.showContext('region', {
         pendingType: this.pendingTerrainType,
         isEdge: region?.isEdge ?? false,
@@ -1003,9 +1008,9 @@ export default class App {
   _getEdgeWorldPoints() {
     const pts = []
     for (const edgeId of this.selectedEdgeIds) {
-      const edge = this.renderer.terrainData?.edges?.[edgeId]
+      const edge = this.renderer.terrainRenderer.terrainData?.edges?.[edgeId]
       for (const ptId of edge?.pointIds || []) {
-        const p = this.renderer.edgePointsById.get(ptId)
+        const p = this.renderer.terrainRenderer.edgePointsById.get(ptId)
         if (p) pts.push({ x: p.x, y: p.y })
       }
     }
@@ -1021,14 +1026,14 @@ export default class App {
 
   _handleDistrictClick(districtId) {
     if (this.currentPhase !== 'CitySubdivision') return
-    const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === districtId)
+    const district = this.renderer.districtRenderer.cityDistrictData?.districts?.find(d => d.id === districtId)
     if (!district) return
 
     // Clicking the already-selected district toggles it off — reverting it to a blank
     // polygon if it was previewed but never applied.
     if (this.selectedDistrictId === districtId) {
       this._revertProvisionalDistrict(districtId)
-      this.renderer.deselectDistrict(districtId)
+      this.renderer.districtRenderer.deselectDistrict(districtId)
       this.selectedDistrictId = null
       this.pendingDistrictType = null
       this.pendingResidentialClass = null
@@ -1041,11 +1046,11 @@ export default class App {
     // one if it was never applied.
     if (this.selectedDistrictId !== null) {
       this._revertProvisionalDistrict(this.selectedDistrictId)
-      this.renderer.deselectDistrict(this.selectedDistrictId)
+      this.renderer.districtRenderer.deselectDistrict(this.selectedDistrictId)
       this.selectedDistrictId = null
     }
     if (this.selectedTerrainRegionId !== null) {
-      this.renderer.deselectRegion(this.selectedTerrainRegionId)
+      this.renderer.terrainRenderer.deselectRegion(this.selectedTerrainRegionId)
       this.selectedTerrainRegionId = null
       this.selectedTerrainPlotId = null
     }
@@ -1060,7 +1065,7 @@ export default class App {
     this.pendingDistrictType = null
     this.pendingResidentialClass = null
     this.pendingLeadershipClass = 'Monarchy'
-    this.renderer.selectDistrict(districtId)
+    this.renderer.districtRenderer.selectDistrict(districtId)
     this._refreshDistrictPanel()
     // No auto-preview — user clicks Regenerate Streets to see geometry
   }
@@ -1069,7 +1074,7 @@ export default class App {
   // to a blank district polygon (clears its streets too). Locked districts are final.
   _revertProvisionalDistrict(id = this.selectedDistrictId) {
     if (id === null || id === undefined) return
-    const d = this.renderer.cityDistrictData?.districts?.find(x => x.id === id)
+    const d = this.renderer.districtRenderer.cityDistrictData?.districts?.find(x => x.id === id)
     if (!d || d.locked) return
     // A promoted-but-unapplied district is abandoned entirely (not just blanked) —
     // it didn't exist before the promotion click, so walking away undoes it fully.
@@ -1078,24 +1083,24 @@ export default class App {
     if (!isAbandonedPromotion) {
       d.assignedType = null; d.residentialClass = null; d.LeadershipClass = null
       d.producedResource = null; d.consumedResources = []; d.streetSeed = null; d.description = ''
-      this.renderer.updateDistrictColor(id, null)
+      this.renderer.districtRenderer.updateDistrictColor(id, null)
     }
     GameAPI.revertDistrict(id).then(r => { if (r?.ok) this._renderCityGeometry(r.cityDistrictData) }).catch(() => {})
   }
 
   _handleTerrainRegionClick(regionId) {
     if (this.selectedTerrainRegionId === regionId) {
-      this.renderer.deselectRegion(regionId)
+      this.renderer.terrainRenderer.deselectRegion(regionId)
       this.selectedTerrainRegionId = null
       this.selectedTerrainPlotId = null
       this.pendingTerrainAction = null
       this._refreshDistrictPanel()
       return
     }
-    if (this.selectedTerrainRegionId !== null) this.renderer.deselectRegion(this.selectedTerrainRegionId)
+    if (this.selectedTerrainRegionId !== null) this.renderer.terrainRenderer.deselectRegion(this.selectedTerrainRegionId)
     if (this.selectedDistrictId !== null) {
       this._revertProvisionalDistrict(this.selectedDistrictId)
-      this.renderer.deselectDistrict(this.selectedDistrictId)
+      this.renderer.districtRenderer.deselectDistrict(this.selectedDistrictId)
       this.selectedDistrictId = null
       this.pendingDistrictType = null
     }
@@ -1103,7 +1108,7 @@ export default class App {
     this.selectedTerrainRegionId = regionId
     this.selectedTerrainPlotId = null
     this.pendingTerrainAction = null
-    this.renderer.selectRegion(regionId)
+    this.renderer.terrainRenderer.selectRegion(regionId)
     this._refreshDistrictPanel()
   }
 
@@ -1111,12 +1116,12 @@ export default class App {
     try {
       const response = await GameAPI.assignTerrainDistrict(regionId, plotId, districtType, description, producedResource, name, resourceDefs)
       if (response.ok) {
-        this.renderer.deselectRegion(regionId)
+        this.renderer.terrainRenderer.deselectRegion(regionId)
         this.renderer.clearTerrainPlotSelected()
         this.selectedTerrainRegionId = null
         this.selectedTerrainPlotId = null
         this.pendingTerrainAction = null
-        this.renderer.spawnTerrainDistrictFeature(regionId, plotId, districtType)
+        this.renderer.terrainRenderer.spawnTerrainDistrictFeature(regionId, plotId, districtType)
         if (response.resourceRegistry) {
           this.resourceRegistry = response.resourceRegistry
           this.uiManager.updateResources(this.resourceRegistry)
@@ -1154,7 +1159,7 @@ export default class App {
     this.pendingDistrictType = districtType
     this.pendingResidentialClass = null
     this.pendingLeadershipClass = 'Monarchy'
-    this.renderer.previewDistrictType(this.selectedDistrictId, districtType)
+    this.renderer.districtRenderer.previewDistrictType(this.selectedDistrictId, districtType)
     this._refreshDistrictPanel()
     // Residential needs a class first (_previewDistrictStreets no-ops until one is picked);
     // every other type can preview immediately.
@@ -1174,7 +1179,7 @@ export default class App {
     try {
       const response = await GameAPI.previewDistrictType(districtId, type, residentialClass, LeadershipClass)
       if (response.ok) {
-        const d = this.renderer.cityDistrictData?.districts?.find(x => x.id === districtId)
+        const d = this.renderer.districtRenderer.cityDistrictData?.districts?.find(x => x.id === districtId)
         if (d) { d.assignedType = type; d.residentialClass = residentialClass; d.LeadershipClass = LeadershipClass }
         this._renderCityGeometry(response.cityDistrictData)
       } else { this.uiManager.showError(response.error) }
@@ -1189,7 +1194,7 @@ export default class App {
     try {
       const response = await GameAPI.assignDistrictType(districtId, districtType, description, producedResource, residentialClass, LeadershipClass, secondProducedResource, name, resourceDefs)
       if (response.ok) {
-        const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === districtId)
+        const district = this.renderer.districtRenderer.cityDistrictData?.districts?.find(d => d.id === districtId)
         if (district) {
           district.assignedType = districtType
           district.name = name || ''
@@ -1206,9 +1211,9 @@ export default class App {
         if (response.resourceDefinitions) this.resourceDefinitions = response.resourceDefinitions
         if (response.factions) { this.factions = response.factions; this.uiManager.updateFactions(this.factions) }
         await this._applyResourceWiring(resourceWiring)
-        this.renderer.updateDistrictColor(districtId, districtType)
+        this.renderer.districtRenderer.updateDistrictColor(districtId, districtType)
         this._renderCityGeometry(response.cityDistrictData)
-        if (this.selectedDistrictId !== null) this.renderer.deselectDistrict(this.selectedDistrictId)
+        if (this.selectedDistrictId !== null) this.renderer.districtRenderer.deselectDistrict(this.selectedDistrictId)
         this.selectedDistrictId = null
         this.pendingDistrictType = null
         this.pendingResidentialClass = null
@@ -1260,7 +1265,7 @@ export default class App {
   // ── City edge ───────────────────────────────────────────────────────────────
 
   _handleCityEdgeClick(edge) {
-    const edgeData = this.renderer.cityDistrictData?.edges?.[edge.id]
+    const edgeData = this.renderer.districtRenderer.cityDistrictData?.edges?.[edge.id]
     if (edgeData?.assignedType) return
 
     if (this.selectedCityEdgeIds.has(edge.id)) {
@@ -1274,14 +1279,14 @@ export default class App {
 
       if (this.selectedCityEdgeIds.size === 0) {
         if (this.selectedTerrainRegionId !== null) {
-          this.renderer.deselectRegion(this.selectedTerrainRegionId)
+          this.renderer.terrainRenderer.deselectRegion(this.selectedTerrainRegionId)
           this.selectedTerrainRegionId = null
           this.selectedTerrainPlotId = null
           this.pendingTerrainAction = null
         }
         if (this.selectedDistrictId !== null) {
           this._revertProvisionalDistrict(this.selectedDistrictId)
-          this.renderer.deselectDistrict(this.selectedDistrictId)
+          this.renderer.districtRenderer.deselectDistrict(this.selectedDistrictId)
           this.selectedDistrictId = null
           this.pendingDistrictType = null
         }
@@ -1289,7 +1294,7 @@ export default class App {
 
       this.selectedCityEdgeIds.add(edge.id)
       if (this.pendingCityEdgeType) {
-        this.renderer.previewCityEdgeType(edge.id, this.pendingCityEdgeType)
+        this.renderer.districtRenderer.previewCityEdgeType(edge.id, this.pendingCityEdgeType)
       } else {
         this.renderer.selectCityEdge(edge.id)
       }
@@ -1303,7 +1308,7 @@ export default class App {
     this.pendingCityEdgeType = edgeType
     for (const edgeId of this.selectedCityEdgeIds) {
       const showColor = edgeType !== 'Docks' || this._isCityEdgeNearWater(edgeId)
-      this.renderer.previewCityEdgeType(edgeId, showColor ? edgeType : null)
+      this.renderer.districtRenderer.previewCityEdgeType(edgeId, showColor ? edgeType : null)
     }
     this._refreshDistrictPanel()
   }
@@ -1320,9 +1325,9 @@ export default class App {
           if (response.cityDistrictData) {
             lastCityData = response.cityDistrictData
           } else {
-            const edge = this.renderer.cityDistrictData?.edges?.[edgeId]
+            const edge = this.renderer.districtRenderer.cityDistrictData?.edges?.[edgeId]
             if (edge) { edge.assignedType = edgeType; edge.name = name; edge.description = description }
-            this.renderer.updateCityEdgeColor(edgeId, edgeType)
+            this.renderer.districtRenderer.updateCityEdgeColor(edgeId, edgeType)
           }
         } else {
           this.uiManager.showError(response.error)
@@ -1333,7 +1338,7 @@ export default class App {
       if (lastCityData) {
         this._renderCityGeometry(lastCityData)
         // Trigger rise animation for newly-assigned wall/canal edges.
-        for (const edgeId of edgeIds) this.renderer.updateCityEdgeColor(edgeId, edgeType)
+        for (const edgeId of edgeIds) this.renderer.districtRenderer.updateCityEdgeColor(edgeId, edgeType)
       }
       this._clearCityEdgeSelection()
       this._refreshDistrictPanel()
@@ -1342,7 +1347,7 @@ export default class App {
 
   _isCityEdgeConnectedToSelection(edge) {
     if (this.selectedCityEdgeIds.size === 0) return true
-    const edges = this.renderer.cityDistrictData?.edges || {}
+    const edges = this.renderer.districtRenderer.cityDistrictData?.edges || {}
 
     const terminalCount = new Map()
     for (const selId of this.selectedCityEdgeIds) {
@@ -1368,16 +1373,16 @@ export default class App {
   // Returns true if the city edge (by id) is geometrically adjacent to Sea, Lake, or River.
   // City edges share the same 2D coordinate space as terrain regions and edges.
   _isCityEdgeNearWater(edgeId) {
-    const cityEdge = this.renderer.cityDistrictData?.edges?.[edgeId]
+    const cityEdge = this.renderer.districtRenderer.cityDistrictData?.edges?.[edgeId]
     if (!cityEdge?.pointIds?.length) return false
 
     const pts = cityEdge.pointIds
-      .map(id => this.renderer.cityEdgePointsById.get(id))
+      .map(id => this.renderer.districtRenderer.cityEdgePointsById.get(id))
       .filter(Boolean)
     if (pts.length === 0) return false
 
-    const terrainRegions = this.renderer.terrainData?.regions || []
-    const terrainEdges   = this.renderer.terrainData?.edges   || {}
+    const terrainRegions = this.renderer.terrainRenderer.terrainData?.regions || []
+    const terrainEdges   = this.renderer.terrainRenderer.terrainData?.edges   || {}
     const THRESHOLD = 1.0
 
     for (const region of terrainRegions) {
@@ -1394,7 +1399,7 @@ export default class App {
     for (const edge of Object.values(terrainEdges)) {
       if (edge.assignedType !== 'River') continue
       const riverPts = (edge.pointIds || [])
-        .map(id => this.renderer.edgePointsById.get(id))
+        .map(id => this.renderer.terrainRenderer.edgePointsById.get(id))
         .filter(Boolean)
       for (const cityPt of pts) {
         for (let i = 0; i < riverPts.length - 1; i++) {
@@ -1407,7 +1412,7 @@ export default class App {
   }
 
   _getUsedProducedResources() {
-    const fromCityDistricts = (this.renderer.cityDistrictData?.districts || [])
+    const fromCityDistricts = (this.renderer.districtRenderer.cityDistrictData?.districts || [])
       .filter(d => d.producedResource && d.id !== this.selectedDistrictId)
       .map(d => d.producedResource.toLowerCase())
     const fromTerrainDistricts = (this.factions || [])
@@ -1430,11 +1435,11 @@ export default class App {
     // it, stop offering it in every district-type picker (City Expansion promotion and
     // the district panel alike). Excludes the currently-selected district itself so its
     // own existing Leadership assignment stays visible/editable.
-    const allDistricts = this.renderer.cityDistrictData?.districts || []
+    const allDistricts = this.renderer.districtRenderer.cityDistrictData?.districts || []
     const leadershipTaken = (excludeId = null) =>
       allDistricts.some(d => d.assignedType === 'Leadership' && d.id !== excludeId)
     if (this.selectedTerrainRegionId !== null) {
-      const region = this.renderer.terrainData?.regions?.find(r => r.id === this.selectedTerrainRegionId)
+      const region = this.renderer.terrainRenderer.terrainData?.regions?.find(r => r.id === this.selectedTerrainRegionId)
       if (region?.vertices?.length) panel.setAnchorPoints(region.vertices)
       else if (region?.seedPoint) panel.setAnchorPoints([{ x: region.seedPoint.x, y: region.seedPoint.y }])
       const plotId = this.selectedTerrainPlotId ?? null
@@ -1442,7 +1447,7 @@ export default class App {
       // Server-authoritative (ADR-0003) — the eligible-plot-id list is computed and
       // pushed by the server on every district-changing response; the client never
       // re-derives Living Boundary adjacency itself.
-      const eligiblePlotIds = this.renderer.cityDistrictData?.eligiblePromotionPlotIds
+      const eligiblePlotIds = this.renderer.districtRenderer.cityDistrictData?.eligiblePromotionPlotIds
       const isAdjacentToCity = plotId !== null && !!eligiblePlotIds?.includes(plotId)
       panel.showContext('terrainRegion', {
         regionType: region?.assignedType,
@@ -1461,7 +1466,7 @@ export default class App {
       return
     }
     if (this.selectedDistrictId !== null) {
-      const district = this.renderer.cityDistrictData?.districts?.find(d => d.id === this.selectedDistrictId)
+      const district = this.renderer.districtRenderer.cityDistrictData?.districts?.find(d => d.id === this.selectedDistrictId)
       const poly = district?.polygon || district?.boundary
       if (poly?.length) panel.setAnchorPoints(poly)
       else if (district?.seedPoint) panel.setAnchorPoints([{ x: district.seedPoint.x, y: district.seedPoint.y }])
@@ -1481,9 +1486,9 @@ export default class App {
     } else if (this.selectedCityEdgeIds.size > 0) {
       const edgePts = []
       for (const edgeId of this.selectedCityEdgeIds) {
-        const edge = this.renderer.cityDistrictData?.edges?.[edgeId]
+        const edge = this.renderer.districtRenderer.cityDistrictData?.edges?.[edgeId]
         for (const ptId of edge?.pointIds || []) {
-          const p = this.renderer.cityEdgePointsById.get(ptId)
+          const p = this.renderer.districtRenderer.cityEdgePointsById.get(ptId)
           if (p) edgePts.push({ x: p.x, y: p.y })
         }
       }
@@ -1572,7 +1577,8 @@ export default class App {
       state.worldTerrainData.terrainPlots || [],
       state.worldTerrainData.edgePoints || [],
       pointsById,
-      state.worldTerrainData.riverCliffFaces || []
+      state.worldTerrainData.riverCliffFaces || [],
+      state.worldTerrainData.hillsWallFaces || []
     )
 
     const cityData = state.cityDistrictData
@@ -1591,11 +1597,11 @@ export default class App {
       this.renderer.syncPromotedPlots(cityData)
       this.renderer.setMode('city')
       this.renderer.setFinishedGround(guildPhase)
-      this.renderer.drawDistrictCenters(cityData.districts)
+      this.renderer.districtRenderer.drawDistrictCenters(cityData.districts)
       // Streets/plots/buildings exist for any districts already typed (per-district gen).
       if (cityData.streetGraph) this._renderCityGeometry(cityData)
     } else {
-      this.renderer.clearStreetLayer()
+      this.renderer.groundRenderer.clearStreetLayer()
       this.renderer.clearDerivedLayers()
       this.renderer.setCityDistrictData([])
       this.renderer.setMode('terrain')
@@ -1607,17 +1613,17 @@ export default class App {
 
     if (state.threats) {
       this.threats = state.threats
-      this.renderer.renderThreats(this.threats, regions)
+      this.renderer.terrainRenderer.renderThreats(this.threats, regions)
     }
     if (state.tradingDestinations) {
       this.tradingDestinations = state.tradingDestinations
-      this.renderer.renderTrades(this.tradingDestinations, state.worldTerrainData)
+      this.renderer.terrainRenderer.renderTrades(this.tradingDestinations, state.worldTerrainData)
     }
     if (state.factions) {
       this.factions = state.factions
       this.uiManager.updateFactions(this.factions)
     }
-    this.renderer.renderForeignPowerBands(state.foreignPowers || [])
+    this.renderer.terrainRenderer.renderForeignPowerBands(state.foreignPowers || [])
     this._updateFPLabels(state.foreignPowers || [], setupStep)
     this.inputHandler.setTerrainData(state)
     this.uiManager.showSetupPhase(setupStep)
@@ -1860,7 +1866,7 @@ export default class App {
           const resourceDefs = [...buys, ...sells].filter(r => r.isNew)
           const res = await GameAPI.addForeignPowerTrade({ fpId: fp.id, name, description, buys: buys.map(r => r.name), sells: sells.map(r => r.name), resourceDefs })
           if (res.ok) {
-            if (res.tradingDestinations) { this.tradingDestinations = res.tradingDestinations; this.renderer.renderTrades(this.tradingDestinations, this.renderer.terrainData) }
+            if (res.tradingDestinations) { this.tradingDestinations = res.tradingDestinations; this.renderer.terrainRenderer.renderTrades(this.tradingDestinations, this.renderer.terrainRenderer.terrainData) }
             if (res.factions) { this.factions = res.factions; this.uiManager.updateFactions(this.factions) }
             if (res.resourceRegistry) this.resourceRegistry = res.resourceRegistry
             if (res.resourceDefinitions) this.resourceDefinitions = res.resourceDefinitions
@@ -1876,13 +1882,13 @@ export default class App {
   }
 
   _finalizeTerrainDisplay() {
-    for (const region of this.renderer.terrainData?.regions || []) {
+    for (const region of this.renderer.terrainRenderer.terrainData?.regions || []) {
       if (!region.assignedType) {
         region.assignedType = 'Plains'
-        this.renderer.updateRegionColor(region.id, 'Plains')
+        this.renderer.terrainRenderer.updateRegionColor(region.id, 'Plains')
       }
     }
-    this.renderer.hideUndefinedEdges()
+    this.renderer.terrainRenderer.hideUndefinedEdges()
   }
 
   _focusCameraOnCity(regions) {
@@ -1928,14 +1934,14 @@ export default class App {
         this.uiManager.guildPanel?.reset()
         this.uiManager.updateResources([])
         this.uiManager.updateFactions([])
-        this.renderer.clearStreetLayer()
+        this.renderer.groundRenderer.clearStreetLayer()
         this.renderer.clearDerivedLayers()
         this.renderer.clearAllDebugObjects()
         this.renderer.setCityDistrictData([])
         this.renderer.setMode('terrain')
         this.renderer.guildSetupActive = false
         this.renderer.setCityEdgesHidden(false)
-        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [])
+        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [], response.hillsWallFaces || [])
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')
         // New Game: discard any saved camera view from the previous game first, so

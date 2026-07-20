@@ -270,7 +270,7 @@ export default class WorldRenderer {
   focusOnHQ(hq) {
     if (!hq || this._walkMode) return
     const cc = this.cameraController
-    const cd = this.cityDistrictData
+    const cd = this.districtRenderer.cityDistrictData
     let x = 0, z = 0, found = false
     if (hq.kind === 'plot') {
       const plot = cd?.plots?.find(p => p.id === hq.refId)
@@ -381,10 +381,6 @@ export default class WorldRenderer {
 
   // ── Getters ─────────────────────────────────────────────────────────────────
 
-  get terrainData()         { return this.terrainRenderer.terrainData }
-  get cityDistrictData()    { return this.districtRenderer.cityDistrictData }
-  get edgePointsById()      { return this.terrainRenderer.edgePointsById }
-  get cityEdgePointsById()  { return this.districtRenderer.cityEdgePointsById }
   get isWalkMode()          { return !!this._walkMode }
 
 
@@ -412,6 +408,7 @@ export default class WorldRenderer {
     this.groundRenderer.buildingRenderer.setFlattened(true)
     this.terrainRenderer.terrainPolylines?.setFlattened(true)
     this.terrainRenderer.setDebugMarkersFlattened(true)
+    this.districtRenderer.setFlattened(true)
   }
 
   // Hide/show terrain plot meshes and exclude/include them from hit-testing based on
@@ -426,106 +423,41 @@ export default class WorldRenderer {
     return this.terrainRenderer.setPromotedPlotIds(promotedPlotIds)
   }
 
-  renderTerrain(regions, terrainPlots) {
-    return this.terrainRenderer.renderTerrain(regions, terrainPlots)
-  }
 
-  renderEdges(edges) {
-    return this.terrainRenderer.renderEdges(edges)
-  }
 
-  get edgeMeshes()     { return this.terrainRenderer.edgeMeshes }
-  get junctionMeshes() { return this.terrainRenderer.junctionMeshes }
 
-  hideUndefinedEdges() {
-    return this.terrainRenderer.hideUndefinedEdges()
-  }
 
-  updateRegionColor(regionId, terrainType) {
-    this.terrainRenderer.updateRegionColor(regionId, terrainType); this.markDirty()
-  }
 
-  selectRegion(regionId) {
-    this.terrainRenderer.selectRegion(regionId); this.markDirty()
-  }
 
-  deselectRegion(regionId) {
-    this.terrainRenderer.deselectRegion(regionId); this.markDirty()
-  }
 
-  previewRegionType(regionId, terrainType) {
-    this.terrainRenderer.previewRegionType(regionId, terrainType); this.markDirty()
-  }
 
-  selectEdge(edgeId) {
-    this.terrainRenderer.selectEdge(edgeId); this.markDirty()
-  }
 
-  deselectEdge(edgeId) {
-    this.terrainRenderer.deselectEdge(edgeId); this.markDirty()
-  }
 
-  previewEdgeType(edgeId, edgeType) {
-    this.terrainRenderer.previewEdgeType(edgeId, edgeType); this.markDirty()
-  }
 
-  updateEdgeColor(edgeId, terrainType) {
-    this.terrainRenderer.updateEdgeColor(edgeId, terrainType); this.markDirty()
-  }
 
   setEdgeHover(edgeId) {
     if (this.mode !== 'terrain') return
     this.terrainRenderer.setEdgeHover(edgeId); this.markDirty()
   }
 
-  setEdgePathAnchor(edgeId) {
-    this.terrainRenderer.setEdgePathAnchor(edgeId)
-  }
 
   renderAuditFindings(findings) {
     this.terrainRenderer.renderAuditFindings(findings)
     this.markDirty()
   }
 
-  getShortestEdgePath(fromId, toId) {
-    return this.terrainRenderer.getShortestEdgePath(fromId, toId)
-  }
 
-  renderThreats(threats, regions) {
-    return this.terrainRenderer.renderThreats(threats, regions)
-  }
 
-  renderTrades(tradingDestinations, terrainData) {
-    return this.terrainRenderer.renderTrades(tradingDestinations, terrainData)
-  }
 
-  renderForeignPowerBands(foreignPowers) {
-    return this.terrainRenderer.renderForeignPowerBands(foreignPowers)
-  }
 
   getFPBandCenters() {
     return this.terrainRenderer._fpBandCenters
   }
 
-  setFPBandsVisible(visible) {
-    return this.terrainRenderer.setFPBandsVisible(visible)
-  }
 
-  clearMarkers() {
-    return this.terrainRenderer.clearMarkers()
-  }
 
-  spawnTerrainDistrictFeature(regionId, plotId, districtType) {
-    return this.terrainRenderer.spawnTerrainDistrictFeature(regionId, plotId, districtType)
-  }
 
-  getRegionAtWorldPos(worldX, worldY) {
-    return this.terrainRenderer.getRegionAtWorldPos(worldX, worldY)
-  }
 
-  getTerrainSetupPlotAtWorldPos(worldX, worldY) {
-    return this.terrainRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
-  }
 
   // Grid-bucketed spatial index over cityDistrictData.plots (same bounding-box-bucket
   // technique server-side auditGroundplane.js uses), so getZHeightAtWorldPos/
@@ -537,7 +469,7 @@ export default class WorldRenderer {
   // often). Lazily rebuilt, invalidated by array reference — setCityDistrictData always
   // hands over a fresh plots array, so a stale index never survives a real update.
   _plotSpatialIndex() {
-    const plots = this.cityDistrictData?.plots
+    const plots = this.districtRenderer.cityDistrictData?.plots
     if (this._plotIndexSource === plots) return this._plotIndexGrid
     const cellSize = 6
     const grid = new Map()
@@ -625,33 +557,12 @@ export default class WorldRenderer {
     this._needsRender = true
   }
 
-  getEdgeAtWorldPos(worldX, worldY) {
-    return this.terrainRenderer.getEdgeAtWorldPos(worldX, worldY)
-  }
 
-  getTerrainCornerAtWorldPos(worldX, worldY, threshold) {
-    return this.terrainRenderer.getTerrainCornerAtWorldPos(worldX, worldY, threshold)
-  }
 
-  getTerrainSeedAtWorldPos(worldX, worldY, threshold) {
-    return this.terrainRenderer.getTerrainSeedAtWorldPos(worldX, worldY, threshold)
-  }
 
-  getTerrainPlotCenterAtWorldPos(worldX, worldY, threshold) {
-    return this.terrainRenderer.getTerrainPlotCenterAtWorldPos(worldX, worldY, threshold)
-  }
 
-  getTerrainCenterAtWorldPos(worldX, worldY, threshold) {
-    return this.terrainRenderer.getTerrainCenterAtWorldPos(worldX, worldY, threshold)
-  }
 
-  getSurfaceCornerAtWorldPos(worldX, worldY, threshold) {
-    return this.terrainRenderer.getSurfaceCornerAtWorldPos(worldX, worldY, threshold)
-  }
 
-  drawVoronoiCenters(regions) {
-    return this.terrainRenderer.drawVoronoiCenters(regions)
-  }
 
 
   // ── District delegation ─────────────────────────────────────────────────────
@@ -659,15 +570,15 @@ export default class WorldRenderer {
   setCityDistrictData(data, pointsById) {
     this.districtRenderer.setCityDistrictData(data, pointsById)
     this.groundRenderer.setStreetGraph(this.districtRenderer.cityDistrictData?.streetGraph)
+    // See _reapplyTopDownFlatten's doc comment — District Setup entry ("Done" in Terrain
+    // mode) builds fresh district meshes at real relief regardless of camera mode;
+    // without this, staying in top-down across that transition renders them black
+    // against the still-active flat-world floor-scroll clip plane (user-confirmed
+    // 2026-07-19).
+    this._reapplyTopDownFlatten()
   }
 
-  renderDistricts(districts) {
-    return this.districtRenderer.renderDistricts(districts)
-  }
 
-  renderCityEdges(edges) {
-    return this.districtRenderer.renderCityEdges(edges)
-  }
 
   // Guild Setup hides the City-Edge overlay. Re-renders edges so the change takes
   // effect immediately (hide → clear; show → redraw from current data).
@@ -676,25 +587,10 @@ export default class WorldRenderer {
     this.districtRenderer.renderCityEdges(this.districtRenderer.cityDistrictData?.edges || {})
   }
 
-  clearDistrictLayer() {
-    return this.districtRenderer.clearDistrictLayer()
-  }
 
-  updateDistrictColor(districtId, districtType) {
-    this.districtRenderer.updateDistrictColor(districtId, districtType); this.markDirty()
-  }
 
-  selectDistrict(districtId) {
-    this.districtRenderer.selectDistrict(districtId); this.markDirty()
-  }
 
-  deselectDistrict(districtId) {
-    this.districtRenderer.deselectDistrict(districtId); this.markDirty()
-  }
 
-  previewDistrictType(districtId, type) {
-    this.districtRenderer.previewDistrictType(districtId, type); this.markDirty()
-  }
 
   selectCityEdge(edgeId) {
     this.districtRenderer.selectCityEdge(edgeId)
@@ -708,17 +604,8 @@ export default class WorldRenderer {
     this.markDirty()
   }
 
-  previewCityEdgeType(edgeId, type) {
-    this.districtRenderer.previewCityEdgeType(edgeId, type); this.markDirty()
-  }
 
-  updateCityEdgeColor(edgeId, type) {
-    return this.districtRenderer.updateCityEdgeColor(edgeId, type)
-  }
 
-  setDistrictHover(districtId) {
-    this.districtRenderer.setDistrictHover(districtId); this.markDirty()
-  }
 
   setCityEdgeHover(edgeId) {
     this.groundRenderer.clearBoundaryChainHighlight()
@@ -737,13 +624,7 @@ export default class WorldRenderer {
     }
   }
 
-  getDistrictAtWorldPos(worldX, worldY) {
-    return this.districtRenderer.getDistrictAtWorldPos(worldX, worldY)
-  }
 
-  getCityEdgeAtWorldPos(worldX, worldY) {
-    return this.districtRenderer.getCityEdgeAtWorldPos(worldX, worldY)
-  }
 
   // ── Guild Headquarters picking ────────────────────────────────────────────────
   // The non-square plot whose polygon contains the point → { id, districtId }.
@@ -759,7 +640,7 @@ export default class WorldRenderer {
 
   // The nearest Landmark within `r` world units → { refId, districtId, name }.
   getLandmarkAtWorldPos(worldX, worldY, r = 0.4) {
-    const lbs = this.cityDistrictData?.landmarkBuildings || []
+    const lbs = this.districtRenderer.cityDistrictData?.landmarkBuildings || []
     let best = null, bestD = r * r
     for (let i = 0; i < lbs.length; i++) {
       const dx = worldX - lbs[i].x, dy = worldY - lbs[i].z
@@ -796,9 +677,6 @@ export default class WorldRenderer {
     this._overlaySaved = null
   }
 
-  drawDistrictCenters(districts) {
-    return this.districtRenderer.drawDistrictCenters(districts)
-  }
 
 
   // ── Ground delegation (streets + plots + squares + blocks + fences) ─────────
@@ -811,42 +689,18 @@ export default class WorldRenderer {
     return this.groundRenderer.renderStreetGraph(streetGraph)
   }
 
-  clearStreetLayer() {
-    return this.groundRenderer.clearStreetLayer()
-  }
 
   renderGutters(streetGraph) {
     if (!RENDER_GUTTERS) return
     return this.groundRenderer.renderGutters(streetGraph)
   }
 
-  clearGutterLayer() {
-    return this.groundRenderer.clearGutterLayer()
-  }
 
-  setStreetEdgeHover(edge) {
-    return this.groundRenderer.setStreetEdgeHover(edge)
-  }
 
-  setJunctionHover(junctionId) {
-    return this.groundRenderer.setJunctionHover(junctionId)
-  }
 
-  getStreetEdgeAtWorldPos(worldX, worldY, threshold) {
-    return this.groundRenderer.getStreetEdgeAtWorldPos(worldX, worldY, threshold)
-  }
 
-  getJunctionAtWorldPos(worldX, worldY, threshold) {
-    return this.groundRenderer.getJunctionAtWorldPos(worldX, worldY, threshold)
-  }
 
-  drawStreetSeeds(streetGraph) {
-    return this.groundRenderer.drawStreetSeeds(streetGraph)
-  }
 
-  getStreetSeedAtWorldPos(worldX, worldY, threshold) {
-    return this.groundRenderer.getStreetSeedAtWorldPos(worldX, worldY, threshold)
-  }
 
   renderBlocks(blocks) {
     if (!RENDER_BLOCKS) {
@@ -856,17 +710,8 @@ export default class WorldRenderer {
     return this.groundRenderer.renderBlocks(blocks)
   }
 
-  clearBlockLayer() {
-    return this.groundRenderer.clearBlockLayer()
-  }
 
-  setBlockHover(blockId) {
-    return this.groundRenderer.setBlockHover(blockId)
-  }
 
-  clearBlockHover() {
-    return this.groundRenderer.clearBlockHover()
-  }
 
   renderPlots(plots, districtData, opts) {
     if (!RENDER_PLOTS) return
@@ -881,29 +726,11 @@ export default class WorldRenderer {
     return result
   }
 
-  clearPlotLayer() {
-    return this.groundRenderer.clearPlotLayer()
-  }
 
-  drawBlockCenters(blocks) {
-    return this.groundRenderer.drawBlockCenters(blocks)
-  }
 
-  getBlockCenterAtWorldPos(worldX, worldY, threshold) {
-    return this.groundRenderer.getBlockCenterAtWorldPos(worldX, worldY, threshold)
-  }
 
-  drawPlotCenters(plots) {
-    return this.groundRenderer.drawPlotCenters(plots)
-  }
 
-  drawCitySurfaceCorners(streetGraph, blocks, plots) {
-    return this.groundRenderer.drawSurfaceCorners(streetGraph, blocks, plots)
-  }
 
-  getPlotCenterAtWorldPos(worldX, worldY, threshold) {
-    return this.groundRenderer.getPlotCenterAtWorldPos(worldX, worldY, threshold)
-  }
 
   clearDerivedLayers() {
     this.groundRenderer.clearGutterLayer()
@@ -917,7 +744,7 @@ export default class WorldRenderer {
   // Outline a plot polygon or ring a landmark during HQ pick mode.
   setHQHover(kind, refId) {
     this.clearHQHover()
-    const cd = this.cityDistrictData
+    const cd = this.districtRenderer.cityDistrictData
     const mat = new THREE.LineBasicMaterial({ color: 0x88ddff })
     if (kind === 'plot') {
       const plot = (cd?.plots || []).find(p => p.id === refId)
@@ -1000,9 +827,6 @@ export default class WorldRenderer {
     this.markDirty()
   }
 
-  getTerrainPlotAtWorldPos(worldX, worldY) {
-    return this.groundRenderer.getTerrainPlotAtWorldPos(worldX, worldY)
-  }
 
   // Switch plot bases to/from the finished grassy-brown ground (leaving District Setup).
   // When finishing, also remove the district fill polygons — they're fully covered by
@@ -1043,6 +867,7 @@ export default class WorldRenderer {
     this.groundRenderer.buildingRenderer.setFlattened(isTopDown)
     this.terrainRenderer.terrainPolylines?.setFlattened(isTopDown)
     this.terrainRenderer.setDebugMarkersFlattened(isTopDown)
+    this.districtRenderer.setFlattened(isTopDown)
     this._lastAppliedFloorScrollUnits = null   // force _applyFloorScrollClip to re-sync next frame
     this._cameraMoveCallbacks.forEach(fn => fn())  // reposition DOM overlays immediately
     this.markDirty()
@@ -1133,9 +958,18 @@ export default class WorldRenderer {
       this._walkMode = new WalkMode(
         this.scene, this.renderer, streetGraph, targetPos, initialYaw,
         () => this._exitWalkMode(), this.groundRenderer.buildingRenderer, this.groundRenderer._fenceSegments,
+        this.groundRenderer.buildingRenderer._wallSegments,
       )
       this.cameraController.setEnabled(false)
       this.terrainRenderer.setFPBandsVisible(false)
+      // District boundary preview polylines (setModeVisibility's edgeMeshes/junctionMeshes)
+      // are meant to disappear once real streets exist (see setModeVisibility's own
+      // comment) but that swap is driven by the Setup UI's mode ('terrain'/'city'/
+      // 'streets'), which Walk Mode is orthogonal to — entering Walk Mode before that
+      // mode has advanced to 'streets' left them visible underfoot. Force them hidden
+      // for the duration of Walk Mode regardless of the underlying Setup mode; restored
+      // to whatever's actually correct for `this.mode` on exit, below.
+      this.districtRenderer.setModeVisibility(true)
       this.minimap.show()
       this.compass.hide()
       return true
@@ -1153,6 +987,7 @@ export default class WorldRenderer {
     this.minimap.hide()
     this.compass.show()
     this.terrainRenderer.setFPBandsVisible(true)
+    this.districtRenderer.setModeVisibility(this.mode === 'streets')
     this._clearFloorScrollClip()   // back to iso — always unclipped, never inherits walk/top-down state
     // Re-centre the iso camera on the character's last position at max zoom
     this.cameraController.targetPosition.set(x, 0, z)
@@ -1236,7 +1071,7 @@ export default class WorldRenderer {
       this.scene.add(this._plotDebugGroup)
     }
 
-    const cd = this.cityDistrictData
+    const cd = this.districtRenderer.cityDistrictData
     const plot = (cd?.plots || []).find(p => p.id === plotId)
     if (!plot) {
       console.warn(`[debugPlotWings] plot ${plotId} not found`)
@@ -1291,9 +1126,6 @@ export default class WorldRenderer {
     }
   }
 
-  getDistrictCenterAtWorldPos(worldX, worldY, threshold) {
-    return this.districtRenderer.getDistrictCenterAtWorldPos(worldX, worldY, threshold)
-  }
 
 
   // ── Utility methods (called by App.js directly) ──────────────────────────────
@@ -1310,7 +1142,7 @@ export default class WorldRenderer {
   captureHQSnapshot(hq) {
     if (!hq || !this.renderer || !this.scene) return null
     try {
-      const cd = this.cityDistrictData
+      const cd = this.districtRenderer.cityDistrictData
       const br = this.groundRenderer?.buildingRenderer
 
       let cx = 0, cz = 0, halfW = 0.25, halfH = 0.25

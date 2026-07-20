@@ -24,9 +24,10 @@ function distToSegment(x, y, a, b) {
 }
 
 export default class WalkMode {
-  constructor(scene, renderer, streetGraph, targetPos, initialYaw, onExit, buildingRenderer, fenceSegments) {
+  constructor(scene, renderer, streetGraph, targetPos, initialYaw, onExit, buildingRenderer, fenceSegments, wallSegments) {
     this._scene  = scene
     this._onExit = onExit
+    this._buildingRenderer = buildingRenderer
 
     // Perspective camera
     const aspect = window.innerWidth / window.innerHeight
@@ -50,13 +51,17 @@ export default class WalkMode {
     // whenever the candidate position comes within FENCE_CLEARANCE of one.
     this._fenceSegments = fenceSegments ?? []
 
-    // Ground-following (TODO.md "Groundplane Z-height implementation", plan "rustling-
-    // churning-finch"): a straight-down raycast against the actual rendered scene, not
-    // the flat GROUND_Y=0 constant — so the character sits on the real ground plane
-    // wherever it has relief. Excludes the character's own meshes (added below) so it
-    // never hits itself. PgUp/PgDown (`this._py`) stays a RELATIVE offset applied on top
-    // of whatever this returns, not an absolute height.
-    this._raycaster = new THREE.Raycaster()
+    // Building wall segments (world-space, height-aware — see ParametricBuilding.js's
+    // wallSegments comment and BuildingRenderer's transform at the assemble() call
+    // site): { ax, ay, bx, by, yMin, yMax }. Unlike fences, a wall only blocks when the
+    // character's own vertical span overlaps [yMin, yMax] — PgUp/PgDn moving the
+    // character above or below a wall's floor lets them pass through it (2026-07-19,
+    // "prevent the character going on the roof... height aware").
+    this._wallSegments = wallSegments ?? []
+
+    // Ground-following (see _groundZAt): the canonical groundplane elevation source,
+    // not a raycast against rendered geometry. PgUp/PgDown (`this._py`) stays a
+    // RELATIVE offset applied on top of whatever this returns, not an absolute height.
     this._groundY = GROUND_Y
 
     // Spawn at the junction nearest to the current camera target
@@ -131,14 +136,16 @@ export default class WalkMode {
   // Straight-down raycast at (x,z) against the rendered scene, excluding the character's
   // own meshes. Returns the first hit's height, or GROUND_Y (0) if nothing is hit (no
   // ground rendered under this spot, or ground still flat at 0 — same result either way).
+  // Fixed 2026-07-19: a raycast against the WHOLE rendered scene hits whatever mesh is
+  // topmost at (x,z) — an overhanging eave, a jettied upper floor, roof geometry — not
+  // necessarily the walkable ground/floor, so the character could "teleport" up onto an
+  // eave it was only ever walking underneath. Ground-following must use the SAME
+  // canonical groundplane elevation source everything else does (getZHeight, wired to
+  // WorldRenderer.getZHeightAtWorldPos — see the "Zheight Elevation Source Unification"
+  // fix), never a scene raycast: it answers "what's the ground height at this (x,z)",
+  // not "what's the first thing a ray from the sky hits."
   _groundZAt(x, z) {
-    this._raycaster.set(new THREE.Vector3(x, 1000, z), new THREE.Vector3(0, -1, 0))
-    const hits = this._raycaster.intersectObjects(this._scene.children, true)
-    for (const hit of hits) {
-      if (hit.object === this._char || hit.object === this._head) continue
-      return hit.point.y
-    }
-    return GROUND_Y
+    return this._buildingRenderer?.getZHeight?.(x, z) ?? GROUND_Y
   }
 
   _placeCharacter() {
@@ -174,6 +181,17 @@ export default class WalkMode {
       let blocked = false
       for (const { a, b } of this._fenceSegments) {
         if (distToSegment(nx, nz, a, b) < CHAR_RADIUS + FENCE_CLEARANCE) { blocked = true; break }
+      }
+      if (!blocked && this._wallSegments.length) {
+        // Character's own vertical span (feet to head) — a wall only blocks if it
+        // overlaps this range, so PgUp/PgDn onto a different floor passes through a
+        // wall that belongs to a floor the character isn't on.
+        const feetY = this._groundY + this._py
+        const headY = feetY + CHAR_HEIGHT
+        for (const w of this._wallSegments) {
+          if (feetY >= w.yMax || headY <= w.yMin) continue   // vertically clear of this wall
+          if (distToSegment(nx, nz, { x: w.ax, y: w.ay }, { x: w.bx, y: w.by }) < CHAR_RADIUS + FENCE_CLEARANCE) { blocked = true; break }
+        }
       }
       if (!blocked) {
         this._px = nx

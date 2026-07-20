@@ -400,6 +400,12 @@ export default class GroundRenderer {
         geom.setAttribute('position', new THREE.BufferAttribute(verts, 3))
         geom.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2, 0, 2, 3]), 1))
         geom.computeVertexNormals()
+        // Real per-vertex height, kept for top-down flatten/unflatten — same convention
+        // as _makeFill's plot/fence fills (see setTerrainFlattened). Streets used to be
+        // hardcoded flat here (GROUND_Y), so this was never needed; now that junction/
+        // gutter z is real (Tier 1 z-height), omitting it left streets floating above the
+        // flattened top-down ground plane instead of flattening down to meet it.
+        geom.userData.realY = verts.filter((_, i) => i % 3 === 1)
         // Segment's own direction — Brick streets rotate their procedural brick
         // pattern to it so bricks lay long-axis-across-the-road (see streetMaterial.js).
         // Overridden to the connected-square-cluster's shared direction when this road
@@ -450,6 +456,8 @@ export default class GroundRenderer {
       geom.setAttribute('position', new THREE.BufferAttribute(verts, 3))
       geom.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1))
       geom.computeVertexNormals()
+      // See the street-segment quad above — same realY stash for top-down flatten.
+      geom.userData.realY = verts.filter((_, i) => i % 3 === 1)
       // Same cluster-angle override as the street segments above — if any road meeting
       // at this junction belongs to a square cluster, the fan adopts that direction too.
       let fanAngle = 0
@@ -789,7 +797,7 @@ export default class GroundRenderer {
       if (!poly?.length) continue
       for (let i = 0; i < poly.length; i++) {
         const a = poly[i], b = poly[(i + 1) % poly.length]
-        blockLineVerts.push(a.x, GROUND_Y , a.y, b.x, GROUND_Y, b.y)
+        blockLineVerts.push(a.x, a.z ?? GROUND_Y, a.y, b.x, b.z ?? GROUND_Y, b.y)
       }
     }
     if (blockLineVerts.length === 0) return
@@ -812,7 +820,7 @@ export default class GroundRenderer {
     const verts = []
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i], b = poly[(i + 1) % poly.length]
-      verts.push(a.x, GROUND_Y, a.y, b.x, GROUND_Y, b.y)
+      verts.push(a.x, a.z ?? GROUND_Y, a.y, b.x, b.z ?? GROUND_Y, b.y)
     }
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
@@ -1340,6 +1348,7 @@ export default class GroundRenderer {
     for (const mesh of this._terrainPlotMeshMap.values()) flattenMesh(mesh)
     for (const f of this._plotFills) flattenMesh(f.mesh)
     for (const mesh of this._fenceMeshes) flattenMesh(mesh)
+    for (const mesh of this.streetMeshes) flattenMesh(mesh)
   }
 
   // Switch plot bases between per-district colours (during setup) and uniform grassy brown.

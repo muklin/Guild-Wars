@@ -23,6 +23,18 @@ const TERRAIN_COLORS = {
   }
 }
 
+// Terrain-type pairs with NO valid edge type at all (user-confirmed 2026-07-19): River
+// and Cliff are the only two terrain edge types, and neither means anything between two
+// regions that read as one continuous, undifferentiated body — Sea/Lake<->Sea/Lake
+// (open water, no coastline to draw), and Mountains<->Mountains / Desert<->Desert (a
+// Voronoi-noise seam inside what's meant to look like one contiguous range/dune sea, not
+// a real geographic feature — unlike e.g. two Plains regions, where a River genuinely
+// can run between them). WATER_TYPES matches on EITHER side being in the set (any
+// water/water combo); SAME_TYPE_ONLY_TYPES only matches when BOTH sides are the
+// IDENTICAL type, since e.g. Mountains<->Desert is a real, definable boundary.
+const WATER_TYPES = new Set(['Sea', 'Lake'])
+const SAME_TYPE_ONLY_TYPES = new Set(['Mountains', 'Desert'])
+
 export default class TerrainRenderer {
   constructor(scene) {
     this.scene = scene
@@ -286,9 +298,9 @@ export default class TerrainRenderer {
   // tests, renderEdges' "is this edge shown" gate, and renderTerrain all explicitly
   // filter out `.hidden` entries, so the hidden ring stays invisible/non-interactive
   // until that feature exists.
-  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = []) {
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], hillsWallFaces = []) {
     this.clearMarkers()
-    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points,', riverCliffFaces.length, 'river/cliff faces')
+    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points,', riverCliffFaces.length, 'river/cliff faces,', hillsWallFaces.length, 'hills wall faces')
     // District z-height (plan "typed-gliding-leaf") surfaced the same gap here as
     // DistrictRenderer's cityEdgePointsById had: edgePoints is a plain {id,x,y}
     // convenience copy (see e.g. TerrainVoronoiGenerator's edge-point construction) —
@@ -308,6 +320,9 @@ export default class TerrainRenderer {
       for (const face of riverCliffFaces) {
         face.polygon = resolvePolygon(face.pointIds, pointsById) ?? face.polygon
       }
+      for (const face of hillsWallFaces) {
+        face.polygon = resolvePolygon(face.pointIds, pointsById) ?? face.polygon
+      }
       // Coarse region hulls (Stage D, ADR-0020): TerrainVoronoiGenerator now mints
       // region.pointIds straight from the same registry-linked vertices its convexHull
       // reorders — resolve through the registry here too, same as terrainPlots/
@@ -319,7 +334,7 @@ export default class TerrainRenderer {
         region.polygon = resolvePolygon(region.pointIds, pointsById) ?? region.polygon
       }
     }
-    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces }
+    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces, hillsWallFaces }
     this.renderTerrain(regions, terrainPlots || [])
     // Re-enabled in Terrain mode itself (plan "typed-gliding-leaf", user-confirmed
     // 2026-07-14 — the bank-path/confluence artifacts that motivated the 2026-07-11
@@ -328,6 +343,13 @@ export default class TerrainRenderer {
     // has a matching face by sourceEdgeId, so the stroke overlay and the fill never
     // double-render the same edge.
     this.renderRiverCliffFaces(riverCliffFaces)
+    // Hills solid extrusion (plan "shimmering-wondering-flurry", Stage 1) — vertical
+    // wall quads around each Hills region's outer boundary. Cannot reuse
+    // renderRiverCliffFaces/buildRegionMesh: a wall quad's two side-edges share the same
+    // (x,y), differing only in z, so buildRegionMesh's XY-plane ear-clipping
+    // (triangulatePolygon) sees a zero-area line there, not a real quad — see
+    // renderHillsWallFaces' own doc comment for the dedicated builder this uses instead.
+    this.renderHillsWallFaces(hillsWallFaces)
     this.drawVoronoiCenters(regions)
     this.drawTerrainPlotCenters(terrainPlots)
     this.drawSurfaceCorners(terrainPlots, riverCliffFaces)
@@ -347,6 +369,52 @@ export default class TerrainRenderer {
       if (!mesh) continue
       this.scene.add(mesh)
       this.riverCliffFaceMeshes.set(face.id, mesh)
+    }
+  }
+
+  // Hills solid extrusion (plan "shimmering-wondering-flurry", Stage 1) — one mesh per
+  // wall quad face (HillsExtrusion.js server-side: pointIds/polygon = [a, b, bTop, aTop],
+  // a/b at the original pre-extrude corner, aTop/bTop directly above at the extruded
+  // height). Deliberately NOT buildRegionMesh: that ear-clips in the XY (top-down)
+  // plane, and a's/aTop's (and b's/bTop's) shared (x,y) — differing only in z — project
+  // to a zero-area line there, producing garbage/no triangles for a genuinely vertical
+  // face. Two fixed triangles straight from the 4 resolved 3D positions sidesteps that
+  // entirely (no XY projection involved), same idea as DistrictRenderer.buildWallMesh's
+  // hand-built wall geometry.
+  buildHillsWallMesh(face) {
+    const poly = face.polygon
+    if (!poly || poly.length !== 4) return null
+    const [a, b, bTop, aTop] = poly
+    const vertices = [
+      a.x,    a.z    ?? 0, a.y,
+      b.x,    b.z    ?? 0, b.y,
+      bTop.x, bTop.z ?? 0, bTop.y,
+      aTop.x, aTop.z ?? 0, aTop.y,
+    ]
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
+    geometry.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2, 0, 2, 3]), 1))
+    geometry.computeVertexNormals()
+    // Same realY stash-and-swap convention as every other ground-relief mesh in this
+    // file (setGroundFlattened) — top-down mode collapses the wall to a flat sliver at
+    // Y=0, same treatment every other relief mesh gets, not a special case.
+    geometry.userData.realY = [a.z ?? 0, b.z ?? 0, bTop.z ?? 0, aTop.z ?? 0]
+
+    const color = TERRAIN_COLORS.get(face.assignedType) || TERRAIN_COLORS.unassigned
+    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0, side: THREE.DoubleSide })
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.userData = { hillsWallFaceId: face.id }
+    return mesh
+  }
+
+  renderHillsWallFaces(faces) {
+    this.hillsWallFaceMeshes ??= new Map()
+    disposeAll(this.scene, this.hillsWallFaceMeshes)
+    for (const face of faces || []) {
+      const mesh = this.buildHillsWallMesh(face)
+      if (!mesh) continue
+      this.scene.add(mesh)
+      this.hillsWallFaceMeshes.set(face.id, mesh)
     }
   }
 
@@ -555,19 +623,10 @@ export default class TerrainRenderer {
       // starts false) forever, even while genuinely in top-down mode right now.
       this.terrainPolylines.setFlattened(this._groundFlattened)
     }
-    // Sea/Lake <-> Sea/Lake edges are never worth showing: River and Cliff (the only
-    // assignable types) don't make sense between two water regions, and the raw region
-    // boundary just cuts an ugly, meaningless line across what reads as one continuous
-    // body of water.
-    const WATER_TYPES = new Set(['Sea', 'Lake'])
     // Kept regions only — regions/terrainPlots now carry hidden entries merged in
     // (tagged via `.hidden`), so "is this edge shown" must filter explicitly instead of
     // relying on hidden regions being absent from the array.
     const regionsById = new Map((this.terrainData?.regions || []).filter(r => !r.hidden).map(r => [r.id, r]))
-    const isWaterWaterEdge = (edge) => {
-      const a = regionsById.get(edge.regionA), b = regionsById.get(edge.regionB)
-      return !!a && !!b && WATER_TYPES.has(a.assignedType) && WATER_TYPES.has(b.assignedType)
-    }
     // generateBoundaryEdges now builds the FULL edge graph, including edges touching
     // (or between) still-hidden organic-world regions — "shown" is this downstream
     // check, not a generation-time gate (see TerrainVoronoiGenerator.js's doc comment).
@@ -575,8 +634,8 @@ export default class TerrainRenderer {
     // An edge with a matching filled River/Cliff face (by sourceEdgeId) is fully covered
     // by that face already — stroking it too would double-render the same boundary.
     const facedEdgeIds = new Set((this.terrainData?.riverCliffFaces || []).map(f => f.sourceEdgeId))
-    const visibleEdges = Object.fromEntries(Object.entries(edges).filter(([id, edge]) => isShown(edge) && !isWaterWaterEdge(edge) && !facedEdgeIds.has(id)))
-    console.log(`Rendering ${Object.keys(visibleEdges).length} edges (${Object.keys(edges).length - Object.keys(visibleEdges).length} hidden-region/Sea-Lake/faced edges excluded)`)
+    const visibleEdges = Object.fromEntries(Object.entries(edges).filter(([id, edge]) => isShown(edge) && !this._edgeHasNoValidType(edge, regionsById) && !facedEdgeIds.has(id)))
+    console.log(`Rendering ${Object.keys(visibleEdges).length} edges (${Object.keys(edges).length - Object.keys(visibleEdges).length} hidden-region/no-valid-type/faced edges excluded)`)
     // Prefer the registry-backed pointsById (real z, TODO.md "Groundplane Z-height
     // implementation") over edgePointsById (a materialized {id,x,y} snapshot with no z,
     // predating this session) — same underlying terrain point ids either way, so this is
@@ -587,6 +646,22 @@ export default class TerrainRenderer {
       (edge) => edge.assignedType ? TERRAIN_COLORS.get(edge.assignedType) : TERRAIN_COLORS.unassigned
     )
     console.log(`Successfully created ${this.edgeMeshes.size} edge meshes`)
+  }
+
+  // Shared by renderEdges (visibility) and getEdgeAtWorldPos (hover/click hit-test) —
+  // see WATER_TYPES/SAME_TYPE_ONLY_TYPES' doc comment above for which pairs these are
+  // and why. Both callers need the IDENTICAL rule: an edge excluded here never gets a
+  // mesh, so it must also never be hoverable/clickable/definable, or a user could still
+  // reach it (confirmed live 2026-07-19: Desert<->Desert never rendered — it just never
+  // got an assignedType, since Deserts are flat and never trigger auto-Cliff — but
+  // getEdgeAtWorldPos had no equivalent gate, so it stayed hoverable/clickable/definable
+  // regardless of the mesh being hidden).
+  _edgeHasNoValidType(edge, regionsById) {
+    const a = regionsById.get(edge.regionA), b = regionsById.get(edge.regionB)
+    if (!a || !b) return false
+    if (WATER_TYPES.has(a.assignedType) && WATER_TYPES.has(b.assignedType)) return true
+    if (a.assignedType && a.assignedType === b.assignedType && SAME_TYPE_ONLY_TYPES.has(a.assignedType)) return true
+    return false
   }
 
   get edgeMeshes()     { return this.terrainPolylines?.edgeMeshes     ?? new Map() }
@@ -706,6 +781,7 @@ export default class TerrainRenderer {
     this.terrainPlotMeshes.forEach(apply)
     this.regionMeshes.forEach(apply)
     this.riverCliffFaceMeshes?.forEach(apply)
+    this.hillsWallFaceMeshes?.forEach(apply)
     this.terrainPolylines?.setFlattened(flat)
     // Audit-finding lines (renderAuditFindings) — same realY stash, but no
     // computeVertexNormals (a THREE.Line has no faces to shade). Exactly 0 when flat,
@@ -790,7 +866,7 @@ export default class TerrainRenderer {
   setEdgeHover(edgeId) {
     if (this._pathAnchorEdgeId != null && this._pathAnchorEdgeId !== edgeId) {
       if (this._pathHoverTargetId === edgeId) return   // no-op guard, same as the plain-hover branch below
-      const path = this.getShortestEdgePath(this._pathAnchorEdgeId, edgeId)
+      const path = this.getShortestEdgePath(this._pathAnchorEdgeId, edgeId, this._selectedEdgeIds)
       // Only one thing may be hovered at a time (user-confirmed 2026-07-14) — clearHover()
       // FIRST, unconditionally, so a region/terrain-plot hover left over from a moment
       // ago (or the previous path highlight) never lingers alongside the new one.
@@ -818,8 +894,14 @@ export default class TerrainRenderer {
 
   // Called by App.js whenever the "last selected edge" changes (null when no edge is
   // currently selected) — the anchor setEdgeHover measures a shortest path FROM.
-  setEdgePathAnchor(edgeId) {
+  // selectedIds (user-confirmed 2026-07-19, "the edge path cannot traverse an edge
+  // already in the selection, ie no Y selections"): the hover-preview path
+  // (setEdgeHover) needs the SAME already-selected exclusion App.js's own click-time
+  // getShortestEdgePath call uses, or the preview would show one path shape and the
+  // click would commit a different (shorter, illegally-branching) one.
+  setEdgePathAnchor(edgeId, selectedIds = null) {
     this._pathAnchorEdgeId = edgeId
+    this._selectedEdgeIds = selectedIds
   }
 
   // Every edge sharing an endpoint pointId (first/last of its own pointIds chain) with
@@ -838,10 +920,21 @@ export default class TerrainRenderer {
   }
 
   // Map<edgeId, Set<edgeId>> — two edges are adjacent if they share an endpoint point.
+  // No-valid-type edges (see _edgeHasNoValidType — Sea-Sea, Mountain-Mountain,
+  // Desert-Desert) are left OUT of the graph entirely, not just filtered from the
+  // result: getShortestEdgePath's "fill in the path between two clicks" convenience
+  // (App.js _handleEdgeClick Mode 2) walks this graph directly, bypassing
+  // getEdgeAtWorldPos's own per-edge gate — a path routed straight through the middle
+  // of a Sea could silently add an unselectable-by-design edge to the selection anyway
+  // (confirmed live 2026-07-19: a "4 Edges Selected" path cut across two Sea cells).
+  // Excluding them here forces pathfinding around them (or fail with null, same
+  // fallback _handleEdgeClick already has for any unreachable target).
   _buildEdgeAdjacency() {
     const edges = this.terrainData?.edges || {}
+    const regionsById = new Map((this.terrainData?.regions || []).filter(r => !r.hidden).map(r => [r.id, r]))
     const byEndpoint = new Map()
     for (const [id, edge] of Object.entries(edges)) {
+      if (this._edgeHasNoValidType(edge, regionsById)) continue
       for (const pid of this._edgeEndpoints(edge)) {
         if (!byEndpoint.has(pid)) byEndpoint.set(pid, [])
         byEndpoint.get(pid).push(id)
@@ -860,7 +953,15 @@ export default class TerrainRenderer {
   // Dijkstra shortest path (by cumulative real-world edge length, not hop count) over the
   // edge-adjacency graph. Returns an ordered array of edgeIds from fromId to toId
   // INCLUSIVE, or null if unreachable or either id doesn't exist.
-  getShortestEdgePath(fromId, toId) {
+  // excludeIds (user-confirmed 2026-07-19, "the edge path cannot traverse an edge
+  // already in the selection, ie no Y selections"): an already-selected edge is never
+  // used as a pass-through hop toward some OTHER new target — without this, the path to
+  // a second click could loop back through the first click's own edge (or any other
+  // already-committed one) at a shared junction, silently forking the selection into a
+  // Y shape instead of a clean, non-branching addition. toId itself is never excluded —
+  // App.js only reaches Mode 2 (the path-fill branch) once it's confirmed toId isn't
+  // already selected.
+  getShortestEdgePath(fromId, toId, excludeIds = null) {
     const edges = this.terrainData?.edges || {}
     if (!edges[fromId] || !edges[toId]) return null
     if (fromId === toId) return [fromId]
@@ -875,6 +976,7 @@ export default class TerrainRenderer {
       visited.add(u)
       for (const v of adj.get(u) || []) {
         if (visited.has(v)) continue
+        if (v !== toId && excludeIds?.has(v)) continue
         const nd = best + this._edgeLength(edges[v])
         if (nd < (dist.get(v) ?? Infinity)) { dist.set(v, nd); prev.set(v, u) }
       }
@@ -1160,6 +1262,12 @@ export default class TerrainRenderer {
     // TerrainPlotConverter's riverCliffFaces param) — retire these meshes the same way
     // terrain-plot fills above are retired, or the two would double-render.
     if (this.riverCliffFaceMeshes) disposeAll(this.scene, this.riverCliffFaceMeshes)
+    // Hills wall faces (Stage 1) have no GroundRenderer/District-Setup-onward
+    // equivalent yet (deferred — see HillsExtrusion.js's own doc comment on why: a
+    // vertical wall quad hits the same XY ear-clipping problem there too, needs its own
+    // dedicated path when that's tackled). Retire them here too rather than leave a
+    // stale, no-longer-updated mesh in the scene once District mode takes over.
+    if (this.hillsWallFaceMeshes) disposeAll(this.scene, this.hillsWallFaceMeshes)
   }
 
   // ── Hit testing ─────────────────────────────────────────────────────────────
@@ -1203,6 +1311,7 @@ export default class TerrainRenderer {
     for (const edgeId in this.terrainData.edges) {
       const edge = this.terrainData.edges[edgeId]
       if (!regionsById.has(edge.regionA) || !regionsById.has(edge.regionB)) continue
+      if (this._edgeHasNoValidType(edge, regionsById)) continue
       const ids = edge.pointIds
       if (!ids || ids.length < 2) continue
       for (let i = 0; i < ids.length - 1; i++) {

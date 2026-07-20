@@ -44,10 +44,10 @@ export function makeWallMaterial({ map = null, stone = false, density = 6.0, gri
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uDensity = { value: density }
     shader.uniforms.uStoneOffset = { value: new THREE.Vector3(...offset) }
-    let vhead = 'varying float vWorldY;\n' + (stone ? 'varying vec3 vLocalPos;\nvarying vec3 vLocalNormal;\n' : '')
+    let vhead = 'varying float vWorldY;\nvarying vec2 vModelXZ;\n' + (stone ? 'varying vec3 vLocalPos;\nvarying vec3 vLocalNormal;\n' : '')
     shader.vertexShader = vhead + shader.vertexShader.replace(
       '#include <begin_vertex>',
-      '#include <begin_vertex>\n  vWorldY = (modelMatrix * vec4(transformed, 1.0)).y;' + (stone ? '\n  vLocalPos = transformed;' : ''),
+      '#include <begin_vertex>\n  vWorldY = (modelMatrix * vec4(transformed, 1.0)).y;\n  vModelXZ = modelMatrix[3].xz;' + (stone ? '\n  vLocalPos = transformed;' : ''),
     )
     if (stone) shader.vertexShader = shader.vertexShader.replace(
       '#include <beginnormal_vertex>',
@@ -77,8 +77,8 @@ export function makeWallMaterial({ map = null, stone = false, density = 6.0, gri
       `  float gGrime = smoothstep(${by}, ${by} + ${gh}, vWorldY);\n` +
       '  diffuseColor.rgb *= mix(0.45, 1.0, gGrime);\n' +
       '  diffuseColor.rgb *= mix(vec3(0.68, 0.62, 0.5), vec3(1.0), gGrime);\n' +
-      '  { float hJ = (fract(sin(dot(modelMatrix[3].xz, vec2(127.1,311.7)))*43758.5) - 0.5) * 0.10; diffuseColor.rgb = clamp(diffuseColor.rgb + hJ, 0.0, 1.0); }\n'
-    shader.fragmentShader = 'varying float vWorldY;\nuniform float uDensity;\nuniform vec3 uStoneOffset;\n' + stoneFns +
+      '  { float hJ = (fract(sin(dot(vModelXZ, vec2(127.1,311.7)))*43758.5) - 0.5) * 0.10; diffuseColor.rgb = clamp(diffuseColor.rgb + hJ, 0.0, 1.0); }\n'
+    shader.fragmentShader = 'varying float vWorldY;\nvarying vec2 vModelXZ;\nuniform float uDensity;\nuniform vec3 uStoneOffset;\n' + stoneFns +
       shader.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n' + apply)
   }
   mat.customProgramCacheKey = () => `${stone ? 'gw-wall-stone' : 'gw-wall'}:${grimeHeight.toFixed(5)}:${baseY.toFixed(5)}:${offset.join(',')}`

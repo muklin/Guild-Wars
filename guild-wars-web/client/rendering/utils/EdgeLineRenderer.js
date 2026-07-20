@@ -15,9 +15,10 @@ import * as THREE from 'three'
 // Rebuilt as a real Mesh (2026-07-14, user-confirmed "are they 2d lines?" / "make these
 // lines thicker") — a plain THREE.Line's `linewidth` is silently ignored on almost every
 // platform (ANGLE/D3D, most desktop GL contexts only support 1px lines), so it could
-// never actually be made thicker. depthTest:false + a high renderOrder (same pattern as
-// every other debug-ish overlay in this codebase) keeps it visibly on top regardless of
-// z-fighting with the ground fill directly beneath it.
+// never actually be made thicker. polygonOffset (not depthTest:false — see render()'s
+// own doc comment, fixed 2026-07-19: edges used to draw as x-ray, visible straight
+// through any hill/mountain in front) resolves z-fighting with the ground fill directly
+// beneath it while still respecting real occlusion from anything genuinely in front.
 //
 // Same small public API PolylineRenderer/the old THREE.Line version exposed
 // (render/getEdgeMesh/edgeMeshes/junctionMeshes/setEdgeColor/resetEdgeColor/
@@ -86,11 +87,25 @@ export default class EdgeLineRenderer {
         // correct. The terrain FILL flattens to exactly 0 and is never clipped (the
         // clip plane's own formula guarantees clipY > 0 for any scroll level), so
         // matching that exactly is the only offset that's safe at every scroll level —
-        // depthTest:false + the high renderOrder already keep it drawing on top of the
+        // see the material's polygonOffset below for what now keeps it drawing over the
         // fill despite sharing the same Y.
         for (let i = 0; i < realY.length; i++) posArray[i * 3 + 1] = 0
       }
-      const material = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, depthTest: false })
+      // depthTest was previously off entirely (x-ray — user-confirmed 2026-07-19, "don't
+      // draw terrain edges as x-ray, always visible": a hill/mountain in front of a far
+      // edge should occlude it like anything else). polygonOffset replaces it for the ONE
+      // thing depthTest:false was actually needed for — this ribbon sits at the exact
+      // same Y as the terrain fill directly beneath it in flattened/top-down mode (see
+      // setFlattened's doc comment: forced to exactly 0, not this.y, to dodge the
+      // floor-scroll clip plane), which is a real coplanar z-fight risk with depth
+      // testing now on. Nudges only THIS mesh's effective depth slightly nearer the
+      // camera so it still wins against its own directly-underlying fill, while any
+      // genuinely-in-front geometry (at a real, different depth) still occludes it
+      // normally.
+      const material = new THREE.MeshBasicMaterial({
+        color, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+      })
       const mesh = new THREE.Mesh(geometry, material)
       mesh.renderOrder = 999
       mesh.userData = { edgeId }

@@ -12,6 +12,7 @@
 // (a "New Game" reset) after construction — reading through the live orchestrator
 // reference avoids this module's copy going stale across a reset.
 import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
+import { organicClipCircle, organicOuterClipRadius } from './CityGenerator/TerrainVoronoiGenerator.js'
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
 import { applyTerrainTypeZEffect, computeCliffChainSides, propagateFromPoints, CLIFF_Z_RULE, CLIFF_LERP_T, lerp } from './CityGenerator/TerrainZHeight.js'
@@ -371,7 +372,7 @@ export default class GroundplaneAudit {
     const byId = new Map()
     if (Object.keys(edges).length === 0) return { byId, boundaries: new Map(), fillsOut: new Map(), edges }
     const fillsOut = new Map()
-    const boundaries = computeRiverCliffBoundaries(edges, registry, halfWidth, halfWidth * SetupPhase.MITER_LIMIT_RATIO, fillsOut)
+    const boundaries = computeRiverCliffBoundaries(edges, registry, halfWidth, halfWidth * GroundplaneAudit.MITER_LIMIT_RATIO, fillsOut)
     for (const [chainId, corners] of boundaries) {
       const pts = edges[chainId].pointIds || []
       // Determine, ONCE per chain, which coarse region sits on which canonical side —
@@ -478,8 +479,8 @@ export default class GroundplaneAudit {
       for (const pid of edge.pointIds || []) {
         if (!sideAtVertex.has(pid)) sideAtVertex.set(pid, new Map())
         const m = sideAtVertex.get(pid)
-        if (!SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionA.assignedType)) m.set(regionA.id, sides.get(regionA.id))
-        if (!SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionB.assignedType)) m.set(regionB.id, sides.get(regionB.id))
+        if (!GroundplaneAudit.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionA.assignedType)) m.set(regionA.id, sides.get(regionA.id))
+        if (!GroundplaneAudit.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionB.assignedType)) m.set(regionB.id, sides.get(regionB.id))
       }
     }
     return sideAtVertex
@@ -1745,6 +1746,10 @@ export default class GroundplaneAudit {
     const wt = this.sp.gameStateManager.worldTerrainData
     const cells = wt?.terrainPlots
     if (!cells?.length) return
+    {
+      const hiddenCount = cells.filter(c => c.hidden).length
+      console.log(`[manifold-diag] _recoverGeometryFromSeeds: ${cells.length} cells total, ${hiddenCount} hidden, worldSize=${wt.worldSize}`)
+    }
     const registry = this.sp.gameStateManager.pointRegistry
     const RECOVERY_TOL = 0.05
     const W = wt.worldSize ?? 50
@@ -1759,7 +1764,23 @@ export default class GroundplaneAudit {
     // terrain revealed into it. Every cell — reveal-type or not — now gets the SAME
     // final clip: the organic outer circle, exactly matching generate()'s Step 5.5 and
     // _revealAdjacentHiddenTerrain's own (now-matching) live-reveal clip.
-    const worldRect = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: W }, { x: 0, y: W }]
+    // Fixed 2026-07-19: this used to be the literal [0,W]x[0,W] square, which does NOT
+    // contain the organic-boundary "ghost" seeds TerrainVoronoiGenerator places outside
+    // the nominal world square specifically to give rim cells a real neighbour to clip
+    // against (up to organicOuterClipRadius(W) out from centre — confirmed live: 13
+    // such seeds, e.g. (-2.698, 28.352) and (28.642, 51.872), sit well outside [0,50]).
+    // A seed outside its own starting clip polygon can never produce a non-empty
+    // half-plane cell, so every one of those seeds silently got NO cell at all here —
+    // and, since this recovery pass is the only place that ever reassigns c.polygon
+    // under the Stage D stripped-save format, those cells kept whatever polygon they
+    // last had (stale/absent), which is what read back as the square-clipped map: the
+    // organic outer ring itself was never actually broken, its own boundary CELLS were
+    // just failing to recompute. Bounding box now generously covers organicOuterClipRadius
+    // (the same final clip circle below), not just the nominal square — every real seed,
+    // in-bounds or organic-boundary, gets a valid starting region to clip from.
+    const boundR = organicOuterClipRadius(W) * 1.05
+    const cx = W / 2, cy = W / 2
+    const worldRect = [{ x: cx - boundR, y: cy - boundR }, { x: cx + boundR, y: cy - boundR }, { x: cx + boundR, y: cy + boundR }, { x: cx - boundR, y: cy + boundR }]
     // Hidden (organic-world, generated-but-unrendered) plots must be included here too
     // — computeVoronoiCellsHalfPlane has no sentinel-triangulation concept of "a
     // neighbour outside this point set bounds me"; without the hidden seeds acting as
@@ -1774,7 +1795,47 @@ export default class GroundplaneAudit {
     // comment below). `worldRect` itself is ONLY ever passed to
     // computeVoronoiCellsHalfPlane below, never used as a final clip target.
     const seeds = cells.map(c => c.seedPoint)
-    const recomputed = computeVoronoiCellsHalfPlane(seeds, worldRect)
+    {
+      const byKey = new Map()
+      for (const c of cells) {
+        const k = `${c.seedPoint.x.toFixed(6)},${c.seedPoint.y.toFixed(6)}`
+        if (!byKey.has(k)) byKey.set(k, [])
+        byKey.get(k).push(c)
+      }
+      for (const [k, group] of byKey) {
+        if (group.length > 1) {
+          console.warn(`[manifold-diag] duplicate terrain-plot seed ${k} shared by ${group.length} plot(s):`,
+            group.map(c => ({ id: c.id, hidden: !!c.hidden, parentRegionId: c.parentRegionId })))
+        }
+      }
+    }
+    // Fixed 2026-07-19 (regression: recovered outer rim came back a smooth 48-sided
+    // circle, and the single worst-affected cell a huge distorted fan/wedge with bad
+    // extrapolated z at its new clip corners — "terrain edges rendered below ground
+    // height"). generate()'s Step 1 shapes the outer rim's real jagged cell edges using
+    // a throwaway BUFFER-ANNULUS seed batch (polarSample(outerRadius, bufferRadius) —
+    // see TerrainVoronoiGenerator.js) that never becomes a saved terrain plot, kept or
+    // hidden — its only job is to give rim cells a real neighbour to clip against, then
+    // it's discarded. Recovery only ever had the SAVED seeds, so the outermost (hidden)
+    // ring cells had no real neighbour left to bound them: they ballooned outward
+    // (bounded only by the crude worldRect box) and got uniformly flattened against the
+    // circle below — reproducing exactly the smooth/degenerate look this comment block
+    // above already fixed once for the literal square. Same fix, one ring further out:
+    // scatter an equivalent throwaway buffer batch here too, purely to restore real
+    // jagged neighbours for the half-plane computation — these seeds' own cells are
+    // never looked up below (polyBySeedKey is only ever queried by REAL cells' seedPoint
+    // keys), so they cost nothing structurally, just extra clip work.
+    const innerRadius = W / Math.sqrt(2 * Math.PI)
+    const outerRadius = innerRadius * Math.SQRT2
+    const bufferRadius = innerRadius * Math.sqrt(3)
+    const bufferSeedCount = Math.max(cells.length, 150)
+    const bufferSeeds = []
+    for (let i = 0; i < bufferSeedCount; i++) {
+      const r = Math.sqrt(outerRadius * outerRadius + Math.random() * (bufferRadius * bufferRadius - outerRadius * outerRadius))
+      const theta = Math.random() * 2 * Math.PI
+      bufferSeeds.push({ x: cx + Math.cos(theta) * r, y: cy + Math.sin(theta) * r })
+    }
+    const recomputed = computeVoronoiCellsHalfPlane([...seeds, ...bufferSeeds], worldRect)
     // Same organic boundary generate()'s Step 5.5 clips kept plots to, and the same one
     // _revealAdjacentHiddenTerrain now uses for a freshly-revealed plot — even with
     // hidden seeds bounding it, a rim cell can still have residual boundary-effect
@@ -1788,6 +1849,13 @@ export default class GroundplaneAudit {
     const clipCircle = organicClipCircle(W, 48, organicOuterClipRadius(W))
     const keyOf = (p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`
     const polyBySeedKey = new Map(recomputed.map(r => [keyOf(r.seedPoint), r.polygon]))
+    {
+      const missing = cells.filter(c => !polyBySeedKey.has(keyOf(c.seedPoint)))
+      if (missing.length) {
+        console.warn(`[manifold-diag] ${missing.length} cell(s) got NO cell from computeVoronoiCellsHalfPlane:`,
+          missing.map(c => ({ id: c.id, hidden: !!c.hidden, parentRegionId: c.parentRegionId, seed: [+c.seedPoint.x.toFixed(3), +c.seedPoint.y.toFixed(3)], hasOldPolygon: !!c.polygon, pointIds: c.pointIds?.length ?? 0 })))
+      }
+    }
     const signedArea = (poly) => {
       let a = 0
       for (let i = 0; i < poly.length; i++) { const p = poly[i], q = poly[(i + 1) % poly.length]; a += p.x * q.y - q.x * p.y }
