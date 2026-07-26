@@ -1,14 +1,14 @@
 import FeatureManager from './FeatureManager.js'
 import { pointInPolygon, posHash } from './renderUtils.js'
-import { MODEL_BY_NAME, MODEL_SCALE } from '../../../shared/buildingCatalogue.js'
-import { DISTRICTS, DEFAULTS, districtConfigKey } from '../../../shared/districtConfig.js'
+import { MODEL_BY_NAME, MODEL_SCALE } from '../../../worldConfig/buildingCatalogue.js'
+import { DISTRICTS, DEFAULTS, districtConfigKey } from '../../../worldConfig/districtConfig.js'
 import PartLibrary from '../buildings/PartLibrary.js'
 import { assemble } from '../buildings/ParametricBuilding.js'
 
 export const PARA_SCALE = MODEL_SCALE / 1.5   // parametric model-unit → world-unit scale
 const PARA_LIB_PATH = '/resources/buildingparts/default'
 const STONE_MATS = new Set(['stone', 'granite', 'brick'])
-// ≈ StreetVoronoiGenerator.STREET_HALF_WIDTH — keep in sync. Townhouse front walls sit
+// ≈ StreetVoronoiGenerator.STREET_HALF_WIDTH — keep in sync. 1 front walls sit
 // back from the plot's street edge by this much (a small yard/sidewalk strip); a jettied
 // upper floor can push forward into that strip but never past the original street line.
 // Global default — per-district override goes on DISTRICT_BUILDING_STYLES[key].frontSetback.
@@ -26,11 +26,11 @@ const frontSetbackFor = (style) => style.frontSetback ?? FRONT_SETBACK
 
 // Per-district parametric building style profiles (floors, wall materials, roof type,
 // eave overhang, GLB model weights for freestanding/custom slots) and landmark
-// buildings now live in shared/districtConfig.js (DISTRICTS[key].buildingStyle /
+// buildings now live in worldConfig/districtConfig.js (DISTRICTS[key].buildingStyle /
 // .landmarks — landmarks are placed server-side, ADR-0005, the client just renders the
 // recorded landmarkBuildings) alongside every other per-district-type table. Kept as
 // derived local consts so this file's many DISTRICT_BUILDING_STYLES[key] call sites
-// don't all need to change — see shared/districtConfig.js's header for the full
+// don't all need to change — see worldConfig/districtConfig.js's header for the full
 // field-by-field breakdown.
 const DISTRICT_BUILDING_STYLES = Object.fromEntries(
   Object.entries(DISTRICTS).map(([key, d]) => [key, d.buildingStyle])
@@ -68,7 +68,7 @@ const TREE_MIN_FRONTAGE = 0.16   // plot frontage below which we skip trees
 const MIN_WING_AREA = 1.0   // model units² — roughly one bay²
 const MAX_WING_ASPECT = 6     // bounding-box long:short side ratio
 // Engine-wide floor for a split wing's width (bays) — see Wing, CONTEXT_BuildingsRoofs.md.
-// The matching ceiling (`maxWingWidth`) is per-district, in shared/districtConfig.js.
+// The matching ceiling (`maxWingWidth`) is per-district, in worldConfig/districtConfig.js.
 const MIN_WING_WIDTH = 3
 
 // True if polygon `vertices` ([[x,z],…]) is self-intersecting (any two non-adjacent
@@ -579,7 +579,7 @@ export default class BuildingRenderer {
   }
 
   // District type → DISTRICT_BUILDING_STYLES/DISTRICTS key — same scheme as
-  // shared/districtConfig.js's districtConfigKey (Leadership split by ruling-body
+  // worldConfig/districtConfig.js's districtConfigKey (Leadership split by ruling-body
   // subclass too, now that every per-district table is unified onto that scheme),
   // just defaulting to the literal string 'default' instead of null.
   _districtKey(district) {

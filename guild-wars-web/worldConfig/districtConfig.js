@@ -115,7 +115,7 @@ export const DISTRICTS = {
     color: 0xfff385,
     streetType: "Brick",
     street_width: 1.4,
-    street_spacing: 0.6,
+    street_spacing: 1.5,
     block_density: 2.0,
     xyRatio: 1.2,
     street_alignment: "manhatten",
@@ -198,7 +198,7 @@ export const DISTRICTS = {
         m2: 2,
         h16: 2,
         h18: 2,
-        h19: 2,
+        h19: 2
       },
     },
   },

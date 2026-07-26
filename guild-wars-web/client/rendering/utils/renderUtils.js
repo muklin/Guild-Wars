@@ -199,3 +199,35 @@ export function triangulatePolygon(polygon) {
   if (indices.length === 3) triangles.push([indices[0], indices[1], indices[2]])
   return triangles.map(([a, b, c]) => [origIndex[a], origIndex[b], origIndex[c]])
 }
+
+// The z-height of the polygon SURFACE at exactly (x, y) — the same surface the mesh
+// renders, sampled at one point. Triangulates the polygon (the identical triangulation
+// buildRegionMesh renders), finds the triangle containing (x, y), and barycentrically
+// interpolates the three corners' z. This is what any ground-following consumer needs
+// (WalkMode's character feet, camera): a plain average-of-all-corners returns the
+// polygon's CENTROID height everywhere, so a walker over a large tilted/extruded plot
+// floats or sinks by the full slope amount except dead-centre, and every plot boundary
+// is a discontinuous step to the next plot's own centroid height — confirmed live
+// 2026-07-26 ("almost never moves zheight, occasionally jumping large z distances").
+// Returns null if (x, y) is outside the polygon (no containing triangle).
+export function interpolateZAtPoint(x, y, polygon) {
+  if (!polygon || polygon.length < 3) return null
+  const tris = triangulatePolygon(polygon)
+  for (const [ia, ib, ic] of tris) {
+    const a = polygon[ia], b = polygon[ib], c = polygon[ic]
+    // Barycentric coordinates of (x,y) in triangle a,b,c (2D, xy only).
+    const v0x = b.x - a.x, v0y = b.y - a.y
+    const v1x = c.x - a.x, v1y = c.y - a.y
+    const v2x = x - a.x, v2y = y - a.y
+    const den = v0x * v1y - v1x * v0y
+    if (Math.abs(den) < 1e-12) continue
+    const v = (v2x * v1y - v1x * v2y) / den
+    const w = (v0x * v2y - v2x * v0y) / den
+    const u = 1 - v - w
+    const EPS = -1e-9
+    if (u < EPS || v < EPS || w < EPS) continue   // point not in this triangle
+    const za = a.z ?? 0, zb = b.z ?? 0, zc = c.z ?? 0
+    return u * za + v * zb + w * zc
+  }
+  return null
+}

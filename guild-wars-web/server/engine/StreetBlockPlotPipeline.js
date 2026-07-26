@@ -16,8 +16,9 @@ import LandmarkPlacer from './CityGenerator/buildings/LandmarkPlacer.js'
 import { CALC_BLOCKS, CALC_PLOTS } from './pipelineFlags.js'
 import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
-import { generateName } from '../../shared/nameLibrary.js'
+import { generateName } from '../../worldConfig/nameLibrary.js'
 import { pip } from './voronoi/VoronoiUtils.js'
+import { buildTerrainHeightIndex } from './CityGenerator/TerrainHeightSampler.js'
 
 // For each outer boundary street, cast test points perpendicular to the road and use
 // pip to find which terrain plot it faces. Records streetEdges on the terrain plot.
@@ -195,6 +196,11 @@ export default class StreetBlockPlotPipeline {
     }
     this.sp.currentStep = 'CitySubdivision'
     this.sp.log.push('Terrain placement complete. Moving to city subdivision.')
+    // Leaving Terrain mode (ADR-0022 one-way commit, user-confirmed 2026-07-26): any
+    // Cliff that's ended up without sufficient z separation gets cleared back to ordinary
+    // terrain now, before the pullback below bakes in a ribbon for it — see
+    // TerrainSetup.clearWeakCliffSegments' own doc comment.
+    this.sp.clearWeakCliffSegments()
     // The Terrain→CitySubdivision transition, exactly when River/Cliff assignment is
     // finalized — pull every district back now rather than leaving them at their raw
     // (never-pulled-back) shape until some later, unrelated action happens to call
@@ -651,11 +657,19 @@ export default class StreetBlockPlotPipeline {
     // that produces `districts` here — see Edge, CONTEXT_WorldTerrain.md. No need to
     // repeat it on just this subset.
 
+    // ADR-0022 Stage 4a: sample the ACTUAL subdivided terrain mesh for Tier-1 junction
+    // z, instead of IDW-from-coarse-district-corners — see TerrainHeightSampler.js and
+    // StreetVoronoiGenerator.generate()'s own Tier-1 comment. Rebuilt fresh every call
+    // (cheap — low thousands of quads — and matches ADR-0022 §10's "always rebuild"
+    // philosophy), not cached: wt.terrainSurfaces doesn't change during district
+    // generation, but there's no reason to introduce cache-invalidation risk for it.
+    const heightIndex = buildTerrainHeightIndex(this.sp.gameStateManager.worldTerrainData?.terrainSurfaces || [])
+
     const MAX_TOPOLOGY_RETRIES = 3
     let streetGraph = null
     for (let attempt = 0; attempt <= MAX_TOPOLOGY_RETRIES; attempt++) {
       const gen = new StreetVoronoiGenerator()
-      streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes, this.sp.gameStateManager.pointRegistry)
+      streetGraph = gen.generate(districts, cityData.edges, cityData.edgePoints || [], epochSeed, tradeRoutes, this.sp.gameStateManager.pointRegistry, heightIndex)
       const issues = streetGraph.topologyIssues
       if (!issues || issues.crossings === 0) break
 
@@ -699,8 +713,11 @@ export default class StreetBlockPlotPipeline {
       return
     }
 
+    // ADR-0022 Stage 4a — see _generateStreetGraph's own comment on this same call.
+    const heightIndex = buildTerrainHeightIndex(this.sp.gameStateManager.worldTerrainData?.terrainSurfaces || [])
+
     const tBlocks = performance.now()
-    const { blocks, roadEdges } = new CityBlockGenerator().generate(cityData.districts, cityData.streetGraph, this.sp.gameStateManager.pointRegistry)
+    const { blocks, roadEdges } = new CityBlockGenerator().generate(cityData.districts, cityData.streetGraph, this.sp.gameStateManager.pointRegistry, heightIndex)
     cityData.blocks = blocks
     console.log(`[perf]   blocks: ${(performance.now()-tBlocks).toFixed(1)}ms (${blocks.length} blocks)`)
 

@@ -1,4 +1,4 @@
-import nameLibrary from '../../shared/nameLibrary.js'
+import nameLibrary from '../../worldConfig/nameLibrary.js'
 import CompassRing from './CompassRing.js'
 
 const COLOUR_SWATCHES = [

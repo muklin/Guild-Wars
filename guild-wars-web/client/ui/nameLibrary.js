@@ -1,1 +1,1 @@
-export { default, nameLibraryData } from '../../shared/nameLibrary.js'
+export { default, nameLibraryData } from '../../worldConfig/nameLibrary.js'

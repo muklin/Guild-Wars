@@ -888,7 +888,14 @@ export default class GroundRenderer {
       if (plot.type === 'terrain') {
         // If we preserved existing terrain meshes, skip re-creating them.
         if (preserveTerrainPlots) continue
-        const baseColor = TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
+        // A Cliff face bordering Ice Sheet is always white (user-confirmed 2026-07-26:
+        // "never grey or sand yellow") — snow-capped, not bare rock. iceSheetAdjacent is
+        // computed once, server-side (GroundplaneAudit._buildRiverCliffFacesDirect,
+        // threaded through TerrainPlotConverter) since this renderer has no edges/
+        // regions data of its own to re-derive it from.
+        const baseColor = plot.assignedType === 'Cliff' && plot.iceSheetAdjacent
+          ? 0xffffff
+          : TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
         const seed = this._polySeed(plot.blockCorners)
         const color = this._jitterColor(baseColor, seed)
         const mesh = this._makeFill(plot.blockCorners, color, GROUND_Y, { roughness: 0.6, emissiveIntensity: 0.2 })

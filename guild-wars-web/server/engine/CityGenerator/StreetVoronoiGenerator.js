@@ -1,7 +1,7 @@
 import DelaunayTriangulator from '../voronoi/DelaunayTriangulator.js'
 import Point from '../voronoi/Point.js'
 import { clipToPolygon, triangleCenter, generateGridSeeds, pip, distToSegSq, distToPolygonBoundary, projectToPolygon, segIntersect } from '../voronoi/VoronoiUtils.js'
-import { getDistrictConfig } from '../../../shared/districtConfig.js'
+import { getDistrictConfig } from '../../../worldConfig/districtConfig.js'
 import { idwZ } from './DistrictZHeight.js'
 import GroundPointRegistry from './GroundPointRegistry.js'
 
@@ -95,7 +95,7 @@ export function resolveNodeRegistryIds(nodes, nodeSourceEdgePointId, registry, k
 }
 
 // Per-district street/block/plot generation tuning now lives in
-// shared/districtConfig.js, alongside every other per-district-type table (building
+// worldConfig/districtConfig.js, alongside every other per-district-type table (building
 // styles, townhouse probability, landmarks, UI colour) — all fields are now top-level
 // on the config object. getDistrictParams() is a thin alias so call sites don't change.
 export function getDistrictParams(district) {
@@ -788,7 +788,7 @@ export default class StreetVoronoiGenerator {
   // `districts` may be a subset of the city's districts (e.g. only the locked ones
   // during per-district City Subdivision). City edges touching no district in the
   // subset are skipped, so boundaries to not-yet-generated districts are deferred.
-  generate(districts, cityEdges, edgePoints, epochSeed = 0, tradeRoutes = [], registry = null) {
+  generate(districts, cityEdges, edgePoints, epochSeed = 0, tradeRoutes = [], registry = null, heightIndex = null) {
     // Retry loop (SetupPhase.js) can call generate() up to 3x on unresolved crossings —
     // clearing here, at generate()'s own top, matches PlotVoronoiGenerator.generate()'s
     // identical reasoning: clearing mid-call would wipe an earlier attempt's points
@@ -1264,18 +1264,15 @@ export default class StreetVoronoiGenerator {
       }
     }
 
-    // Tier 1 z-height (plan "typed-gliding-leaf", District-scale z-height adoption):
-    // IDW-interpolate each junction's z from its owning District's own boundary corners
-    // — those already carry real z via shared registry point ids with the originating
-    // Terrain Plot (SetupPhase.js's generateCityDistrictData/promoteTerrainPlotToDistrict),
-    // no propagation graph needed, just a self-contained per-district interpolation
-    // (see DistrictZHeight.js's own doc comment for why this deliberately isn't
-    // TerrainZHeight.js's BFS/falloff machinery). A boundary junction (left/right district
-    // ids) blends from BOTH districts' corners; an interior junction (single districtId)
-    // uses just its own. Gutters (connection.gutterLeft/gutterRight) are tiny lateral
-    // offsets of their own junction, not independent graph nodes, so they simply inherit
-    // their junction's z rather than getting their own IDW call. No-op when no registry
-    // is passed, same backward-compatibility convention as the registry-backing above.
+    // Tier 1 z-height (ADR-0022 Stage 4a): each junction samples the ACTUAL subdivided
+    // terrain mesh directly at its own (x,y) — streets should follow the real ground
+    // continuously, point-by-point, not interpolate from a handful of coarse district
+    // boundary corners (the old approach, kept below as `idwZ` fallback for a junction
+    // that lands outside the subdivided mesh's own coverage, e.g. no registry/heightIndex
+    // passed, or genuinely uncovered geometry). Junctions are deliberately NOT quantized —
+    // only block/plot ground levels are (see CityBlockGenerator.js's own Tier 2 comment).
+    // Gutters (connection.gutterLeft/gutterRight) are tiny lateral offsets of their own
+    // junction, not independent graph nodes, so they simply inherit their junction's z.
     if (registry) {
       const districtControlPoints = new Map()   // districtId -> [{x,y,z}]
       const controlPointsFor = (districtId) => {
@@ -1295,10 +1292,13 @@ export default class StreetVoronoiGenerator {
         return pts
       }
       for (const j of junctions) {
-        const controls = j.districtId != null
-          ? controlPointsFor(j.districtId)
-          : [...controlPointsFor(j.left), ...controlPointsFor(j.right)]
-        const z = idwZ(j.x, j.y, controls)
+        let z = heightIndex?.sampleZ(j.x, j.y) ?? null
+        if (z == null) {
+          const controls = j.districtId != null
+            ? controlPointsFor(j.districtId)
+            : [...controlPointsFor(j.left), ...controlPointsFor(j.right)]
+          z = idwZ(j.x, j.y, controls)
+        }
         if (z == null) continue
         j.z = z
         for (const c of (j.connections || [])) {

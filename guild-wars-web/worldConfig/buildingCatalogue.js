@@ -87,7 +87,7 @@ export const MODEL_OFFSET = {
 // Landmark buildings per district (the special models placed on a district's Square
 // clusters — a paved plaza of joined squares; value = count of that model wanted;
 // placed before plots, plot ground under a Landmark footprint is dropped) now live in
-// shared/districtConfig.js (DISTRICTS[key].landmarks), alongside every other per-
+// worldConfig/districtConfig.js (DISTRICTS[key].landmarks), alongside every other per-
 // district-type table. Kept as a derived export + districtModelKey() so LandmarkPlacer
 // doesn't need to change its call pattern.
 export const DISTRICT_MODEL_SQUARE = Object.fromEntries(

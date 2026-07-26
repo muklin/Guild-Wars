@@ -1,7 +1,7 @@
 import TerrainColors from '../rendering/TerrainColors.js'
 import ResourceDialog from './ResourceDialog.js'
 import NameDialog from './NameDialog.js'
-import { DISTRICTS, DEFAULTS, districtConfigKey } from '../../shared/districtConfig.js'
+import { DISTRICTS, DEFAULTS, districtConfigKey } from '../../worldConfig/districtConfig.js'
 import { makeDraggable } from './utils/draggable.js'
 
 const DISTRICT_TYPES = [

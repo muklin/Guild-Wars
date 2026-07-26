@@ -1,9 +1,11 @@
-// Regression suite for shared/polylineGeometry.js — extracted verbatim from
-// PolylineRenderer.js (see that file and plan "typed-giggling-giraffe" for why: the
-// server-side river/cliff pullback is meant to reuse this SAME computation next, so the
-// pulled-back terrain data and the rendered stroke agree by construction). These tests
-// pin down the extracted behavior before anything else consumes it. Run with:
-//   node shared/polylineGeometry.test.mjs
+// Regression suite for polylineGeometry.js — extracted verbatim from PolylineRenderer.js
+// (see that file and plan "typed-giggling-giraffe" for why: the server-side river/cliff
+// pullback is meant to reuse this SAME computation next, so the pulled-back terrain data
+// and the rendered stroke agree by construction). These tests pin down the extracted
+// behavior before anything else consumes it. Moved out of shared/ (2026-07-26) once its
+// only client consumer (PolylineRenderer.js) was deleted — see polylineGeometry.js's own
+// header. Run with:
+//   node server/engine/CityGenerator/polylineGeometry.test.mjs
 import { computeJunctionData, computeEdgeCorners } from './polylineGeometry.js'
 
 let pass = 0, fail = 0

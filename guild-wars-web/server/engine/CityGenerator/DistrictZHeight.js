@@ -1,17 +1,18 @@
 // District-scale z-height (plan "typed-gliding-leaf", companion to TerrainZHeight.js /
-// ADR-0021, which explicitly scoped itself to terrain only). Districts are small,
-// bounded, self-contained footprints — filling in their interior is a spatial
-// interpolation problem ("smoothly cover this known polygon"), not a propagation problem
-// ("how far does an effect travel through an open graph"), so this deliberately does NOT
-// reuse TerrainZHeight.js's BFS-hop-count/falloff-curve machinery. Instead: a single IDW
-// (inverse-distance-weighted / Shepard's method) interpolation, applied in two tiers —
-// Junctions/Gutters interpolate from their owning District's own boundary corners (which
-// already carry real z for free, via shared registry point ids with the originating
-// Terrain Plot — see SetupPhase.js's generateCityDistrictData/promoteTerrainPlotToDistrict);
-// Blocks/Plots interpolate from the nearer, already-computed Junction/Gutter z (more
-// locally accurate than reaching all the way back to the district boundary). Canal's z
-// effect unifies into this same mechanism: its own points just become additional,
-// locally-lowered control points that nearby IDW calls naturally pick up.
+// ADR-0021, which explicitly scoped itself to terrain only).
+//
+// `idwZ`/`applyIdwZ` (inverse-distance-weighted / Shepard's method interpolation) were
+// the PRIMARY mechanism here until ADR-0022 Stage 4a: Junctions/Gutters, Blocks, and
+// Plots each interpolated from progressively nearer already-z-aware control points,
+// tracing back to the district's own coarse (pre-subdivision) boundary corners. Since
+// Stage 4a, StreetVoronoiGenerator/CityBlockGenerator/PlotVoronoiGenerator instead
+// sample the ACTUAL subdivided terrain mesh directly (TerrainHeightSampler.js) —
+// idwZ now only fires as their FALLBACK, for a point that lands outside the subdivided
+// mesh's own coverage (no heightIndex passed, or genuinely uncovered geometry). Kept
+// exactly as before (and still fully covered by DistrictZHeight.test.mjs) rather than
+// retired, since it's a real, low-risk safety net now, not dead code. Canal's z effect
+// unifies into the same mechanism either way: its own points just become additional,
+// locally-lowered control points that a fallback IDW call would naturally pick up.
 //
 // Pure functions, independent of SetupPhase.js — unit-testable against synthetic control
 // points, same style as TerrainZHeight.test.mjs.

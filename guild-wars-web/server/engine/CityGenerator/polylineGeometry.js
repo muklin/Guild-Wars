@@ -7,7 +7,8 @@
 // math, is what guarantees the pulled-back terrain data matches the filled River/Cliff
 // faces by construction. Formerly also consumed client-side by PolylineRenderer.js
 // (deleted — plan "typed-gliding-leaf" Stage D; EdgeLineRenderer.js's plain-line stroke
-// doesn't need this geometry).
+// doesn't need this geometry) — moved out of shared/ into here (2026-07-26) once that was
+// its only reason for living there; server-only now, alongside its one real consumer.
 //
 // edges format: { [edgeId]: { pointIds: [id, ...], ... } }
 // pointsById: Map<id, {x, y}> (or anything with a matching .get(id) -> {x,y})

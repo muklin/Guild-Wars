@@ -98,7 +98,7 @@ export default class CityBlockGenerator {
   // block corners are real, persistent groundplane Points rather than a local id space
   // that happens to get thrown away after this call. Omit for the pre-Stage-C
   // behavior (a fresh local registry every call — still correct, just not shared).
-  generate(districts, streetGraph, registry = null) {
+  generate(districts, streetGraph, registry = null, heightIndex = null) {
     const junctions = streetGraph?.junctions || []
 
     const { gutterNodes, gutterEdges, roadEdges } = this._gutterGraphFromJunctions(junctions)
@@ -295,17 +295,18 @@ export default class CityBlockGenerator {
     logRejects('degenerate-area', dbgArea)
     logRejects('enclosesNode (face wraps a gutter node)', this._dbgEnclosedRejects || [])
 
-    // District z-height Tier 2 (plan "typed-gliding-leaf"): IDW-interpolate each block
-    // corner's z from the nearby, already-z-aware junctions/gutters (Tier 1, see
-    // StreetVoronoiGenerator.generate()) belonging to the same district. Block corners
-    // ARE registry-backed (block.pointIds, minted by _traceFaces — but at a hardcoded
-    // z=0, before this pass ever runs), so every corner's computed z is written to both
-    // the ephemeral blockCorners array AND its registry point below — leaving the
-    // registry copy at its z=0 mint value would silently undo this for any consumer that
-    // resolves corners via pointIds instead of blockCorners. Junctions without a Tier-1 z
-    // (e.g. a caller that ran StreetVoronoiGenerator without a registry) simply yield no
-    // control points for their district, and blockCorners are left without z — same
-    // fallback GroundRenderer already uses for any z-less vertex.
+    // District z-height Tier 2 (ADR-0022 Stage 4a): each block gets ONE flat, quantized
+    // ground height — sampled once at the block's own centroid from the ACTUAL subdivided
+    // terrain mesh (heightIndex), falling back to the old IDW-from-Tier-1-controls value
+    // at that same centroid if sampling misses (no heightIndex passed, or genuinely
+    // uncovered geometry). Deliberately ONE value for the whole block, not a per-corner
+    // interpolation — city ground is graded flat, unlike open countryside. Only corners
+    // that are null-z (i.e. genuinely new interior corners minted by _traceFaces at a
+    // hardcoded z=0) get this value; a corner that's ALSO a district boundary corner
+    // already has real z (copied from the coarse terrain plot — see
+    // generateCityDistrictData/promoteTerrainPlotToDistrict) and is deliberately left
+    // untouched, so flattening a block never ripples back into the surrounding open
+    // terrain via the next re-subdivide.
     {
       const controlPointsByDistrict = new Map()
       const controlPointsFor = (districtId) => {
@@ -323,23 +324,17 @@ export default class CityBlockGenerator {
         controlPointsByDistrict.set(districtId, pts)
         return pts
       }
-      const _loggedDistricts = new Set()   // TEMP diagnostic — remove once root cause confirmed
       for (const block of blocks) {
-        const controls = controlPointsFor(block.districtId)
-        if (!_loggedDistricts.has(block.districtId)) {
-          _loggedDistricts.add(block.districtId)
-          console.log(`[zheight-diag] block Tier2 district=${block.districtId} controls=${controls.length} sampleZ=${controls.slice(0, 3).map(c => c.z.toFixed(2)).join(',')}`)
-        }
+        const cen = faceCentroidArea(block.blockCorners)
+        let blockZ = heightIndex?.sampleZ(cen.x, cen.y) ?? null
+        if (blockZ == null) blockZ = idwZ(cen.x, cen.y, controlPointsFor(block.districtId))
+        // Exposed for PlotVoronoiGenerator's own Tier-2 pass (a SUBDIVIDED plot's
+        // corners need this same flat value, not an independent sample, so its pad
+        // stays flush with its parent block's — see that file's own doc comment).
+        block.groundZ = blockZ
         for (let i = 0; i < block.blockCorners.length; i++) {
           const v = block.blockCorners[i]
-          if (v.z == null) {
-            const z = idwZ(v.x, v.y, controls)
-            if (z != null) v.z = z
-            else if (!_loggedDistricts.has(`null-${block.districtId}`)) {
-              _loggedDistricts.add(`null-${block.districtId}`)
-              console.log(`[zheight-diag] idwZ returned null for block ${block.id} corner (${v.x.toFixed(2)},${v.y.toFixed(2)}) district=${block.districtId} controls=${controls.length}`)
-            }
-          }
+          if (v.z == null && blockZ != null) v.z = blockZ
           // Keep the registry-backed copy (block.pointIds, minted at z=0 in _traceFaces'
           // pointIdFor before this Tier-2 pass ever runs) in sync with blockCorners —
           // otherwise any consumer that resolves corners via pointIds/registry instead of

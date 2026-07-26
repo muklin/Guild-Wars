@@ -175,3 +175,25 @@ A typed group of Surfaces. Terrain regions, the City, streets, Rivers, Cliffs, W
 _Avoid_: zone, group, area
 
 When a typed linear feature (River, Cliff, Wall, MainRoad, Canal, Docks) is assigned to an **Edge**, the Edge converts into a Region of face Surfaces occupying the feature's width; the Region stores the original centreline Point ids so clearing the feature can reconstruct the undefined Edge (see River rule 1b).
+
+### Subdivided terrain (ADR-0022)
+
+**Generative layer**:
+The coarse Voronoi terrain plots plus their per-type edits — the editable representation during Terrain mode. It is the *source* the Subdivided groundplane is derived from, and is discarded when Terrain mode is left.
+_Avoid_: base mesh, source geometry
+
+**Subdivided groundplane**:
+The single welded, Catmull-Clark-subdivided manifold mesh derived from the Generative layer — the authoritative Groundplane once terrain is subdivided: what renders, what every height query samples, and what the manifold audit checks. All adjacent terrain welds into one connected mesh so seams smooth; the only open boundary is the pinned world outer ring.
+_Avoid_: baked mesh, smoothed terrain, LOD mesh
+
+**Transition band**:
+A strip of Surfaces that pins one edge to a feature's height and its other edge to the neighbouring terrain height, keeping the mesh fully welded while giving subdivision a smooth ramp between two otherwise-discontinuous heights. Its two named instances are Shore and Cliff-edge; it is the reason the mesh needs no sharpness weights or non-welded seams.
+_Avoid_: skirt, apron, blend band
+
+**Shore**:
+The Transition band ringing every Sea/Lake and both banks of every River — water-level on the water side, terrain height on the land side, carved from the land margin (the water keeps its placed extent). Rendered sand-yellow for Sea, stone-grey for Lake.
+_Avoid_: beach, coast, waterline
+
+**Cliff-edge**:
+The Transition band on each bank of a Cliff — pinned to the cliff top/bottom on its inner edge and the neighbouring terrain height on its outer edge. The steep Cliff face sits between the two banks' inner edges; the Cliff-edge bands are what let a Cliff read as sharp while the surrounding mesh stays smooth and manifold.
+_Avoid_: cliff apron, cliff skirt, ledge

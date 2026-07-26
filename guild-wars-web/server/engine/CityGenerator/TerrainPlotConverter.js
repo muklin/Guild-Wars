@@ -115,6 +115,11 @@ export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = []
       blockId: null,
       districtId: null,
       assignedType: face.assignedType,
+      // Computed once, server-side, in GroundplaneAudit._buildRiverCliffFacesDirect —
+      // a Cliff face bordering Ice Sheet always renders white (user-confirmed
+      // 2026-07-26), and GroundRenderer (which owns this plot from here on) has no
+      // edges/regions data of its own to re-derive this from.
+      iceSheetAdjacent: !!face.iceSheetAdjacent,
       blockCorners: poly,
       streetEdges: [],
       type: 'terrain',

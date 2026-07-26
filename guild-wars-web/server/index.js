@@ -7,8 +7,8 @@ import GameStateManager from './engine/GameStateManager.js'
 import SetupPhase from './engine/SetupPhase.js'
 import MultiplayerManager from './engine/MultiplayerManager.js'
 import { saveGame, loadGame, listSaves, deleteSave } from './persistence.js'
-import { TRAIT_BY_ID } from '../shared/guildTraits.js'
-import { UPGRADE_BY_ID } from '../shared/hqUpgrades.js'
+import { TRAIT_BY_ID } from '../worldConfig/guildTraits.js'
+import { UPGRADE_BY_ID } from '../worldConfig/hqUpgrades.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -312,7 +312,7 @@ app.post('/api/setup/terrain/assign', requireActiveSeat, async (req, res) => {
       edges: wt.edges,
       edgePoints: wt.edgePoints,
       riverCliffFaces: wt.riverCliffFaces || [],
-      hillsWallFaces: wt.hillsWallFaces || [],
+      terrainSurfaces: wt.terrainSurfaces || [],
       pointRegistry: gameStateManager.pointRegistry.toJSON(),
       auditFindings: gameStateManager.lastAuditFindings || [],
       auditCounts: gameStateManager.lastAuditCounts || null,
@@ -348,7 +348,7 @@ app.post('/api/setup/terrain/edge', requireActiveSeat, async (req, res) => {
       edges: wt.edges,
       edgePoints: wt.edgePoints,
       riverCliffFaces: wt.riverCliffFaces || [],
-      hillsWallFaces: wt.hillsWallFaces || [],
+      terrainSurfaces: wt.terrainSurfaces || [],
       pointRegistry: gameStateManager.pointRegistry.toJSON(),
       auditFindings: gameStateManager.lastAuditFindings || [],
       auditCounts: gameStateManager.lastAuditCounts || null,
@@ -383,7 +383,7 @@ app.post('/api/setup/terrain/edges', requireActiveSeat, async (req, res) => {
       edges: wt.edges,
       edgePoints: wt.edgePoints,
       riverCliffFaces: wt.riverCliffFaces || [],
-      hillsWallFaces: wt.hillsWallFaces || [],
+      terrainSurfaces: wt.terrainSurfaces || [],
       pointRegistry: gameStateManager.pointRegistry.toJSON(),
       auditFindings: gameStateManager.lastAuditFindings || [],
       auditCounts: gameStateManager.lastAuditCounts || null,

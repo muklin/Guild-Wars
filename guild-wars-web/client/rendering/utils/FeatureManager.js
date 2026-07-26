@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { pointInPolygon } from './renderUtils.js'
 import { assetUrl } from '../../config.js'
-import { MODELS } from '../../../shared/buildingCatalogue.js'
+import { MODELS } from '../../../worldConfig/buildingCatalogue.js'
 
 // Re-exported from the shared catalogue (ADR-0005) so existing importers are unchanged.
 export { MODELS }

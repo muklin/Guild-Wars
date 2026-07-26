@@ -9,80 +9,63 @@
 // point's current z toward the source region's z using a distance-based falloff curve
 // whose zero point is fixed at the farthest point actually reached — no discontinuity,
 // no separately-calibrated endpoint.
-
-// Every terrain type's delta + propagation shape. Sea/Lake use an S-curve (gradual near
-// the source, steepest at the midpoint); everything else linear. Hop-count is the BFS
-// bound (how far the wave is allowed to travel along the fine Point/Edge graph), NOT the
-// falloff parameter — the falloff itself is a continuous function of Euclidean distance,
-// see propagateFromRegion.
-// Live tuning pass (2026-07-12, user feedback: original magnitudes "a bit too much"
-// once actually rendered) — every non-zero amount below is the original design value /3.
-// `direction`: the ONLY way this type's propagation is allowed to move a point (fixed
-// 2026-07-13, user-confirmed "the only direction Hills should move terrain points is
-// upwards") — a safety clamp in propagateFromRegion, independent of the domain-exclusion
-// fix below (belt-and-suspenders: even a point legitimately reached by propagation, not
-// already handled by the domain write, must not be pushed the "wrong" way for this type).
-export const TERRAIN_TYPE_Z_RULES = {
-  Sea:        { mode: 'set',   amount: 0,    cornerAmount: 0,    hopCount: 8, curve: 'scurve', direction: 'down' },
-  // Lake's own flat height is no longer `mode`/`amount`/`cornerAmount` (superseded
-  // 2026-07-19 — see the dedicated `region.assignedType === 'Lake'` branch in
-  // applyTerrainTypeZEffect: settles to its lowest shore corner instead). Those three
-  // fields are dead for Lake now, kept only so this entry stays truthy for the
-  // `if (!rule) return` guard; hopCount/curve/direction still govern how the lake's
-  // (now corner-derived) height propagates into the surrounding terrain.
-  Lake:       { mode: 'delta', amount: -1/3, cornerAmount: -1/3, hopCount: 1,  curve: 'linear', direction: 'down' },
-  Hills:      { mode: 'delta', amount: 2/3,  cornerAmount: 1/3,  hopCount: 1,  curve: 'linear', direction: 'up' },
-  Mountains:  { mode: 'delta', amount: 1,  cornerAmount: 2/3,  hopCount: 3,  curve: 'linear', direction: 'up' },
-  Swamp:      { mode: 'flattenThenDelta', amount: -1/3, floor: 1/3, hopCount: 1, curve: 'linear', direction: 'down' },
-  // Ice Sheet (superseded 2026-07-13 — see the dedicated branch in
-  // applyTerrainTypeZEffect): map-average-of-centres+3 (or the average of already-
-  // placed Ice Sheets), +/-0.25 jitter, permanently locked. This entry only needs to
-  // stay truthy so the `if (!rule) return` guard doesn't treat Ice Sheet as a no-op —
-  // none of these fields are read for it anymore.
-  'Ice Sheet':{ mode: 'delta' },
-  Desert:     { mode: 'delta', amount: -1/3, floor: 1/3, cornerAmount: -1/3, hopCount: 1, curve: 'linear', direction: 'down' },
-  Plains:     null,
-  Forest:     null,
-}
-
-// Cliff isn't in TERRAIN_TYPE_Z_RULES: it's an Edge type (Sea/Lake/etc. are Region
-// types). Wired up via computeCliffChainSides (below) + SetupPhase.js's
-// _dcelPullbackMaterialize (the existing X,Y pullback split, reused for z — see its own
-// doc comment) + propagateFromPoints (below, blending each side's newly-split corners
-// into their own surrounding terrain). CLIFF_Z_RULE now only carries the OUTWARD
-// propagation shape (hopCount/curve) — the split-vertex magnitude itself comes from
-// computeCliffChainSides' chain-wide average + CLIFF_LERP_T, not a fixed magnitude.
-export const CLIFF_Z_RULE = { hopCount: 4, curve: 'linear' }
-
-// Blend factor for computeCliffChainSides' split-vertex z (plan "typed-gliding-leaf",
-// user-confirmed 2026-07-14): a split vertex's new z is 80% of the way from its OWN
-// pre-split z toward its side's chain-wide neighbour average — not a full snap (t=1)
-// and not the old flat +/-CLIFF_Z_RULE.magnitude step.
-export const CLIFF_LERP_T = 0.8
+//
+// TERRAIN_TYPE_Z_RULES/CLIFF_Z_RULE/CLIFF_LOW_TYPES/CLIFF_MIN_SEPARATION/
+// CLIFF_SPLIT_EQUAL_TOLERANCE live in worldConfig/terrainConfig.js (the single source of
+// truth for every terrain tunable, alongside worldConfig/districtConfig.js's district
+// equivalent) — re-exported here so every existing caller of THIS file keeps working
+// unchanged. CLIFF_LERP_T retired (ADR-0022 Cliff redesign, 2026-07-26): a Cliff split
+// vertex now snaps straight to its own local natural neighbour average — see
+// computeCliffChainSides' own doc comment — instead of an 80/20 blend toward a
+// chain-wide one, so there is no lerp factor left to tune.
+import { TERRAIN_TYPE_Z_RULES, CLIFF_Z_RULE, CLIFF_LOW_TYPES, CLIFF_MIN_SEPARATION, CLIFF_SPLIT_EQUAL_TOLERANCE } from '../../../worldConfig/terrainConfig.js'
+export { TERRAIN_TYPE_Z_RULES, CLIFF_Z_RULE, CLIFF_MIN_SEPARATION }
 
 function lerp(a, b, t) { return a + (b - a) * t }
 
-// Cliff chains are consistent along their WHOLE physically-contiguous run (plan
-// "typed-gliding-leaf", user-confirmed 2026-07-14): one side is always the high side,
-// the other always low, even where the run crosses several different region pairs (e.g.
-// 3 highland regions against 4 lowland regions along one continuous Cliff). A region
-// touching Sea/Swamp/Ice Sheet/Lake is always the low side; otherwise the side is
-// decided by averaging the z of every LINKED point (one-hop graph neighbour, excluding
-// points that are themselves on the run) bucketed by side across the whole run — higher
-// average wins, for every segment in the run.
-const CLIFF_LOW_TYPES = new Set(['Sea', 'Swamp', 'Ice Sheet', 'Lake'])
-
+// Cliff chains keep a CONSISTENT high side along any one stretch — never a silent flip
+// mid-run (user-confirmed 2026-07-26) — but unlike the original 2026-07-14 design, the
+// actual height TARGET is now LOCAL: each edge's own high/low target is the average z of
+// its OWN immediate neighbours (one-hop graph, excluding points on the run itself), not
+// a single value averaged across the entire run. The old whole-run average diluted a
+// locally-flat stretch's target toward whatever the rest of a long run happened to
+// average to (an artificial hump/berm where the terrain was actually flat), and diluted a
+// locally-steep stretch the same way (separation that read as "lost") — confirmed live
+// 2026-07-26 against real generated cliffs. `GroundplaneAudit.js`'s z-hook also drops the
+// old CLIFF_LERP_T 80/20 blend toward this target — it now snaps straight to it, so the
+// cliff's own midpoint at any point is EXACTLY the average of its two local natural
+// heights, by construction (user-confirmed requirement).
+//
+// A region touching CLIFF_LOW_TYPES (worldConfig/terrainConfig.js) is always the low
+// side for its whole run — never a locally-decided candidate for inversion (see below).
+//
+// Local inversion (a stretch whose own two sides are naturally the OPPOSITE way up from
+// the run's established high key) is resolved, not ignored (user-confirmed design,
+// 2026-07-26): group the run into maximal segments of consecutive edges that agree on
+// their own local high key; at each segment boundary, compare
+// `strength = avgLocalHeightDiff * edgeCount` between the two adjacent segments — the
+// clearly weaker one is downgraded (its edges' Cliff assignment is cleared entirely,
+// reported via the returned `downgradeEdgeIds`, same as reverting to ordinary terrain);
+// roughly-equal strength (within CLIFF_SPLIT_EQUAL_TOLERANCE) is left as a genuine split,
+// each segment keeping its own independently-decided high key.
+//
 // Groups Cliff-assigned edges into runs (graph-connected via shared endpoint pointIds,
-// regardless of how many different region pairs they cross), decides each run's
-// high/low side, and returns Map<edgeId, Map<regionId, {side, targetAvg}>> — targetAvg
-// is the chain-wide neighbour average for that side (null for a forced-low side, which
-// is zLocked and never lerped — see SetupPhase.ALWAYS_LOCKED_TERRAIN_TYPES). Consumed by
-// SetupPhase._computeCliffSideAtVertex, which further keys this by vertex and drops
-// entries for always-locked region types.
+// regardless of how many different region pairs they cross) and returns
+// `{ sidesByEdge, downgradeEdgeIds }`:
+//   sidesByEdge: Map<edgeId, Map<regionId, {side, targetAvg}>> — targetAvg is that
+//     edge's OWN local neighbour average for that side (null for a forced-low side that's
+//     also always-locked — see worldConfig/terrainConfig.js's ALWAYS_LOCKED_TERRAIN_
+//     TYPES — which never reaches the z-hook at all). Consumed by
+//     GroundplaneAudit._computeCliffSideAtVertex, which further keys this by vertex and
+//     drops entries for always-locked region types.
+//   downgradeEdgeIds: Set<edgeId> — edges the caller should clear Cliff from entirely
+//     (weak side of a resolved local inversion). Never populated for a forced-low run —
+//     forced sidedness is absolute, not a locally-decided candidate.
 export function computeCliffChainSides(edges, terrainPlots, registry, regionsById) {
   const cliffEntries = Object.entries(edges).filter(([, e]) => e.assignedType === 'Cliff')
-  const result = new Map()
-  if (!cliffEntries.length) return result
+  const sidesByEdge = new Map()
+  const downgradeEdgeIds = new Set()
+  if (!cliffEntries.length) return { sidesByEdge, downgradeEdgeIds }
 
   // 1. Group into runs via shared endpoint pointIds (first/last id of each edge chain).
   const endpointsOf = (e) => [e.pointIds[0], e.pointIds[e.pointIds.length - 1]]
@@ -113,24 +96,35 @@ export function computeCliffChainSides(edges, terrainPlots, registry, regionsByI
     runs.push(run)
   }
 
-  // 2. Point graph + point->plots index, for the linked-neighbour averaging step.
-  const graph = buildPointGraph(terrainPlots)
-  const plotsByPoint = new Map()
+  // 2. Physical-edge -> bordering-plots index, for the local-average step. Keyed by
+  // undirected point-id pair, not by vertex adjacency — deliberately NOT a vertex-
+  // neighbour graph walk (tried first, reverted 2026-07-26): a Cliff run's own shared
+  // junction vertex between two consecutive edges is a graph-neighbour of BOTH edges at
+  // once, so filtering by region id alone still let a neighbouring edge's own bordering
+  // plot leak into THIS edge's "local" average whenever consecutive edges share the same
+  // two regions (the common case — most of one long boundary between two big regions,
+  // just chopped into straight segments). Keying by the EXACT physical edge a plot
+  // borders has no such leak: two different Cliff edges never share a physical edge.
+  const plotsByPhysicalEdge = new Map()   // "idLo,idHi" -> plot[]
   for (const plot of terrainPlots) {
-    for (const pid of plot.pointIds || []) {
-      if (!plotsByPoint.has(pid)) plotsByPoint.set(pid, [])
-      plotsByPoint.get(pid).push(plot)
+    const ids = plot.pointIds
+    if (!ids || ids.length < 2) continue
+    for (let i = 0; i < ids.length; i++) {
+      const p1 = ids[i], p2 = ids[(i + 1) % ids.length]
+      if (p1 === p2) continue
+      const key = p1 < p2 ? `${p1},${p2}` : `${p2},${p1}`
+      if (!plotsByPhysicalEdge.has(key)) plotsByPhysicalEdge.set(key, [])
+      plotsByPhysicalEdge.get(key).push(plot)
     }
   }
 
   for (const run of runs) {
     const runEdges = run.map(id => edgeById.get(id))
-    const runPointSet = new Set()
-    for (const e of runEdges) for (const pid of e.pointIds) runPointSet.add(pid)
 
     // 3. Assign a sideKey ('A'/'B') per region touched by the run, propagated across
     // edges via shared regions — a region recurring in two consecutive edges of the run
-    // must stay on the same sideKey both times.
+    // must stay on the same sideKey both times. Topology only — unaffected by the local
+    // vs. whole-run target change below.
     const sideKeyByRegion = new Map()
     sideKeyByRegion.set(runEdges[0].regionA, 'A')
     sideKeyByRegion.set(runEdges[0].regionB, 'B')
@@ -145,58 +139,183 @@ export function computeCliffChainSides(edges, terrainPlots, registry, regionsByI
       }
     }
 
-    // 4. Forced-low check (Sea/Swamp/Ice Sheet/Lake on either bucket).
+    // 4. Forced-low check (Sea/Swamp/Ice Sheet/Lake on either bucket) — absolute for the
+    // WHOLE run, same as before; a forced run is never a local-inversion candidate.
     const regionIdsByKey = { A: [], B: [] }
     for (const [rid, key] of sideKeyByRegion) regionIdsByKey[key].push(rid)
     const isForcedLow = (rid) => CLIFF_LOW_TYPES.has(regionsById.get(rid)?.assignedType)
     const aForced = regionIdsByKey.A.some(isForcedLow)
     const bForced = regionIdsByKey.B.some(isForcedLow)
+    const forcedHighKey = aForced && !bForced ? 'B' : bForced && !aForced ? 'A' : null
 
-    const averageLinkedNeighbors = (targetKey) => {
+    // 5. Per-EDGE local average (replaces the old whole-run averageLinkedNeighbors/
+    // runPointSet): for each physical segment of the edge, find the ONE plot that
+    // segment actually borders on `regionId`'s side (via plotsByPhysicalEdge), and
+    // average THAT plot's own other corners. Precise by construction — never touches a
+    // neighbouring Cliff edge's own bordering plot, even one sharing a junction vertex.
+    const edgePointSet = (e) => new Set(e.pointIds)
+    const localAverage = (e, regionId) => {
+      const excl = edgePointSet(e)
+      const ids = e.pointIds
       let sum = 0, cnt = 0
-      for (const pid of runPointSet) {
-        const myPlots = plotsByPoint.get(pid) || []
-        for (const nb of graph.get(pid) || []) {
-          if (runPointSet.has(nb)) continue   // exclude points that are themselves on the run
-          const nbPlotSet = new Set(plotsByPoint.get(nb) || [])
-          const sharedPlot = myPlots.find(p => nbPlotSet.has(p))
-          if (!sharedPlot) continue
-          if (sideKeyByRegion.get(sharedPlot.parentRegionId) !== targetKey) continue
-          const np = registry.get(nb)
-          if (!np || !isFinite(np.z)) continue
-          sum += np.z; cnt++
+      for (let i = 0; i < ids.length - 1; i++) {
+        const a = ids[i], b = ids[i + 1]
+        if (a === b) continue
+        const key = a < b ? `${a},${b}` : `${b},${a}`
+        const plot = (plotsByPhysicalEdge.get(key) || []).find(p => p.parentRegionId === regionId)
+        if (!plot) continue
+        for (const pid of plot.pointIds) {
+          if (excl.has(pid)) continue   // exclude corners that are ALSO on this cliff edge
+          const p = registry.get(pid)
+          if (!p || !isFinite(p.z)) continue
+          sum += p.z; cnt++
         }
       }
       return cnt ? sum / cnt : null
     }
 
-    let highKey, lowKey, highAvg, lowAvg
-    if (aForced && !bForced) { lowKey = 'A'; highKey = 'B' }
-    else if (bForced && !aForced) { lowKey = 'B'; highKey = 'A' }
-    else {
-      const avgA = averageLinkedNeighbors('A'), avgB = averageLinkedNeighbors('B')
-      if ((avgA ?? 0) >= (avgB ?? 0)) { highKey = 'A'; lowKey = 'B' } else { highKey = 'B'; lowKey = 'A' }
-    }
-    // Always compute both averages, even on a forced-low side — a forced-low region
-    // that's ALSO always-locked (Sea/Lake/Ice Sheet, per SetupPhase.ALWAYS_LOCKED_TERRAIN_
-    // TYPES) never reaches the lerp at all (its split copies are skipped upstream via
-    // base.zLocked), but Swamp is forced-low here without being always-locked, so it
-    // still needs a real target average, not null.
-    highAvg = averageLinkedNeighbors(highKey)
-    lowAvg = averageLinkedNeighbors(lowKey)
+    const perEdge = runEdges.map((e, i) => ({
+      id: run[i], edge: e, avgA: localAverage(e, e.regionA), avgB: localAverage(e, e.regionB),
+    }))
 
-    // 5. Record per-edge output.
-    for (let i = 0; i < run.length; i++) {
-      const e = runEdges[i]
+    // 6. Each edge's own locally-preferred high key (forced runs never disagree with
+    // themselves — every edge just inherits forcedHighKey). avgA/avgB are this edge's
+    // OWN regionA/regionB averages (step 5) — mapped through sideKeyByRegion, NOT
+    // assumed to line up with the 'A'/'B' letters directly (a later edge in the run can
+    // easily have its OWN regionA be the side that everyone else calls 'B').
+    for (const info of perEdge) {
+      const keyA = sideKeyByRegion.get(info.edge.regionA)
+      const keyB = sideKeyByRegion.get(info.edge.regionB)
+      info.highKey = forcedHighKey ?? ((info.avgA ?? 0) >= (info.avgB ?? 0) ? keyA : keyB)
+    }
+
+    // 7. Group into maximal same-highKey segments, in run order (a forced run is always
+    // exactly one segment).
+    const segments = []
+    for (const info of perEdge) {
+      const last = segments[segments.length - 1]
+      if (last && last.highKey === info.highKey) last.infos.push(info)
+      else segments.push({ highKey: info.highKey, infos: [info] })
+    }
+
+    // 8. Resolve every adjacent-segment boundary: downgrade the clearly weaker segment,
+    // or let a roughly-equal-strength boundary stand as a genuine split. Skipped
+    // entirely for a forced run (always exactly one segment, no boundaries).
+    const strengthOf = (seg) => {
+      let sum = 0, cnt = 0
+      for (const info of seg.infos) {
+        const aIsHigh = sideKeyByRegion.get(info.edge.regionA) === info.highKey
+        const hi = aIsHigh ? info.avgA : info.avgB
+        const lo = aIsHigh ? info.avgB : info.avgA
+        if (hi == null || lo == null) continue
+        sum += Math.max(0, hi - lo); cnt++
+      }
+      return (cnt ? sum / cnt : 0) * seg.infos.length
+    }
+    const downgradedSegments = new Set()
+    for (let i = 0; i < segments.length - 1; i++) {
+      const segA = segments[i], segB = segments[i + 1]
+      const sA = strengthOf(segA), sB = strengthOf(segB)
+      const ratio = Math.min(sA, sB) / Math.max(sA, sB, 1e-9)
+      if (ratio >= CLIFF_SPLIT_EQUAL_TOLERANCE) continue   // roughly equal — genuine split, both stand
+      downgradedSegments.add(sA < sB ? segA : segB)
+    }
+    for (const seg of downgradedSegments) {
+      for (const info of seg.infos) downgradeEdgeIds.add(info.id)
+    }
+
+    // 9. Record per-edge output — skipped for a downgraded edge (no side info at all;
+    // its z-hook leaves the split copy at its own raw z, same as an untyped edge).
+    for (const info of perEdge) {
+      if (downgradeEdgeIds.has(info.id)) continue
+      const e = info.edge
+      const aIsHigh = sideKeyByRegion.get(e.regionA) === info.highKey
+      const highAvg = aIsHigh ? info.avgA : info.avgB
+      const lowAvg = aIsHigh ? info.avgB : info.avgA
       const perRegion = new Map()
       const aKey = sideKeyByRegion.get(e.regionA), bKey = sideKeyByRegion.get(e.regionB)
-      perRegion.set(e.regionA, aKey === highKey ? { side: 'high', targetAvg: highAvg } : { side: 'low', targetAvg: lowAvg })
-      perRegion.set(e.regionB, bKey === highKey ? { side: 'high', targetAvg: highAvg } : { side: 'low', targetAvg: lowAvg })
-      result.set(run[i], perRegion)
+      perRegion.set(e.regionA, aKey === info.highKey ? { side: 'high', targetAvg: highAvg } : { side: 'low', targetAvg: lowAvg })
+      perRegion.set(e.regionB, bKey === info.highKey ? { side: 'high', targetAvg: highAvg } : { side: 'low', targetAvg: lowAvg })
+      sidesByEdge.set(info.id, perRegion)
     }
   }
 
-  return result
+  return { sidesByEdge, downgradeEdgeIds }
+}
+
+// Forces a fresh Cliff edge's two sides to at least CLIFF_MIN_SEPARATION apart, right at
+// definition time (user-confirmed 2026-07-26: "one side should be forced to be higher, at
+// time of application" — today's computeCliffChainSides/z-hook is purely reactive, with no
+// such moment; this restores it as a real, one-time terrain-shaping action, the same way
+// every TERRAIN_TYPE_Z_RULES effect applies a real delta on Apply). Splits any shortfall
+// 50/50 around the edge's own existing natural midpoint — the high side's own local
+// neighbours nudge up, the low side's nudge down — then a short outward blend
+// (propagateFromPoints, same primitive the ongoing Cliff propagation uses) so it isn't an
+// isolated notch. One-time only: every LATER pullback pass reads this as the new "local
+// natural" state via computeCliffChainSides' own per-edge average, so it can still drift/
+// change afterwards as neighbouring terrain edits happen ("it can still change afterwards").
+// `allEdges`/`edgeId`: called with the edge ALREADY assignedType='Cliff' in `allEdges`, so
+// computeCliffChainSides picks up run-context from any already-adjacent Cliff correctly.
+export function forceInitialCliffSeparation(registry, allEdges, edgeId, terrainPlots, regionsById) {
+  const { sidesByEdge } = computeCliffChainSides(allEdges, terrainPlots, registry, regionsById)
+  const sides = sidesByEdge.get(edgeId)
+  if (!sides) return   // downgraded immediately (e.g. a weak flip against an adjacent run) — nothing to force
+
+  const edge = allEdges[edgeId]
+  const regionAInfo = sides.get(edge.regionA), regionBInfo = sides.get(edge.regionB)
+  if (!regionAInfo || !regionBInfo) return   // an always-locked region has no entry — never forced
+  const highInfo = regionAInfo.side === 'high' ? regionAInfo : regionBInfo
+  const lowInfo = regionAInfo.side === 'high' ? regionBInfo : regionAInfo
+  if (highInfo.targetAvg == null || lowInfo.targetAvg == null) return
+
+  const shortfall = CLIFF_MIN_SEPARATION - (highInfo.targetAvg - lowInfo.targetAvg)
+  if (shortfall <= 0) return   // already separated enough
+
+  const highRegionId = regionAInfo.side === 'high' ? edge.regionA : edge.regionB
+  const lowRegionId = regionAInfo.side === 'high' ? edge.regionB : edge.regionA
+
+  // Same 1-hop neighbour walk as computeCliffChainSides' own local average, this time
+  // collecting point ids (not just averaging them) so they can be nudged directly.
+  const graph = buildPointGraph(terrainPlots)
+  const plotsByPoint = new Map()
+  for (const plot of terrainPlots) {
+    for (const pid of plot.pointIds || []) {
+      if (!plotsByPoint.has(pid)) plotsByPoint.set(pid, [])
+      plotsByPoint.get(pid).push(plot)
+    }
+  }
+  const edgePointSet = new Set(edge.pointIds)
+  const neighborsInRegion = (regionId) => {
+    const ids = new Set()
+    for (const pid of edgePointSet) {
+      const myPlots = plotsByPoint.get(pid) || []
+      for (const nb of graph.get(pid) || []) {
+        if (edgePointSet.has(nb)) continue
+        const nbPlotSet = new Set(plotsByPoint.get(nb) || [])
+        const sharedPlot = myPlots.find(p => nbPlotSet.has(p))
+        if (sharedPlot && sharedPlot.parentRegionId === regionId) ids.add(nb)
+      }
+    }
+    return [...ids]
+  }
+
+  const half = shortfall / 2
+  const highTargets = new Map()
+  for (const id of neighborsInRegion(highRegionId)) {
+    const p = registry.get(id)
+    if (!p || p.zLocked) continue
+    p.z = (p.z ?? 0) + half
+    highTargets.set(id, p.z)
+  }
+  const lowTargets = new Map()
+  for (const id of neighborsInRegion(lowRegionId)) {
+    const p = registry.get(id)
+    if (!p || p.zLocked) continue
+    p.z = (p.z ?? 0) - half
+    lowTargets.set(id, p.z)
+  }
+  if (highTargets.size) propagateFromPoints(registry, terrainPlots, [...highTargets.keys()], highTargets, 1, 'linear', 'up')
+  if (lowTargets.size) propagateFromPoints(registry, terrainPlots, [...lowTargets.keys()], lowTargets, 1, 'linear', 'down')
 }
 
 export { lerp, CLIFF_LOW_TYPES }
@@ -463,8 +582,8 @@ export function propagateFromRegion(registry, region, cornerIds, terrainPlots, h
 // OWN target z (not one shared region seedPoint.z) — Cliff's own use case (user-
 // confirmed 2026-07-13, "both sides of the cliff connect to their adjacent terrain"): a
 // jagged Cliff chain's split corners each sit at a locally-different height (the shared
-// point's pre-split z, lerped toward its side's chain-wide average — see
-// computeCliffChainSides/CLIFF_LERP_T), so a single global blend target
+// point's pre-split z, snapped to its side's own local neighbour average — see
+// computeCliffChainSides), so a single global blend target
 // (propagateFromRegion's model) can't represent it — every reached point instead blends
 // toward whichever SOURCE point is nearest it (multi-source flood-fill, same idea as a
 // discrete Voronoi-from-seeds), using that nearest source's own target z and its own

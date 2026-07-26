@@ -1,39 +1,16 @@
 import * as THREE from 'three'
 import EdgeLineRenderer from './utils/EdgeLineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
-import { pointInPolygon, distanceToLineSegment, clipPolygonToBox, triangulatePolygon, resolvePolygon, posHash } from './utils/renderUtils.js'
+import { pointInPolygon, distanceToLineSegment, clipPolygonToBox, triangulatePolygon, resolvePolygon, posHash, interpolateZAtPoint } from './utils/renderUtils.js'
 import { disposeOne, disposeAll } from './utils/MeshLayer.js'
-
-const TERRAIN_COLORS = {
-  City:          0x808080,
-  Plains:        0xb2de69,
-  Desert:        0xedca72,
-  Mountains:     0x8d8d8d,
-  Forest:        0x218c21,
-  Lake:          0x1a5abf,
-  Sea:           0x0e6e6c,
-  Hills:         0x699B4F,
-  Swamp:         0x4a6b4a,
-  'Ice Sheet':   0xf4f8ff,
-  unassigned:    0xb8a680,
-  Cliff:         0xaaaaaa,
-  River:         0x1a5abf,   // same as Lake — a river is the same water, just flowing
-  get(type) {
-    return this[type] ?? null
-  }
-}
-
-// Terrain-type pairs with NO valid edge type at all (user-confirmed 2026-07-19): River
-// and Cliff are the only two terrain edge types, and neither means anything between two
-// regions that read as one continuous, undifferentiated body — Sea/Lake<->Sea/Lake
-// (open water, no coastline to draw), and Mountains<->Mountains / Desert<->Desert (a
-// Voronoi-noise seam inside what's meant to look like one contiguous range/dune sea, not
-// a real geographic feature — unlike e.g. two Plains regions, where a River genuinely
-// can run between them). WATER_TYPES matches on EITHER side being in the set (any
-// water/water combo); SAME_TYPE_ONLY_TYPES only matches when BOTH sides are the
-// IDENTICAL type, since e.g. Mountains<->Desert is a real, definable boundary.
-const WATER_TYPES = new Set(['Sea', 'Lake'])
-const SAME_TYPE_ONLY_TYPES = new Set(['Mountains', 'Desert'])
+// TERRAIN_COLORS/WATER_TYPES/SAME_TYPE_ONLY_TYPES live in worldConfig/terrainConfig.js
+// now (the single source of truth for every terrain tunable, alongside districtConfig.js's
+// district equivalent). WATER_TYPES matches on EITHER side being in the set (any
+// water/water combo has no valid Edge type, and any water/land boundary is a Shore —
+// ShoreBands.js, server-side, uses this SAME set); SAME_TYPE_ONLY_TYPES only matches when
+// BOTH sides are the IDENTICAL type, since e.g. Mountains<->Desert is a real, definable
+// boundary (see _edgeHasNoValidType below for how the two combine).
+import { TERRAIN_COLORS, WATER_TYPES, SAME_TYPE_ONLY_TYPES } from '../../worldConfig/terrainConfig.js'
 
 export default class TerrainRenderer {
   constructor(scene) {
@@ -298,9 +275,9 @@ export default class TerrainRenderer {
   // tests, renderEdges' "is this edge shown" gate, and renderTerrain all explicitly
   // filter out `.hidden` entries, so the hidden ring stays invisible/non-interactive
   // until that feature exists.
-  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], hillsWallFaces = []) {
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], terrainSurfaces = []) {
     this.clearMarkers()
-    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points,', riverCliffFaces.length, 'river/cliff faces,', hillsWallFaces.length, 'hills wall faces')
+    console.log('setTerrainData called with', regions.length, 'regions,', Object.keys(edges || {}).length, 'edges,', (terrainPlots || []).length, 'terrain plots,', (edgePoints || []).length, 'edge points,', riverCliffFaces.length, 'river/cliff faces,', (terrainSurfaces || []).length, 'terrain surfaces')
     // District z-height (plan "typed-gliding-leaf") surfaced the same gap here as
     // DistrictRenderer's cityEdgePointsById had: edgePoints is a plain {id,x,y}
     // convenience copy (see e.g. TerrainVoronoiGenerator's edge-point construction) —
@@ -320,8 +297,8 @@ export default class TerrainRenderer {
       for (const face of riverCliffFaces) {
         face.polygon = resolvePolygon(face.pointIds, pointsById) ?? face.polygon
       }
-      for (const face of hillsWallFaces) {
-        face.polygon = resolvePolygon(face.pointIds, pointsById) ?? face.polygon
+      for (const q of terrainSurfaces || []) {
+        q.polygon = resolvePolygon(q.pointIds, pointsById) ?? q.polygon
       }
       // Coarse region hulls (Stage D, ADR-0020): TerrainVoronoiGenerator now mints
       // region.pointIds straight from the same registry-linked vertices its convexHull
@@ -334,8 +311,24 @@ export default class TerrainRenderer {
         region.polygon = resolvePolygon(region.pointIds, pointsById) ?? region.polygon
       }
     }
-    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces, hillsWallFaces }
-    this.renderTerrain(regions, terrainPlots || [])
+    this.terrainData = { regions, edges: edges || {}, terrainPlots: terrainPlots || [], riverCliffFaces, terrainSurfaces: terrainSurfaces || [] }
+    // Index the subdivided quads by their source plot, so height sampling (per frame in
+    // walk mode) finds the coarse plot first, then interpolates within just that plot's
+    // handful of quads instead of scanning all ~thousands (ADR-0022 height source).
+    this._terrainSurfacesByPlot = new Map()
+    for (const q of terrainSurfaces || []) {
+      if (!this._terrainSurfacesByPlot.has(q.sourcePlotId)) this._terrainSurfacesByPlot.set(q.sourcePlotId, [])
+      this._terrainSurfacesByPlot.get(q.sourcePlotId).push(q)
+    }
+    // Terrain-wide subdivision (ADR-0022): when the server sends the welded subdivided
+    // mesh, it IS the terrain surface — render it (grouped per source plot so hover/
+    // recolour keep working, keyed by plot id) INSTEAD of the flat coarse plots. Fall back
+    // to the old flat-plot renderer only for an (old) sync that carries no terrainSurfaces.
+    if ((terrainSurfaces || []).length) {
+      this.renderTerrainSurfaces(terrainSurfaces, terrainPlots || [])
+    } else {
+      this.renderTerrain(regions, terrainPlots || [], null)
+    }
     // Re-enabled in Terrain mode itself (plan "typed-gliding-leaf", user-confirmed
     // 2026-07-14 — the bank-path/confluence artifacts that motivated the 2026-07-11
     // revert are fixed): River/Cliff now render as filled DCEL faces during Terrain
@@ -343,13 +336,6 @@ export default class TerrainRenderer {
     // has a matching face by sourceEdgeId, so the stroke overlay and the fill never
     // double-render the same edge.
     this.renderRiverCliffFaces(riverCliffFaces)
-    // Hills solid extrusion (plan "shimmering-wondering-flurry", Stage 1) — vertical
-    // wall quads around each Hills region's outer boundary. Cannot reuse
-    // renderRiverCliffFaces/buildRegionMesh: a wall quad's two side-edges share the same
-    // (x,y), differing only in z, so buildRegionMesh's XY-plane ear-clipping
-    // (triangulatePolygon) sees a zero-area line there, not a real quad — see
-    // renderHillsWallFaces' own doc comment for the dedicated builder this uses instead.
-    this.renderHillsWallFaces(hillsWallFaces)
     this.drawVoronoiCenters(regions)
     this.drawTerrainPlotCenters(terrainPlots)
     this.drawSurfaceCorners(terrainPlots, riverCliffFaces)
@@ -358,66 +344,113 @@ export default class TerrainRenderer {
     }
   }
 
-  // Filled meshes for River/Cliff DCEL faces — reuses buildRegionMesh unchanged (it's
-  // already generic over any {polygon, assignedType} shape; this is exactly what
-  // already renders Lake/Sea).
+  // Filled meshes for River/Cliff DCEL faces — reuses buildRegionMesh (already generic
+  // over any {polygon, assignedType} shape; this is exactly what already renders
+  // Lake/Sea), with the Ice-Sheet-adjacent white override for Cliff faces.
   renderRiverCliffFaces(faces) {
     this.riverCliffFaceMeshes ??= new Map()
     disposeAll(this.scene, this.riverCliffFaceMeshes)
     for (const face of faces || []) {
-      const mesh = this.buildRegionMesh(face)
+      const mesh = this.buildRegionMesh(face, this._isIceSheetAdjacentCliffFace(face) ? 0xffffff : null)
       if (!mesh) continue
       this.scene.add(mesh)
       this.riverCliffFaceMeshes.set(face.id, mesh)
     }
   }
 
-  // Hills solid extrusion (plan "shimmering-wondering-flurry", Stage 1) — one mesh per
-  // wall quad face (HillsExtrusion.js server-side: pointIds/polygon = [a, b, bTop, aTop],
-  // a/b at the original pre-extrude corner, aTop/bTop directly above at the extruded
-  // height). Deliberately NOT buildRegionMesh: that ear-clips in the XY (top-down)
-  // plane, and a's/aTop's (and b's/bTop's) shared (x,y) — differing only in z — project
-  // to a zero-area line there, producing garbage/no triangles for a genuinely vertical
-  // face. Two fixed triangles straight from the 4 resolved 3D positions sidesteps that
-  // entirely (no XY projection involved), same idea as DistrictRenderer.buildWallMesh's
-  // hand-built wall geometry.
-  buildHillsWallMesh(face) {
-    const poly = face.polygon
-    if (!poly || poly.length !== 4) return null
-    const [a, b, bTop, aTop] = poly
-    const vertices = [
-      a.x,    a.z    ?? 0, a.y,
-      b.x,    b.z    ?? 0, b.y,
-      bTop.x, bTop.z ?? 0, bTop.y,
-      aTop.x, aTop.z ?? 0, aTop.y,
-    ]
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
-    geometry.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2, 0, 2, 3]), 1))
-    geometry.computeVertexNormals()
-    // Same realY stash-and-swap convention as every other ground-relief mesh in this
-    // file (setGroundFlattened) — top-down mode collapses the wall to a flat sliver at
-    // Y=0, same treatment every other relief mesh gets, not a special case.
-    geometry.userData.realY = [a.z ?? 0, b.z ?? 0, bTop.z ?? 0, aTop.z ?? 0]
-
-    const color = TERRAIN_COLORS.get(face.assignedType) || TERRAIN_COLORS.unassigned
-    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0, side: THREE.DoubleSide })
-    const mesh = new THREE.Mesh(geometry, material)
-    mesh.userData = { hillsWallFaceId: face.id }
-    return mesh
+  // A Cliff face bordering an Ice Sheet region is always white (user-confirmed
+  // 2026-07-26: "never grey or sand yellow") — snow-capped, not bare rock. Shared by
+  // renderRiverCliffFaces (the flat DCEL-face mesh) and renderTerrainSurfaces (the
+  // subdivided-quad mesh, ADR-0022) — both need the SAME override, or one layer would
+  // still show the old grey underneath/behind the other. iceSheetAdjacent is computed
+  // ONCE, server-side (GroundplaneAudit._buildRiverCliffFacesDirect/
+  // _buildRiverCliffJunctionCaps) rather than re-derived here from edges+regions —
+  // GroundRenderer (which takes over from this renderer post-Terrain-Setup) needs the
+  // SAME flag but has no edges/regions data of its own to re-derive it from, so the
+  // server is the one place both renderers can share it from.
+  _isIceSheetAdjacentCliffFace(face) {
+    return !!face && face.assignedType === 'Cliff' && !!face.iceSheetAdjacent
   }
 
-  renderHillsWallFaces(faces) {
-    this.hillsWallFaceMeshes ??= new Map()
-    disposeAll(this.scene, this.hillsWallFaceMeshes)
-    for (const face of faces || []) {
-      const mesh = this.buildHillsWallMesh(face)
+  // Hills solid extrusion (plan "shimmering-wondering-flurry", Stage 1) — one mesh per
+  // Terrain-wide subdivision render (ADR-0022). The server's welded Catmull-Clark quads
+  // (terrainSurfaces) replace the flat coarse-plot meshes. Grouped by their source plot so
+  // there is still ONE mesh per terrain plot, keyed in terrainPlotMeshes by plot id —
+  // hover highlight, region recolour, and promoted-plot hiding all key off that map and
+  // keep working unchanged. Hidden quads (from generated-but-unrevealed plots) are skipped,
+  // exactly as the flat renderer skipped `.hidden` plots. Coloured per source plot with the
+  // same jitter formula the flat plots used (seeded by the plot's own centroid), so the
+  // switch to subdivided geometry produces no colour change.
+  renderTerrainSurfaces(terrainSurfaces, terrainPlots) {
+    disposeAll(this.scene, this.regionMeshes)
+    disposeAll(this.scene, this.terrainPlotMeshes)
+    this.regionTerrainPlots.clear()
+
+    const plotById = new Map((terrainPlots || []).map(p => [p.id, p]))
+    const quadsByPlot = new Map()
+    for (const q of terrainSurfaces || []) {
+      if (q.hidden) continue
+      if (!quadsByPlot.has(q.sourcePlotId)) quadsByPlot.set(q.sourcePlotId, [])
+      quadsByPlot.get(q.sourcePlotId).push(q)
+    }
+
+    // Cliff-ribbon-sourced quads have no entry in plotById (a ribbon face isn't a coarse
+    // terrain plot) — see _isIceSheetAdjacentCliffFace for the white-near-Ice-Sheet rule.
+    const cliffFaceById = new Map((this.terrainData?.riverCliffFaces || []).map(f => [f.id, f]))
+
+    let built = 0
+    for (const [plotId, quads] of quadsByPlot) {
+      const plot = plotById.get(plotId)
+      const color = plot ? this._terrainPlotColor(plot)
+        : this._isIceSheetAdjacentCliffFace(cliffFaceById.get(plotId)) ? 0xffffff
+        : this._jitterColor(TERRAIN_COLORS.get(quads[0].assignedType), 0)
+      const mesh = this._buildSubdividedPlotMesh(quads, color)
       if (!mesh) continue
       this.scene.add(mesh)
-      this.hillsWallFaceMeshes.set(face.id, mesh)
+      this.terrainPlotMeshes.set(plotId, mesh)
+      const rid = plot?.parentRegionId ?? quads[0].parentRegionId
+      if (!this.regionTerrainPlots.has(rid)) this.regionTerrainPlots.set(rid, [])
+      this.regionTerrainPlots.get(rid).push(plotId)
+      built++
     }
+    // Re-apply promoted-plot suppression to the freshly rebuilt meshes.
+    for (const id of this.promotedPlotIds) {
+      const mesh = this.terrainPlotMeshes.get(id)
+      if (mesh) mesh.visible = false
+    }
+    console.log(`Rendered ${built} subdivided terrain plot mesh(es) from ${(terrainSurfaces || []).length} quad(s)`)
   }
 
+  // One merged, indexed mesh from a plot's subdivided quads. Each quad is 4 points with
+  // real z; two triangles per quad, straight from the 3D positions (Three.js Y = data z).
+  // computeVertexNormals gives the smooth shading that makes the subdivided relief read.
+  _buildSubdividedPlotMesh(quads, color) {
+    const positions = []
+    const indices = []
+    let base = 0
+    for (const q of quads) {
+      const poly = q.polygon
+      if (!poly || poly.length !== 4) continue
+      for (const p of poly) positions.push(p.x, p.z ?? 0, p.y)
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+      base += 4
+    }
+    if (!indices.length) return null
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3))
+    geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1))
+    geometry.computeVertexNormals()
+    geometry.userData.realY = positions.filter((_, i) => i % 3 === 1)
+    const material = new THREE.MeshStandardMaterial({
+      color, roughness: 0.85, metalness: 0,
+      emissive: color, emissiveIntensity: 0.12,
+      side: THREE.DoubleSide,
+    })
+    return new THREE.Mesh(geometry, material)
+  }
+
+  // Flat-plot fallback renderer, used only when a sync carries no terrainSurfaces (an old
+  // save/server, ADR-0022) — the normal path is renderTerrainSurfaces, above.
   renderTerrain(regions, terrainPlots) {
     disposeAll(this.scene, this.regionMeshes)
     disposeAll(this.scene, this.terrainPlotMeshes)
@@ -468,7 +501,7 @@ export default class TerrainRenderer {
     }
   }
 
-  buildRegionMesh(region) {
+  buildRegionMesh(region, colorOverride = null) {
     if (!region.polygon || region.polygon.length < 3) {
       console.warn(`Region ${region.id} has invalid polygon:`, region.polygon)
       return null
@@ -542,7 +575,7 @@ export default class TerrainRenderer {
     // change. Computed from the pre-clip polygon (region.polygon) to match
     // GroundRenderer, which never clips.
     const baseColor = TERRAIN_COLORS.get(region.assignedType) || TERRAIN_COLORS.unassigned
-    const color = this._jitterColor(baseColor, this._polySeed(region.polygon))
+    const color = colorOverride != null ? colorOverride : this._jitterColor(baseColor, this._polySeed(region.polygon))
     // DoubleSide: every other renderer in this codebase (DistrictRenderer, GroundRenderer)
     // already renders this way — this was the one mesh left culling backfaces, so any
     // wrong-winding polygon (several found this session, from different sources) went
@@ -781,7 +814,6 @@ export default class TerrainRenderer {
     this.terrainPlotMeshes.forEach(apply)
     this.regionMeshes.forEach(apply)
     this.riverCliffFaceMeshes?.forEach(apply)
-    this.hillsWallFaceMeshes?.forEach(apply)
     this.terrainPolylines?.setFlattened(flat)
     // Audit-finding lines (renderAuditFindings) — same realY stash, but no
     // computeVertexNormals (a THREE.Line has no faces to shade). Exactly 0 when flat,
@@ -840,22 +872,47 @@ export default class TerrainRenderer {
     return null
   }
 
-  // Top-down z readout (TODO.md "Groundplane Z-height implementation", plan "rustling-
-  // churning-finch"): "project a ray at the mouse pointer, return the z-height of the
-  // first polygon intersected" — every ground-plane polygon still renders flat at Y=0
-  // (z-height rendering/displacement isn't implemented yet), so a real 3-D raycast
-  // against the rendered mesh would just hit Y=0 everywhere. This is the equivalent
-  // query against the DATA model instead: find which terrain plot's polygon contains
-  // the point (screenToWorld's existing flat-plane ray already gives worldX/worldY —
-  // "first polygon intersected" IS "the plot containing this XZ point" while every
-  // polygon sits at the same render height), then average that polygon's own corner z
-  // values (already resolved with real z via resolvePolygon in setTerrainData).
+  // Cliff/River ribbon faces (ADR-0022) aren't coarse terrain plots — they're a separate
+  // Edge-type feature — so getTerrainPlotAtWorldPos never finds them, and standing in the
+  // middle of a ribbon (walk mode) fell through to a null height, sinking the character
+  // underground (user-confirmed 2026-07-26). Their own subdivided quads DO already exist
+  // in _terrainSurfacesByPlot though — server's GroundplaneAudit._syncGroundplaneSurfaces
+  // merges riverCliffFaces into the same subdivideTerrain pass as every coarse plot, and
+  // each quad's sourcePlotId equals its ribbon's own `id` (_buildRiverCliffFacesDirect:
+  // `{ id: chainId, ... }`) — same lookup key a coarse plot's `cell.id` already uses. This
+  // just needs its own point-in-polygon lookup to find WHICH ribbon a point is over.
+  getRiverCliffFaceAtWorldPos(worldX, worldY) {
+    if (!this.terrainData?.riverCliffFaces?.length) return null
+    for (const face of this.terrainData.riverCliffFaces) {
+      if (face.polygon && pointInPolygon(worldX, worldY, face.polygon)) return face
+    }
+    return null
+  }
+
+  // Surface height at exactly (worldX, worldY), interpolated within the containing polygon
+  // (see interpolateZAtPoint), NOT a whole-polygon average — a ground-follower tracks the
+  // real relief instead of stepping between per-plot centroid heights.
+  // Authoritative source is the subdivided terrain mesh (ADR-0022): find the coarse plot
+  // (or, failing that, the Cliff/River ribbon — see getRiverCliffFaceAtWorldPos) containing
+  // the point (cheap, ~one point-in-polygon per plot/face), then interpolate within just
+  // its handful of subdivided quads (indexed in _terrainSurfacesByPlot). Falls back to the
+  // coarse plot polygon only for an old sync that carried no terrainSurfaces.
   getZHeightAtWorldPos(worldX, worldY) {
-    const cell = this.getTerrainPlotAtWorldPos(worldX, worldY)
-    if (!cell?.polygon?.length) return null
-    let sum = 0, n = 0
-    for (const p of cell.polygon) { if (isFinite(p.z)) { sum += p.z; n++ } }
-    return n ? sum / n : null
+    const cell = this.getTerrainPlotAtWorldPos(worldX, worldY) ?? this.getRiverCliffFaceAtWorldPos(worldX, worldY)
+    if (cell && this._terrainSurfacesByPlot?.size) {
+      const quads = this._terrainSurfacesByPlot.get(cell.id)
+      if (quads) {
+        for (const q of quads) {
+          const z = q.polygon?.length ? interpolateZAtPoint(worldX, worldY, q.polygon) : null
+          if (z != null) return z
+        }
+      }
+    }
+    if (cell?.polygon?.length) {
+      const z = interpolateZAtPoint(worldX, worldY, cell.polygon)
+      if (z != null) return z
+    }
+    return null
   }
 
   // `_pathAnchorEdgeId` (set via setEdgePathAnchor, App.js's "last selected edge") turns
@@ -1262,12 +1319,6 @@ export default class TerrainRenderer {
     // TerrainPlotConverter's riverCliffFaces param) — retire these meshes the same way
     // terrain-plot fills above are retired, or the two would double-render.
     if (this.riverCliffFaceMeshes) disposeAll(this.scene, this.riverCliffFaceMeshes)
-    // Hills wall faces (Stage 1) have no GroundRenderer/District-Setup-onward
-    // equivalent yet (deferred — see HillsExtrusion.js's own doc comment on why: a
-    // vertical wall quad hits the same XY ear-clipping problem there too, needs its own
-    // dedicated path when that's tackled). Retire them here too rather than leave a
-    // stale, no-longer-updated mesh in the scene once District mode takes over.
-    if (this.hillsWallFaceMeshes) disposeAll(this.scene, this.hillsWallFaceMeshes)
   }
 
   // ── Hit testing ─────────────────────────────────────────────────────────────
@@ -1308,10 +1359,19 @@ export default class TerrainRenderer {
     // automatically covered by renderEdges' filtering. Filter out `.hidden` regions
     // explicitly — they're merged into terrainData.regions now, not absent from it.
     const regionsById = new Map((this.terrainData?.regions || []).filter(r => !r.hidden).map(r => [r.id, r]))
+    // A committed (typed) Cliff/River is fully covered by its own filled riverCliffFace
+    // already (renderEdges' own `facedEdgeIds` exclusion) — this hit-test was missing
+    // the SAME gate, so a committed edge stayed hoverable/clickable underneath its own
+    // face mesh (user-confirmed 2026-07-26: "previously selectable element... no longer
+    // selectable... redundant and confusing"). Same class of bug _edgeHasNoValidType's
+    // own doc comment already describes for a different case: an edge excluded from the
+    // mesh must never be reachable via this hit-test either.
+    const facedEdgeIds = new Set((this.terrainData?.riverCliffFaces || []).map(f => f.sourceEdgeId))
     for (const edgeId in this.terrainData.edges) {
       const edge = this.terrainData.edges[edgeId]
       if (!regionsById.has(edge.regionA) || !regionsById.has(edge.regionB)) continue
       if (this._edgeHasNoValidType(edge, regionsById)) continue
+      if (facedEdgeIds.has(edgeId)) continue
       const ids = edge.pointIds
       if (!ids || ids.length < 2) continue
       for (let i = 0; i < ids.length - 1; i++) {
@@ -1530,8 +1590,13 @@ export default class TerrainRenderer {
     // ignored on ANGLE/D3D and most desktop GL contexts, so a thin debug line can never
     // actually be made thicker this way. HOLE findings are the one category that's
     // actually actionable (AREA_OVERLAP's closed-loop outline stays a thin THREE.Line —
-    // less critical, not asked for) — real ribbon-mesh quads instead, wide and red
-    // (user-specified 2026-07-15), same per-segment-quad technique as EdgeLineRenderer.
+    // less critical, not asked for) — real ribbon-mesh quads instead, wide and YELLOW
+    // (fixed 2026-07-26 — a 2026-07-15 change made this ribbon red without updating the
+    // doc comment two lines up or AuditFindingsPopup's own "Holes: N (yellow)" legend
+    // text, so holes silently rendered the exact same colour as AREA_OVERLAP and were
+    // impossible to tell apart on a real map with hundreds of each), same per-segment-
+    // quad technique as EdgeLineRenderer.
+    const HOLE_COLOR = 0xffee00
     const HOLE_THICKNESS = 0.3
     const mkLine = (pts, color) => {
       if (pts.length < 2) return
@@ -1578,7 +1643,7 @@ export default class TerrainRenderer {
       geometry.setIndex(idx)
       geometry.userData.realY = realY
       if (this._groundFlattened) for (let i = 0; i < realY.length; i++) posArray[i * 3 + 1] = 0
-      const material = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide, depthTest: false })
+      const material = new THREE.MeshBasicMaterial({ color: HOLE_COLOR, side: THREE.DoubleSide, depthTest: false })
       const mesh = new THREE.Mesh(geometry, material)
       mesh.renderOrder = 999
       mesh.visible = this.showDebug
@@ -1590,6 +1655,13 @@ export default class TerrainRenderer {
     const surfaceById = new Map()
     for (const cell of (this.terrainData?.terrainPlots || [])) surfaceById.set(`tp:${cell.id}`, cell.polygon)
     for (const face of (this.terrainData?.riverCliffFaces || [])) surfaceById.set(`rcf:${face.id}`, face.polygon)
+    // Terrain-wide subdivision (ADR-0022): the server's audit runs against terrainSurfaces
+    // (the welded, subdivided mesh) now, not the flat terrainPlots list — an AREA_OVERLAP
+    // finding's surfaceId is one of THESE ids (`${hidden?'hts':'ts'}:${q.id}`, matching
+    // GroundplaneAudit._syncGroundplaneSurfaces exactly), not a `tp:` one. Missing this
+    // silently dropped every terrain-surface AREA_OVERLAP outline (fixed 2026-07-26 —
+    // confirmed live: 164 AREA_OVERLAP findings, almost none actually rendering).
+    for (const q of (this.terrainData?.terrainSurfaces || [])) surfaceById.set(`${q.hidden ? 'hts' : 'ts'}:${q.id}`, q.polygon)
 
     for (const f of findings || []) {
       if (f.category === 'HOLE') {

@@ -587,6 +587,7 @@ export default class App {
     const terrainType = this.pendingTerrainType
     try {
       const response = await GameAPI.assignTerrain(regionId, terrainType, description, name)
+      console.log(`assignTerrain(${regionId}, ${terrainType}) response: ok=${response.ok}, terrainSurfaces=${response.terrainSurfaces?.length ?? 'MISSING FIELD'}`)
       if (response.ok) {
         // Full re-hydrate on EVERY assignment, not just a reveal (user-confirmed
         // 2026-07-14, same root cause as the edge-assign fix above): assignTerrainToRegion
@@ -605,7 +606,7 @@ export default class App {
           response.edgePoints || [],
           pointsById,
           response.riverCliffFaces || [],
-          response.hillsWallFaces || []
+          response.terrainSurfaces || []
         )
 
         const region = this.renderer.terrainRenderer.terrainData?.regions?.find(r => r.id === regionId)
@@ -823,7 +824,7 @@ export default class App {
           response.edgePoints || [],
           pointsById,
           response.riverCliffFaces || [],
-          response.hillsWallFaces || []
+          response.terrainSurfaces || []
         )
         this.renderer.renderAuditFindings?.(response.auditFindings || [])
         this.auditFindingsPopup?.update(response.auditCounts, response.auditFindings)
@@ -1578,7 +1579,7 @@ export default class App {
       state.worldTerrainData.edgePoints || [],
       pointsById,
       state.worldTerrainData.riverCliffFaces || [],
-      state.worldTerrainData.hillsWallFaces || []
+      state.worldTerrainData.terrainSurfaces || []
     )
 
     const cityData = state.cityDistrictData
@@ -1941,7 +1942,7 @@ export default class App {
         this.renderer.setMode('terrain')
         this.renderer.guildSetupActive = false
         this.renderer.setCityEdgesHidden(false)
-        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [], response.hillsWallFaces || [])
+        this.renderer.setTerrainData(response.regions, response.edges || {}, response.terrainPlots || [], response.edgePoints || [], new Map((response.pointRegistry || []).map(p => [p.id, p])), response.riverCliffFaces || [], response.terrainSurfaces || [])
         this.inputHandler.setTerrainData(response)
         this.uiManager.showSetupPhase('Terrain')
         // New Game: discard any saved camera view from the previous game first, so

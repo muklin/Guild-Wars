@@ -1,12 +1,13 @@
 // Computes LEFT/RIGHT boundary positions for every point along every River/Cliff chain,
-// using the SAME miter/junction geometry PolylineRenderer.js uses for rendering (see
-// shared/polylineGeometry.js) — so the terrain data these positions get baked into and
-// the on-screen stroke agree by construction (no separate width-reconciliation pass
-// needed), and multi-chain junctions (2+ rivers/cliffs meeting) are handled by the same
-// mature fan/miter/bevel logic already proven for rendering, not a second, DCEL-specific
-// mechanism (see plan "typed-giggling-giraffe" — this is a deliberately separate,
-// standalone, well-tested piece; NOT YET wired into SetupPhase's live pullback).
-import { computeJunctionData, computeEdgeCorners } from '../../../shared/polylineGeometry.js'
+// using the SAME miter/junction geometry PolylineRenderer.js used for rendering (see
+// polylineGeometry.js — its own header covers that renderer's since-deleted client use)
+// — so the terrain data these positions get baked into and the on-screen stroke agree by
+// construction (no separate width-reconciliation pass needed), and multi-chain junctions
+// (2+ rivers/cliffs meeting) are handled by the same mature fan/miter/bevel logic already
+// proven for rendering, not a second, DCEL-specific mechanism (see plan "typed-giggling-
+// giraffe" — this is a deliberately separate, standalone, well-tested piece; NOT YET
+// wired into SetupPhase's live pullback).
+import { computeJunctionData, computeEdgeCorners } from './polylineGeometry.js'
 
 // edges: a plain object/map of chainId -> { pointIds: [id, ...], ... } — callers pass
 // worldTerrainData.edges PRE-FILTERED to just the River/Cliff entries (an unassigned or

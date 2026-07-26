@@ -209,18 +209,22 @@ export default class PlotVoronoiGenerator {
     const sd = blocks.filter(b => b.blockType === 'subdivided').length
     console.log(`PlotVoronoiGenerator: ${blocks.length} blocks (${sq} square, ${si} single, ${sd} subdivided), ${plots.length} plots (${paved} paved under Landmarks)`)
 
-    // District z-height Tier 2 (plan "typed-gliding-leaf"): a square/single/unsubdivided
-    // plot's blockCorners is the same array CityBlockGenerator already IDW-assigned z to,
-    // so nothing to do there. A SUBDIVIDED plot's blockCorners is a fresh Voronoi-clipped
-    // polygon (cell.polygon) — vertices kept from the original block boundary already
-    // carry z, but new intersection points minted by the clip do not. Fill those in the
-    // same way CityBlockGenerator did for block corners: IDW from the nearby, already-
-    // z-aware Tier-1 junctions/gutters belonging to the plot's district. Those new
-    // intersection points were already minted into the registry (via mintDeduped in
-    // _mergeSmallPlots, at z ?? 0) before this z was known, so — same fix as
-    // CityBlockGenerator's Tier 2 — the computed z is written back to the registry
+    // District z-height Tier 2 (ADR-0022 Stage 4a): a square/single/unsubdivided plot's
+    // blockCorners is the same array CityBlockGenerator already flattened, so nothing to
+    // do there. A SUBDIVIDED plot's blockCorners is a fresh Voronoi-clipped polygon
+    // (cell.polygon) — vertices kept from the original block boundary already carry z,
+    // but new intersection points minted by the clip do not. Fill those with the SAME
+    // flat value CityBlockGenerator already computed for the plot's own parent block
+    // (block.groundZ) — not an independent sample — so every plot pad stays flush with
+    // its block's pad, never landing a hair off from a second, separately-sampled value.
+    // Falls back to the old IDW-from-Tier-1-controls only if the parent block is missing
+    // or never got a groundZ (e.g. no heightIndex/registry passed anywhere upstream).
+    // Those new intersection points were already minted into the registry (via
+    // mintDeduped in _mergeSmallPlots, at z ?? 0) before this z was known, so — same fix
+    // as CityBlockGenerator's Tier 2 — the computed z is written back to the registry
     // point (plot.pointIds) too, not just the blockCorners array.
     {
+      const blockById = new Map((blocks || []).map(b => [b.id, b]))
       const controlPointsByDistrict = new Map()
       const controlPointsFor = (districtId) => {
         if (controlPointsByDistrict.has(districtId)) return controlPointsByDistrict.get(districtId)
@@ -237,21 +241,13 @@ export default class PlotVoronoiGenerator {
         controlPointsByDistrict.set(districtId, pts)
         return pts
       }
-      const _loggedPlotDistricts = new Set()   // TEMP diagnostic — remove once root cause confirmed
-      let _missingCount = 0, _filledCount = 0, _alreadyCount = 0
       for (const plot of plots) {
-        const controls = controlPointsFor(plot.districtId)
-        if (!_loggedPlotDistricts.has(plot.districtId)) {
-          _loggedPlotDistricts.add(plot.districtId)
-          console.log(`[zheight-diag] plot Tier3 district=${plot.districtId} controls=${controls.length} sampleZ=${controls.slice(0, 3).map(c => c.z.toFixed(2)).join(',')}`)
-        }
+        let plotZ = blockById.get(plot.blockId)?.groundZ ?? null
         for (let i = 0; i < plot.blockCorners.length; i++) {
           const v = plot.blockCorners[i]
           if (v.z == null) {
-            const z = idwZ(v.x, v.y, controls)
-            if (z != null) { v.z = z; _filledCount++ } else { _missingCount++ }
-          } else {
-            _alreadyCount++
+            if (plotZ == null) plotZ = idwZ(v.x, v.y, controlPointsFor(plot.districtId))
+            if (plotZ != null) v.z = plotZ
           }
           // Same registry/array desync as CityBlockGenerator's Tier-2 pass: a subdivided
           // plot's intersection corners were minted into the registry (via mintDeduped in
@@ -264,7 +260,6 @@ export default class PlotVoronoiGenerator {
           }
         }
       }
-      console.log(`[zheight-diag] plot Tier3 corners: already-had-z=${_alreadyCount} filled=${_filledCount} STILL-NULL=${_missingCount}`)
     }
 
     return { plots }

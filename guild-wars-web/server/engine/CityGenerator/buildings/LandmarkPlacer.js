@@ -1,5 +1,5 @@
 import { pip } from '../../voronoi/VoronoiUtils.js'
-import { MODEL_BY_NAME, MODEL_SCALE, MODEL_OFFSET, DISTRICT_MODEL_SQUARE, districtModelKey } from '../../../../shared/buildingCatalogue.js'
+import { MODEL_BY_NAME, MODEL_SCALE, MODEL_OFFSET, DISTRICT_MODEL_SQUARE, districtModelKey } from '../../../../worldConfig/buildingCatalogue.js'
 
 // Places Landmark buildings (ADR-0005). Square blocks of one district that are joined
 // across shared street segments form a Square cluster (a paved plaza); each district's

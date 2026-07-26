@@ -10,13 +10,12 @@ import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
 import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
-import { applyTerrainTypeZEffect, getRegionCornerIds, computeCliffChainSides, propagateFromPoints, CLIFF_Z_RULE, CLIFF_LERP_T, lerp, applyRiverZGradient } from './CityGenerator/TerrainZHeight.js'
+import { applyTerrainTypeZEffect, getRegionCornerIds, computeCliffChainSides, propagateFromPoints, CLIFF_Z_RULE, CLIFF_MIN_SEPARATION, lerp, applyRiverZGradient } from './CityGenerator/TerrainZHeight.js'
 import { applyCanalZDelta } from './CityGenerator/DistrictZHeight.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
-import { getDistrictConfig } from '../../shared/districtConfig.js'
-import { generateName } from '../../shared/nameLibrary.js'
-import { extractBoundaryChain, boundaryConnectionAt } from '../../shared/boundaryChain.js'
+import { getDistrictConfig } from '../../worldConfig/districtConfig.js'
+import { generateName } from '../../worldConfig/nameLibrary.js'
 import GroundplaneAudit from './GroundplaneAudit.js'
 import TerrainSetup from './TerrainSetup.js'
 import DistrictSetup from './DistrictSetup.js'
@@ -85,6 +84,7 @@ export default class SetupPhase {
   _revealAdjacentHiddenTerrain(...args) { return this.terrainSetup._revealAdjacentHiddenTerrain(...args) }
 
   assignEdgeType(...args) { return this.terrainSetup.assignEdgeType(...args) }
+  clearWeakCliffSegments(...args) { return this.terrainSetup.clearWeakCliffSegments(...args) }
 
   assignDistrictType(...args) { return this.districtSetup.assignDistrictType(...args) }
 

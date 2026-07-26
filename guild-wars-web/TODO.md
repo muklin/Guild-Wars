@@ -1,17 +1,18 @@
 # Bugs:
 - I don't like the current FP indication.  FP names are often not rendered.
 - Archways are not appearing in game.  I've not yet found one.  
-
+- added a canal to 3 District edges and it collapsed the 3 edges to one line, and hence affected the districts adjacent. 
+- Move all Terrain Config (terrain modifiers, extrude patterns, height changes settins etc.) into a new file: K:\UnityProjects\Guild-Wars\guild-wars-web\shared\terrainConfig.js, similar to districtConfig.js
 
 # Features:
 ## General 
  
-
+## Walk mode
 - Add space bar as a hot key to "Jump/climb"  
 if the cha
+
 ## Terrain Mode
-
-
+I actually want to add a subdivision layer across all terrain. In Terrain mode, we will continue to store the existing geometry as a generative layer.  upon leaving Terrain mode, we store only the subdivided geometry as the full DCEL mesh. 
 
 
 ## District Mode

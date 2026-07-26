@@ -7,7 +7,7 @@ import Compass from './Compass.js'
 import TerrainRenderer from './TerrainRenderer.js'
 import DistrictRenderer from './DistrictRenderer.js'
 import GroundRenderer from './GroundRenderer.js'
-import { pointInPolygon, distanceToLineSegment } from './utils/renderUtils.js'
+import { pointInPolygon, distanceToLineSegment, interpolateZAtPoint } from './utils/renderUtils.js'
 import { GROUND_Y as BUILDING_GROUND_Y } from './utils/BuildingRenderer.js'
 
 const RENDER_STREETS = true
@@ -386,9 +386,9 @@ export default class WorldRenderer {
 
   // ── Terrain delegation ──────────────────────────────────────────────────────
 
-  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = []) {
+  setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces = [], terrainSurfaces = []) {
     this.districtRenderer.setTerrainWaterData(regions, edges, edgePoints, terrainPlots, pointsById)
-    const result = this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces)
+    const result = this.terrainRenderer.setTerrainData(regions, edges, terrainPlots, edgePoints, pointsById, riverCliffFaces, terrainSurfaces)
     this._reapplyTopDownFlatten()
     return result
   }
@@ -403,12 +403,27 @@ export default class WorldRenderer {
   // top-down. Call this after any ground-mesh rebuild, not just from the T-key toggle.
   _reapplyTopDownFlatten() {
     if (!this.cameraController?._topDown) return
-    this.terrainRenderer.setGroundFlattened(true)
-    this.groundRenderer.setTerrainFlattened(true)
-    this.groundRenderer.buildingRenderer.setFlattened(true)
-    this.terrainRenderer.terrainPolylines?.setFlattened(true)
-    this.terrainRenderer.setDebugMarkersFlattened(true)
-    this.districtRenderer.setFlattened(true)
+    this._setSceneFlattened(true)
+  }
+
+  // Single point that flattens/unflattens every renderer at once — used by
+  // toggleTopDownMode (flatten on enter, restore on exit), _reapplyTopDownFlatten (after
+  // a mesh rebuild while already top-down), and Walk-mode entry (ALWAYS unflatten). Only
+  // top-down mode is ever allowed to flatten; iso and walk must always show real relief
+  // (user-confirmed 2026-07-26, "Enforce Walk and ISO mode to always be non flattened
+  // view"). Before this was unified, Walk-mode entry called cameraController.toggleTopDown()
+  // directly (flipping the camera's own _topDown flag) but never touched the meshes, so a
+  // walk session entered FROM top-down inherited every mesh still flattened to z=0 — the
+  // "terrain flattened in walk mode" bug — and walk-mode height sampling then read a
+  // real-relief data model over a flat-rendered world, so the character floated/sank
+  // relative to what was drawn.
+  _setSceneFlattened(flat) {
+    this.terrainRenderer.setGroundFlattened(flat)
+    this.groundRenderer.setTerrainFlattened(flat)
+    this.groundRenderer.buildingRenderer.setFlattened(flat)
+    this.terrainRenderer.terrainPolylines?.setFlattened(flat)
+    this.terrainRenderer.setDebugMarkersFlattened(flat)
+    this.districtRenderer.setFlattened(flat)
   }
 
   // Hide/show terrain plot meshes and exclude/include them from hit-testing based on
@@ -518,9 +533,12 @@ export default class WorldRenderer {
   getZHeightAtWorldPos(worldX, worldY) {
     for (const p of this._plotsNear(worldX, worldY)) {
       if (!p.blockCorners?.length || !pointInPolygon(worldX, worldY, p.blockCorners)) continue
-      let sum = 0, n = 0
-      for (const v of p.blockCorners) { if (isFinite(v.z)) { sum += v.z; n++ } }
-      if (n) return sum / n
+      // Interpolated at (worldX, worldY), not averaged (see interpolateZAtPoint / the
+      // matching fix in TerrainRenderer.getZHeightAtWorldPos) — a whole-plot average
+      // returns the plot's centroid height everywhere, which reads as a step at every
+      // plot boundary for anything following the ground.
+      const z = interpolateZAtPoint(worldX, worldY, p.blockCorners)
+      if (z != null) return z
     }
     return this.terrainRenderer.getZHeightAtWorldPos(worldX, worldY)
   }
@@ -862,12 +880,7 @@ export default class WorldRenderer {
     // reinstates the floor-scroll clip plane's original assumption instead of fighting
     // real terrain relief with a single world-space plane. Reversible: leaving top-down
     // restores real relief from the realY stashed on each mesh at build time.
-    this.terrainRenderer.setGroundFlattened(isTopDown)
-    this.groundRenderer.setTerrainFlattened(isTopDown)
-    this.groundRenderer.buildingRenderer.setFlattened(isTopDown)
-    this.terrainRenderer.terrainPolylines?.setFlattened(isTopDown)
-    this.terrainRenderer.setDebugMarkersFlattened(isTopDown)
-    this.districtRenderer.setFlattened(isTopDown)
+    this._setSceneFlattened(isTopDown)
     this._lastAppliedFloorScrollUnits = null   // force _applyFloorScrollClip to re-sync next frame
     this._cameraMoveCallbacks.forEach(fn => fn())  // reposition DOM overlays immediately
     this.markDirty()
@@ -938,6 +951,7 @@ export default class WorldRenderer {
   toggleWalkMode(onExitCallback) {
     if (!this._walkMode) {
       if (this.cameraController._topDown) this.cameraController.toggleTopDown()   // leave top-down cleanly first
+      this._setSceneFlattened(false)   // walk mode is always real relief — never inherit top-down's flatten
       this._clearFloorScrollClip()
       this._walkModeOnExit = onExitCallback
       const streetGraph   = this.districtRenderer.cityDistrictData?.streetGraph

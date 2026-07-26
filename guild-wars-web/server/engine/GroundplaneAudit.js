@@ -15,10 +15,14 @@ import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
 import { organicClipCircle, organicOuterClipRadius } from './CityGenerator/TerrainVoronoiGenerator.js'
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
-import { applyTerrainTypeZEffect, computeCliffChainSides, propagateFromPoints, CLIFF_Z_RULE, CLIFF_LERP_T, lerp } from './CityGenerator/TerrainZHeight.js'
+import { applyTerrainTypeZEffect, computeCliffChainSides, propagateFromPoints, CLIFF_Z_RULE } from './CityGenerator/TerrainZHeight.js'
+import { subdivideTerrain } from './CityGenerator/TerrainSubdivision.js'
+import { buildShoreBands } from './CityGenerator/ShoreBands.js'
+import { buildCliffEdgeBands } from './CityGenerator/CliffEdgeBands.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { extractBoundaryChain, boundaryConnectionAt } from '../../shared/boundaryChain.js'
+import { ALWAYS_LOCKED_TERRAIN_TYPES, MITER_LIMIT_RATIO, RIVER_CLIFF_HALF_WIDTH } from '../../worldConfig/terrainConfig.js'
 import { mkdirSync, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -139,7 +143,7 @@ export default class GroundplaneAudit {
 
   // River and Cliff terrain Edges render as a fixed-thickness polyline CENTRED on the
   // edge (TerrainRenderer: thickness `0.7/3`, kept in sync with
-  // _applyRiverCliffPullbackToTerrainPlots's RIVER_CLIFF_HALF_WIDTH — see that
+  // worldConfig/terrainConfig.js's RIVER_CLIFF_HALF_WIDTH — see that
   // constant's doc comment), extending RIVER_CLIFF_HALF_WIDTH into both neighbouring
   // plots' nominal area — so a district's raw Voronoi-cell polygon otherwise reaches
   // past the river bank / cliff face into the rendered water/rock
@@ -162,7 +166,7 @@ export default class GroundplaneAudit {
   // Inset a single (pristine) polygon by halfWidth along any edge that lies on a
   // River/Cliff terrain segment. Snaps each matched vertex directly to the shared,
   // junction-aware boundary position computed by riverCliffBoundary.js (the SAME
-  // computation the on-screen stroke uses, via shared/polylineGeometry.js — see plan
+  // computation the on-screen stroke uses, via CityGenerator/polylineGeometry.js — see plan
   // "typed-giggling-giraffe") — chosen as LEFT or RIGHT of the chain by whichever is
   // closer to THIS polygon's own centroid (the same "which side is this polygon
   // actually on" test the old _inwardNormal used, just applied to pick between two
@@ -330,15 +334,9 @@ export default class GroundplaneAudit {
     return { pushed: result.pushed, deltas: result.deltas, anyMatch, edgeMatched }
   }
 
-  // Historically matched PolylineRenderer.js's own default miter-limit ratio (retired —
-  // see plan "typed-gliding-leaf" Stage D; miterLimitDist = thickness * 1.5 =
-  // (2*halfWidth) * 1.5 = halfWidth * 3) — kept as this pullback's own narrow-angle bevel
-  // threshold regardless of what the client stroke renderer does now.
-  static MITER_LIMIT_RATIO = 3
-
   // Precompute the shared, junction-aware LEFT/RIGHT boundary position for every point
   // that's part of ANY River/Cliff terrain edge, keyed by exact point id (see
-  // riverCliffBoundary.js/shared/polylineGeometry.js). Exact-id lookup replaces the old
+  // riverCliffBoundary.js/CityGenerator/polylineGeometry.js). Exact-id lookup replaces the old
   // coordinate-tolerance matching (_matchedRiverCliffEdgeId/RIVER_CLIFF_MATCH_TOL) for
   // this purpose — confirmed live that terrain plot corners share EXACT registry ids
   // with worldTerrainData.edges[key].pointIds (the fine per-corner chain, not a coarse
@@ -372,7 +370,7 @@ export default class GroundplaneAudit {
     const byId = new Map()
     if (Object.keys(edges).length === 0) return { byId, boundaries: new Map(), fillsOut: new Map(), edges }
     const fillsOut = new Map()
-    const boundaries = computeRiverCliffBoundaries(edges, registry, halfWidth, halfWidth * GroundplaneAudit.MITER_LIMIT_RATIO, fillsOut)
+    const boundaries = computeRiverCliffBoundaries(edges, registry, halfWidth, halfWidth * MITER_LIMIT_RATIO, fillsOut)
     for (const [chainId, corners] of boundaries) {
       const pts = edges[chainId].pointIds || []
       // Determine, ONCE per chain, which coarse region sits on which canonical side —
@@ -429,9 +427,9 @@ export default class GroundplaneAudit {
     return { [ra]: sideA, [rb]: sideB }
   }
 
-  // Region types that are permanently flat and locked (see TerrainZHeight.js's
-  // applyTerrainTypeZEffect — Sea/Lake/Ice Sheet all set zLocked=true on their domain).
-  // A Cliff touching one of these must NEVER move that side's z, at all, ever — but the
+  // ALWAYS_LOCKED_TERRAIN_TYPES (worldConfig/terrainConfig.js — Sea/Lake/Ice Sheet all
+  // set zLocked=true on their domain, TerrainZHeight.js's applyTerrainTypeZEffect): a
+  // Cliff touching one of these must NEVER move that side's z, at all, ever — but the
   // zLocked flag alone can't be trusted to enforce that here: it lives on the ephemeral
   // 'terrain-split' point _applyRiverCliffPullbackToTerrainPlots wipes and re-mints from
   // the pristine RAW ('terrain') point on EVERY pullback recompute (any later Cliff/
@@ -445,14 +443,18 @@ export default class GroundplaneAudit {
   // pushed even further down" after the zLocked-respecting fix, which never actually
   // fired because of this exact gap). The robust fix: key off the REGION's assignedType
   // directly, which is not ephemeral and always known.
-  static ALWAYS_LOCKED_TERRAIN_TYPES = new Set(['Sea', 'Lake', 'Ice Sheet'])
 
   // Cliff z-height (user-confirmed 2026-07-13, "fix cliffs — by definition, joins
-  // between significantly different z-heights"; chain-wide-average formula user-
-  // confirmed 2026-07-14, plan "typed-gliding-leaf"): for every physically-contiguous
-  // run of Cliff-assigned edges, determines which side is HIGH vs LOW and each side's
-  // chain-wide target z average (TerrainZHeight.js's computeCliffChainSides), then
-  // records {side, targetAvg} against every one of the run's edges' own pointIds.
+  // between significantly different z-heights"; per-edge-local redesign user-confirmed
+  // 2026-07-26, replacing the original 2026-07-14 chain-wide-average formula — see
+  // TerrainZHeight.js's computeCliffChainSides for the full rationale): for every
+  // physically-contiguous run of Cliff-assigned edges, determines which side is HIGH vs
+  // LOW and each EDGE's own local target z (its immediate neighbours' average, not a
+  // whole-run average), then records {side, targetAvg} against every one of that edge's
+  // own pointIds. Also applies any edges computeCliffChainSides decided to downgrade
+  // (a locally-inverted stretch too weak to justify a genuine split) — cleared exactly
+  // like TerrainSetup.js's own River/Ice-Sheet edge-clearing pattern, so a downgraded
+  // edge behaves as if it had never been typed Cliff at all, from this point on.
   // Returns Map<vertexId, Map<regionId, {side, targetAvg}>> — a vertexId maps to a
   // region map rather than a single side because a vertex can be a corner of MULTIPLE
   // Cliff edges (different chains meeting at a point), each with its own two
@@ -461,14 +463,22 @@ export default class GroundplaneAudit {
   // stays at the shared corner's raw z, unconditionally, on every rebuild, not just the
   // first one.
   // Consumed by _dcelPullbackMaterialize's posFor (its z hook) — this only ever decides
-  // WHICH side a split copy is on and what it should lerp toward; the lerp itself is
-  // applied there.
+  // WHICH side a split copy is on and what its z becomes; the (now full-snap, no lerp)
+  // assignment itself is applied there.
   _computeCliffSideAtVertex() {
     const wt = this.sp.gameStateManager.worldTerrainData
     const regions = wt?.regions || []
     const regionById = new Map(regions.map(r => [r.id, r]))
     const registry = this.sp.gameStateManager.pointRegistry
-    const sidesByEdge = computeCliffChainSides(wt?.edges || {}, wt?.terrainPlots || [], registry, regionById)
+    const { sidesByEdge, downgradeEdgeIds } = computeCliffChainSides(wt?.edges || {}, wt?.terrainPlots || [], registry, regionById)
+    for (const edgeId of downgradeEdgeIds) {
+      const edge = wt.edges[edgeId]
+      if (!edge || edge.assignedType !== 'Cliff') continue
+      edge.assignedType = null
+      edge.description = ''
+      this.sp.edgePlacements = this.sp.edgePlacements.filter(p => p.edgeId !== edgeId)
+      this.sp.log.push(`Cleared Cliff from edge ${edgeId} — too weak against a stronger local inversion elsewhere on the run`)
+    }
     const sideAtVertex = new Map()
     for (const [edgeId, edge] of Object.entries(wt?.edges || {})) {
       if (edge.assignedType !== 'Cliff') continue
@@ -479,8 +489,8 @@ export default class GroundplaneAudit {
       for (const pid of edge.pointIds || []) {
         if (!sideAtVertex.has(pid)) sideAtVertex.set(pid, new Map())
         const m = sideAtVertex.get(pid)
-        if (!GroundplaneAudit.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionA.assignedType)) m.set(regionA.id, sides.get(regionA.id))
-        if (!GroundplaneAudit.ALWAYS_LOCKED_TERRAIN_TYPES.has(regionB.assignedType)) m.set(regionB.id, sides.get(regionB.id))
+        if (!ALWAYS_LOCKED_TERRAIN_TYPES.has(regionA.assignedType)) m.set(regionA.id, sides.get(regionA.id))
+        if (!ALWAYS_LOCKED_TERRAIN_TYPES.has(regionB.assignedType)) m.set(regionB.id, sides.get(regionB.id))
       }
     }
     return sideAtVertex
@@ -537,7 +547,7 @@ export default class GroundplaneAudit {
 
   // River and Cliff terrain Edges render as a fixed-thickness polyline CENTRED on the
   // edge (TerrainRenderer: thickness `0.7/3`, kept in sync with
-  // _applyRiverCliffPullbackToTerrainPlots's RIVER_CLIFF_HALF_WIDTH — see that
+  // worldConfig/terrainConfig.js's RIVER_CLIFF_HALF_WIDTH — see that
   // constant's doc comment), extending RIVER_CLIFF_HALF_WIDTH into both neighbouring
   // plots' nominal area — so a district's raw Voronoi-cell polygon otherwise reaches
   // past the river bank / cliff face into the rendered water/rock
@@ -783,7 +793,11 @@ export default class GroundplaneAudit {
             const regionId = regionIdByFaceId.get(heOut.face)
             const info = regionId != null ? vertexCliffSides.get(regionId) : null
             if (info?.targetAvg != null) {
-              z = lerp(base.z ?? 0, info.targetAvg, CLIFF_LERP_T)
+              // Full snap to the edge's own local natural neighbour average — no lerp
+              // (ADR-0022 Cliff redesign, 2026-07-26; see computeCliffChainSides' own
+              // doc comment for why: this is what makes the cliff's own midpoint at any
+              // point exactly the average of its two local natural heights).
+              z = info.targetAvg
               cliffSplitEntries.push({ side: info.side, heOut })
             }
           }
@@ -902,7 +916,7 @@ export default class GroundplaneAudit {
 
   // Assemble a real Face for every River/Cliff chain DIRECTLY from the same per-point
   // left/right boundary corners the Terrain-mode stroke already renders (see
-  // riverCliffBoundary.js/shared/polylineGeometry.js) — NOT inferred by walking the
+  // riverCliffBoundary.js/CityGenerator/polylineGeometry.js) — NOT inferred by walking the
   // DCEL and reverse-engineering which land faces belong to which bank (the previous
   // approach, removed: see plan "typed-giggling-giraffe" Addendum 2 Stage B "KNOWN
   // ISSUE" — it could never reliably tell a genuine N-way region-tripoint confluence
@@ -931,6 +945,13 @@ export default class GroundplaneAudit {
   // edge, for assignedType).
   _buildRiverCliffFacesDirect(boundaries, edges) {
     const registry = this.sp.gameStateManager.pointRegistry
+    // Computed ONCE here, server-side, where regionsById is already naturally in scope —
+    // every client renderer (TerrainRenderer, GroundRenderer, ...) just reads this flag
+    // straight off the face/plot object instead of each independently re-deriving it from
+    // edges+regions data that isn't uniformly threaded through to every render call site
+    // (confirmed live 2026-07-26: GroundRenderer's own TERRAIN_FILL_COLORS had no such
+    // data available at all — a client-side-only fix could never have covered it).
+    const regionsById = new Map((this.sp.gameStateManager.worldTerrainData?.regions || []).map(r => [r.id, r]))
     const built = []
     for (const [chainId, corners] of boundaries) {
       const edge = edges[chainId]
@@ -997,7 +1018,8 @@ export default class GroundplaneAudit {
       // call and the land faces' own use of the same corner values, without risking a
       // false merge (river/cliff half-width is 0.35 — 0.01 is nowhere near that scale).
       const pointIds = registry.mintDeduped(loopPts, 'terrain-split', 0.01, { reuseExisting: true })
-      built.push({ id: chainId, sourceEdgeId: chainId, assignedType: edge.assignedType, pointIds, polygon: loopPts })
+      const iceSheetAdjacent = regionsById.get(edge.regionA)?.assignedType === 'Ice Sheet' || regionsById.get(edge.regionB)?.assignedType === 'Ice Sheet'
+      built.push({ id: chainId, sourceEdgeId: chainId, assignedType: edge.assignedType, pointIds, polygon: loopPts, iceSheetAdjacent })
     }
     return built
   }
@@ -1014,6 +1036,7 @@ export default class GroundplaneAudit {
   // the surrounding LAND geometry never depends on this choice).
   _buildRiverCliffJunctionCaps(fillsOut, edges) {
     const registry = this.sp.gameStateManager.pointRegistry
+    const regionsById = new Map((this.sp.gameStateManager.worldTerrainData?.regions || []).map(r => [r.id, r]))
     const built = []
     for (const [ptId, data] of fillsOut) {
       const pts = (data.boundaryPts || []).filter(p => p && isFinite(p.x))
@@ -1041,9 +1064,11 @@ export default class GroundplaneAudit {
         continue
       }
       const firstEdgeId = [...data.edgeIds][0]
-      const assignedType = edges[firstEdgeId]?.assignedType || 'River'
+      const firstEdge = edges[firstEdgeId]
+      const assignedType = firstEdge?.assignedType || 'River'
+      const iceSheetAdjacent = !!firstEdge && (regionsById.get(firstEdge.regionA)?.assignedType === 'Ice Sheet' || regionsById.get(firstEdge.regionB)?.assignedType === 'Ice Sheet')
       const pointIds = registry.mintDeduped(deduped, 'terrain-split', 0.01, { reuseExisting: true })
-      built.push({ id: `junction-${ptId}`, sourceEdgeId: firstEdgeId, assignedType, pointIds, polygon: deduped })
+      built.push({ id: `junction-${ptId}`, sourceEdgeId: firstEdgeId, assignedType, pointIds, polygon: deduped, iceSheetAdjacent })
     }
     return built
   }
@@ -1426,18 +1451,9 @@ export default class GroundplaneAudit {
   }
 
   _applyRiverCliffPullbackToTerrainPlots() {
-    // Was 0.25 ("purely visual/feature-placement — no block-tracing slop to buffer
-    // against"), back when districts computed their OWN independent 0.35 pullback. Then
-    // 0.35 once _applyRiverCliffPullback started adopting districts' geometry directly
-    // from here (see its doc comment) — that value carried over as districts' own
-    // block/plot-tracing clearance margin too. Now 0.35/3, kept in sync with
-    // TerrainRenderer's stroke thickness (`0.7/3` — see its doc comment) so the visual
-    // stroke exactly covers the pulled-back gap again, same invariant as before (half-
-    // width = thickness/2). NOTE: 0.25 was previously too small and caused
-    // splitVertexGeneral geometric-overshoot failures (see _computeRiverCliffDeltas's
-    // "Re-enabled" comment below) before being bumped to 0.35 — 0.35/3 (~0.117) is
-    // smaller still, so watch for that failure mode resurfacing.
-    const RIVER_CLIFF_HALF_WIDTH = 0.35 / 3
+    // RIVER_CLIFF_HALF_WIDTH lives in worldConfig/terrainConfig.js now — see its own doc
+    // comment there for the 0.25->0.35/3 tuning history and why it's kept in sync with
+    // TerrainRenderer's stroke thickness.
     const { byId: boundaryById, boundaries, fillsOut, edges: riverCliffEdges } = this._computeRiverCliffBoundaryData(RIVER_CLIFF_HALF_WIDTH)
     // Kept plots only — the pullback/split mutation below stays kept-plots-only,
     // unchanged (see the propagation-graph comment further down for the one place
@@ -1526,8 +1542,32 @@ export default class GroundplaneAudit {
     ]
     if (this.sp.gameStateManager.worldTerrainData) this.sp.gameStateManager.worldTerrainData.riverCliffFaces = riverCliffFaces
 
-    this._syncLinearFeatureRegions(riverCliffFaces)
+    // Shore bands (ADR-0022 Stage 2): every Sea/Lake perimeter's land margin gets pulled
+    // inland to open room for a band, right here — directly after this pass's own
+    // from-_rawPointIds reset, so buildShoreBands always starts from the TRUE current
+    // (post-river/cliff-pullback, pre-shore) footprint on every call and never compounds
+    // (see that function's own doc comment). River-bank shores are not implemented yet.
+    const wtShore = this.sp.gameStateManager.worldTerrainData
+    if (wtShore) wtShore.shoreBands = buildShoreBands(registry, wtShore.terrainPlots || [])
+
+    // Cliff-edge bands (ADR-0022 Stage 2): every Cliff run's LAND margin, on BOTH banks,
+    // gets pulled back the same way — right here, same reasoning as Shore above (must
+    // run after riverCliffFaces is built, since it detects boundaries against those Cliff
+    // faces directly; must run after this pass's own from-_rawPointIds reset).
+    if (wtShore) wtShore.cliffEdgeBands = buildCliffEdgeBands(registry, wtShore.terrainPlots || [], riverCliffFaces)
+
+    // Terrain subdivision (ADR-0022) is rebuilt inside _syncGroundplaneSurfaces below —
+    // it reads the freshly pulled-back plot footprints (river/cliff, shore, AND
+    // cliff-edge), so it must run AFTER all three of this pass's pointIds resets.
+    // _syncGroundplaneSurfaces now runs FIRST (was: after _syncLinearFeatureRegions) —
+    // riverCliffFaces are merged into the SAME welded subdivideTerrain pass as every
+    // other terrain face (see that method's own doc comment for why: a raw, un-
+    // subdivided ribbon edge next to its bordering land plot's now-ALSO-subdivided edge
+    // is a guaranteed HOLE, confirmed live 2026-07-26), so wt.terrainSurfaces must exist
+    // — with each Cliff/River quad's own sourcePlotId tag — before
+    // _syncLinearFeatureRegions can compute each chain's real surfaceIds from them.
     this._syncGroundplaneSurfaces()
+    this._syncLinearFeatureRegions(riverCliffFaces)
 
     console.log(`[river-cliff-pullback] ${boundaryById.size} river/cliff boundary point(s), ${matchedCount}/${terrainPlots.length} terrain plot(s) pulled back (miter, junction-averaged), ${riverCliffFaces.length} river/cliff face(s) built`)
   }
@@ -1543,10 +1583,27 @@ export default class GroundplaneAudit {
   // The edge record keeps existing as the hover/picking source during setup
   // (getEdgeAtWorldPos is geometric, against these same centreline points) — it gains a
   // regionId back-reference while typed; face records gain regionId forward links.
+  // Must run AFTER _syncGroundplaneSurfaces (see _applyRiverCliffPullbackToTerrainPlots'
+  // own call-order comment) — riverCliffFaces are now merged into that method's
+  // subdivideTerrain pass instead of staying one raw whole-polygon Surface per chain, so
+  // this method finds each chain's real Surfaces by looking up wt.terrainSurfaces'
+  // sourcePlotId tag rather than assuming a `rcf:${f.id}` Surface exists.
   _syncLinearFeatureRegions(riverCliffFaces) {
     const gp = this.sp.gameStateManager.groundplane
-    const edges = this.sp.gameStateManager.worldTerrainData?.edges
+    const wt = this.sp.gameStateManager.worldTerrainData
+    const edges = wt?.edges
     if (!gp || !edges) return
+
+    // sourcePlotId -> its subdivided quads (ts:/hts: ids) — a River/Cliff ribbon is never
+    // hidden, but keep the same hts:/ts: convention every other quad uses regardless.
+    const quadIdsBySourceId = new Map()
+    for (const q of wt.terrainSurfaces || []) {
+      if (q.sourcePlotId == null) continue
+      const arr = quadIdsBySourceId.get(q.sourcePlotId) || []
+      arr.push(`${q.hidden ? 'hts' : 'ts'}:${q.id}`)
+      quadIdsBySourceId.set(q.sourcePlotId, arr)
+    }
+    const surfaceById = new Map((gp.surfaces || []).map(s => [s.id, s]))
 
     const linearRegions = []
     for (const [edgeKey, edge] of Object.entries(edges)) {
@@ -1556,15 +1613,26 @@ export default class GroundplaneAudit {
       }
       const regionId = `linear:${edgeKey}`
       edge.regionId = regionId
-      const surfaces = (riverCliffFaces || []).filter(f => f.sourceEdgeId === edgeKey)
-      for (const f of surfaces) f.regionId = regionId
+      const faces = (riverCliffFaces || []).filter(f => f.sourceEdgeId === edgeKey)
+      for (const f of faces) f.regionId = regionId
+      // Canonical Surface ids: every subdivided quad descended from one of this chain's
+      // ribbon faces (matched via sourcePlotId, not a single-Surface-per-chain id
+      // anymore — see this method's own doc comment). Also patches each quad's own
+      // Surface.regionId — _syncGroundplaneSurfaces built it as undefined (a ribbon face
+      // has no parentRegionId of its own, spanning two Regions) since this regionId
+      // didn't exist yet when that pass ran.
+      const surfaceIds = []
+      for (const f of faces) {
+        for (const id of quadIdsBySourceId.get(f.id) || []) {
+          surfaceIds.push(id)
+          const s = surfaceById.get(id)
+          if (s) s.regionId = regionId
+        }
+      }
       linearRegions.push({
         id: regionId,
         type: edge.assignedType,
-        // Canonical Surface ids — `rcf:` prefix matches TerrainPlotConverter's
-        // synthesized plot ids for the same faces, and _syncGroundplaneSurfaces'
-        // Surface records.
-        surfaceIds: surfaces.map(f => `rcf:${f.id}`),
+        surfaceIds,
         centrelinePointIds: [...(edge.pointIds || [])],
         name: edge.name || '',
         description: edge.description || '',
@@ -1574,6 +1642,45 @@ export default class GroundplaneAudit {
     // Replace only the linear-feature Regions; other Region kinds (districts, terrain
     // regions — see _syncGroundplaneSurfaces — and future streets) are preserved.
     gp.regions = [...(gp.regions || []).filter(r => !String(r.id).startsWith('linear:')), ...linearRegions]
+  }
+
+  // Splits one River/Cliff ribbon Face into its natural per-segment quads — see
+  // _syncGroundplaneSurfaces' own doc comment for why (a long ribbon fed to
+  // subdivideTerrain as ONE n-gon can trip the concave-centroid ear-clip fallback and
+  // produce internally non-manifold slivers). `f.pointIds` is always
+  // `[...lefts, ...reversed(rights)]` (see _buildRiverCliffFacesDirect) — EXCEPT a
+  // junction cap (_buildRiverCliffJunctionCaps' fan-shaped output, id `junction-*`),
+  // which has no left/right bank structure at all and is left as one whole face (it's
+  // compact/fan-shaped, not elongated, so the centroid-outside case essentially never
+  // applies to it). `mintDeduped` always returns one id per input vertex (verified
+  // against its own implementation — never shortens the array), so `pointIds.length` is
+  // guaranteed even and splits cleanly at the midpoint.
+  _ribbonFaceToSegments(f) {
+    const ids = f.pointIds
+    if (!ids || ids.length < 4 || String(f.id).startsWith('junction-')) return [f]
+    const m = ids.length / 2
+    if (!Number.isInteger(m)) return [f]
+    const leftIds = ids.slice(0, m)
+    const rightIds = ids.slice(m).reverse()
+    const segments = []
+    for (let i = 0; i < m - 1; i++) {
+      const raw = [leftIds[i], leftIds[i + 1], rightIds[i + 1], rightIds[i]]
+      // Dedupe CONSECUTIVE-equal ids (a ribbon can pinch — two adjacent chain points'
+      // same-side offsets landing close enough for mintDeduped to coalesce them into one
+      // id): an un-deduped repeat leaves a zero-length edge that catmullClarkFresh skips
+      // outright (`a === b` in its own edge-building loop), silently dropping ONE of
+      // that face's 4 output sub-quads and leaving its surviving neighbours' edges
+      // unpaired — confirmed live 2026-07-26 (a `new Set(...).size < 3` total-distinct
+      // check, tried first, was NOT enough: [a,a,b,c] has 3 distinct values but the
+      // repeated a->a edge is still there). Collapsing to a valid triangle instead
+      // sidesteps the zero-length edge entirely.
+      const quadIds = []
+      for (const id of raw) { if (quadIds[quadIds.length - 1] !== id) quadIds.push(id) }
+      if (quadIds.length > 1 && quadIds[0] === quadIds[quadIds.length - 1]) quadIds.pop()
+      if (quadIds.length < 3) continue
+      segments.push({ id: f.id, assignedType: f.assignedType, pointIds: quadIds })
+    }
+    return segments.length ? segments : [f]
   }
 
   // Stage A semantic reorganization (ADR-0020): assemble the canonical
@@ -1589,32 +1696,66 @@ export default class GroundplaneAudit {
     if (!gp || !wt) return
 
     const surfaces = []
-    // Hidden (generated-but-unrendered) terrain plots are tagged distinctly (`htp:`) so
-    // nothing downstream confuses them for real, interactive kept surfaces — included
-    // ONLY so auditGroundplane can see the real geometry bordering a kept plot's outer
-    // edge (user-confirmed 2026-07-14, "shouldn't those actually be ok, since they have
-    // linked geometry that's hidden"). Without this, every kept-plot edge touching a
-    // hidden neighbour read as an unpaired HOLE — a false positive, not a real gap —
-    // since the audit only ever saw one side of that boundary. The organic world's own
-    // TRUE outer edge (beyond even the hidden ring) still correctly reports as a HOLE:
-    // auditGroundplane's onWorldBoundary check already excludes it via the same
-    // organicOuterRadius-based radius test used everywhere else, now just measured
-    // against the hidden ring's own farther-out rim instead of the kept ring's.
-    for (const cell of wt.terrainPlots || []) {
+    // Groundplane invariant (CONTEXT_WorldTerrain.md's own Groundplane definition:
+    // "every (X, Z) is covered by exactly one Surface"): ANY feature that mutates or
+    // replaces groundplane geometry (subdivide, pullback, split, ...) must register its
+    // resulting faces here, or auditGroundplane below is silently blind to whatever
+    // holes/overlaps it introduces.
+    //
+    // Terrain-wide subdivision (ADR-0022): the coarse terrain plots are no longer emitted
+    // here at all — the authoritative terrain surface is the welded Catmull-Clark mesh
+    // (terrainSurfaces), rebuilt fresh every sync from the current plot footprints. It
+    // covers every plot (kept AND hidden) as one connected mesh, so a kept quad's outer
+    // edge pairs against its real hidden-neighbour quad (the same reason the old flat-plot
+    // path included `htp:` hidden plots — a kept/hidden seam must be seen from both sides
+    // or it reads as a false hole). Hidden quads are tagged `hidden`; the client filters
+    // them out at render, exactly as it did the coarse `.hidden` plots. The world's TRUE
+    // outer rim still reports via auditGroundplane's onWorldBoundary radius test.
+    // Shore/Cliff-edge bands (ADR-0022 Stage 2): ordinary n-gon quad-strip Surfaces,
+    // computed by buildShoreBands/buildCliffEdgeBands (called from
+    // _applyRiverCliffPullbackToTerrainPlots, right before this method runs) and stored
+    // on wt.shoreBands/wt.cliffEdgeBands — merged into the SAME face list subdivideTerrain
+    // welds, not a separate mesh. A sync triggered WITHOUT a preceding pullback pass
+    // (rare — see assignTerrainToRegion, which now always runs pullback first) simply
+    // reuses whatever shoreBands/cliffEdgeBands is already set to.
+    //
+    // River/Cliff ribbon faces (wt.riverCliffFaces) are ALSO merged in here now (was: a
+    // separate raw, un-subdivided `rcf:` Surface per chain) — every bordering land plot's
+    // shared edge already gets a Catmull-Clark edge-point inserted by subdivideTerrain, so
+    // a raw whole-polygon ribbon on the OTHER side of that same edge could never pair
+    // against it: a guaranteed HOLE at every single Cliff/River boundary, confirmed live
+    // 2026-07-26 building Cliff-edge bands (present even with zero Cliff-edge bands
+    // involved — a Stage 1 gap, not something Cliff-edge bands introduced). Each ribbon's
+    // own `id` survives onto its output quads as `sourcePlotId` (subdivideTerrain's
+    // existing per-plot meta), which _syncLinearFeatureRegions (called right after this
+    // method, see _applyRiverCliffPullbackToTerrainPlots) uses to build the chain's real
+    // surfaceIds and patch each quad's `regionId` — those quads have no parentRegionId of
+    // their own (a River/Cliff spans two Regions, isn't owned by either), so ts:/hts:
+    // surfaces built below start with regionId: undefined for them, same as before this
+    // sync ran there wasn't yet a linear: region to point at.
+    //
+    // Each ribbon is pre-split into its own per-segment quads (_ribbonFaceToSegments)
+    // rather than fed to subdivideTerrain as ONE long n-gon — confirmed live 2026-07-26:
+    // a winding multi-point chain's own area-weighted centroid routinely falls outside
+    // its own (long, thin, ~0.12-unit-wide) ribbon outline, tripping subdivideTerrain's
+    // concave-centroid ear-clip fallback, which has no notion of triangle quality and on
+    // a ribbon this thin produced internally non-manifold slivers (new HOLE findings
+    // WITHIN a single chain's own quads, not at its land-plot boundary). A ribbon is
+    // really a strip of quads by construction (left[i],left[i+1],right[i+1],right[i] per
+    // consecutive chain point pair) — feeding it in pre-split sidesteps the whole-n-gon
+    // centroid assumption entirely, the same way a long thin real-world shape (a street,
+    // a wall) would never be modelled as one giant fan-subdivided face either.
+    const regionsById = new Map((wt.regions || []).map(r => [r.id, r]))
+    const riverCliffSegments = (wt.riverCliffFaces || []).flatMap(f => this._ribbonFaceToSegments(f))
+    const terrainPlotsForSubdivision = [...(wt.terrainPlots || []), ...(wt.shoreBands || []), ...(wt.cliffEdgeBands || []), ...riverCliffSegments]
+    wt.terrainSurfaces = subdivideTerrain(this.sp.gameStateManager.pointRegistry, terrainPlotsForSubdivision, regionsById)
+    for (const q of wt.terrainSurfaces) {
       surfaces.push({
-        id: `${cell.hidden ? 'htp' : 'tp'}:${cell.id}`,
-        kind: 'terrain-plot',
-        type: cell.assignedType ?? null,
-        pointIds: [...(cell.pointIds || [])],
-      })
-    }
-    for (const f of wt.riverCliffFaces || []) {
-      surfaces.push({
-        id: `rcf:${f.id}`,
-        kind: 'linear-segment',
-        type: f.assignedType,
-        pointIds: [...(f.pointIds || [])],
-        regionId: f.regionId,
+        id: `${q.hidden ? 'hts' : 'ts'}:${q.id}`,
+        kind: 'terrain-surface',
+        type: q.assignedType ?? null,
+        pointIds: [...(q.pointIds || [])],
+        regionId: q.parentRegionId,
       })
     }
     // District Edge faces (ADR-0020 Stage C — _buildDistrictEdgeFaces): same treatment
@@ -1649,17 +1790,25 @@ export default class GroundplaneAudit {
       surfaces.push({ id: `blk:${block.id}`, kind: 'block', type: block.blockType ?? null, pointIds: [...block.pointIds] })
     }
     for (const plot of cityData?.plots || []) {
-      if (!plot.pointIds?.length || plot.type === 'terrain') continue   // terrain-type plots are the tp:/rcf: surfaces above, not a separate kind
+      if (!plot.pointIds?.length || plot.type === 'terrain') continue   // terrain-type plots are the ts:/hts: subdivided-quad surfaces above, not a separate kind
       surfaces.push({ id: `plot:${plot.id}`, kind: 'plot', type: plot.blockType ?? null, pointIds: [...plot.pointIds] })
     }
     gp.surfaces = surfaces
 
+    // Terrain Region → its subdivided-quad Surface ids (ADR-0022 — a terrain plot is no
+    // longer a Surface; a terrain Region now groups its subdivided quads directly).
+    const terrainSurfaceIdsByRegion = new Map()
+    for (const q of wt.terrainSurfaces || []) {
+      const key = q.parentRegionId
+      if (!terrainSurfaceIdsByRegion.has(key)) terrainSurfaceIdsByRegion.set(key, [])
+      terrainSurfaceIdsByRegion.get(key).push(`${q.hidden ? 'hts' : 'ts'}:${q.id}`)
+    }
     const otherRegions = []
     for (const r of wt.regions || []) {
       otherRegions.push({
         id: `terrain:${r.id}`,
         type: r.assignedType ?? null,
-        surfaceIds: (wt.terrainPlots || []).filter(c => c.parentRegionId === r.id).map(c => `tp:${c.id}`),
+        surfaceIds: terrainSurfaceIdsByRegion.get(r.id) || [],
         name: r.name || '',
         description: r.description || '',
       })

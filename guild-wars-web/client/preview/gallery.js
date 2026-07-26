@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import PartLibrary from '../rendering/buildings/PartLibrary.js'
 import { assemble } from '../rendering/buildings/ParametricBuilding.js'
-import { MODELS, MODEL_SCALE } from '../../shared/buildingCatalogue.js'
+import { MODELS, MODEL_SCALE } from '../../worldConfig/buildingCatalogue.js'
 
 // Standalone gallery: a grid of varied Parametric Buildings, a pure visual smoke test
 // for the kit + generator. Not part of the game SPA.

@@ -1,4 +1,4 @@
-import nameLibrary from '../../shared/nameLibrary.js'
+import nameLibrary from '../../worldConfig/nameLibrary.js'
 
 const DOMAIN_ICONS = {
   War: '⚔️', Death: '💀', Trade: '⚖️', Harvest: '🌾', Sea: '🌊',
@@ -8,7 +8,7 @@ const DOMAIN_ICONS = {
   Healing: '✨', Underworld: '🕳️', Ancestors: '👁️', Time: '⏳',
   Chaos: '🌀', Order: '🔷', Hunt: '🏹', Plague: '☣️', Wealth: '💰',
   Dreams: '💭', Fertility: '🌱', Madness: '🌀', Protection: '🛡️',
-  // Added when godDomains was tripled (shared/nameLibrary.js) — every entry there needs
+  // Added when godDomains was tripled (worldConfig/nameLibrary.js) — every entry there needs
   // an icon or it silently falls back to the '✦' placeholder (confirmed live: most
   // tiles showing the placeholder star instead of a real icon right after that change).
   Air: '🌬️', Beauty: '🌸', Blood: '🩸', Bounty: '🎁', Change: '🔄',

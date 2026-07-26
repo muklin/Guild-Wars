@@ -3,12 +3,12 @@ import EdgeLineRenderer from './utils/EdgeLineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, centroid, triangulatePolygon, resolvePolygon } from './utils/renderUtils.js'
 import { disposeOne, disposeAll } from './utils/MeshLayer.js'
-import { DISTRICTS, DEFAULTS } from '../../shared/districtConfig.js'
+import { DISTRICTS, DEFAULTS } from '../../worldConfig/districtConfig.js'
 import { extractBoundaryChain } from '../../shared/boundaryChain.js'
 
 // Sub-class colours ('Noble', 'Monarchy', etc., as looked up via DISTRICT_COLORS.get())
 // and plain district-type colours ('Market', 'Military', ...) are derived from
-// shared/districtConfig.js, so a district's colour only needs editing in one place
+// worldConfig/districtConfig.js, so a district's colour only needs editing in one place
 // alongside its generation/building tuning. A few entries here are NOT per-district
 // game data at all — city edge kinds (Wall/MainRoad/Canal/Docks), Agricultural (a
 // terrain region type, not a city district), and the Neutral/unassigned/generic-
