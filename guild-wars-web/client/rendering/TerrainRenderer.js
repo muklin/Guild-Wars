@@ -3,14 +3,15 @@ import EdgeLineRenderer from './utils/EdgeLineRenderer.js'
 import FeatureManager from './utils/FeatureManager.js'
 import { pointInPolygon, distanceToLineSegment, clipPolygonToBox, triangulatePolygon, resolvePolygon, posHash, interpolateZAtPoint } from './utils/renderUtils.js'
 import { disposeOne, disposeAll } from './utils/MeshLayer.js'
-// TERRAIN_COLORS/WATER_TYPES/SAME_TYPE_ONLY_TYPES live in worldConfig/terrainConfig.js
+// terrainColor()/WATER_TYPES/SAME_TYPE_ONLY_TYPES live in worldConfig/terrainConfig.js
 // now (the single source of truth for every terrain tunable, alongside districtConfig.js's
-// district equivalent). WATER_TYPES matches on EITHER side being in the set (any
-// water/water combo has no valid Edge type, and any water/land boundary is a Shore —
-// ShoreBands.js, server-side, uses this SAME set); SAME_TYPE_ONLY_TYPES only matches when
-// BOTH sides are the IDENTICAL type, since e.g. Mountains<->Desert is a real, definable
-// boundary (see _edgeHasNoValidType below for how the two combine).
-import { TERRAIN_COLORS, WATER_TYPES, SAME_TYPE_ONLY_TYPES } from '../../worldConfig/terrainConfig.js'
+// district equivalent) — terrainColor(type) reads TERRAIN_TYPES[type]?.color (TERRAIN_
+// COLORS retired 2026-07-27, merged into TERRAIN_TYPES). WATER_TYPES matches on EITHER
+// side being in the set (any water/water combo has no valid Edge type, and any water/land
+// boundary is a Shore — ShoreBands.js, server-side, uses this SAME set); SAME_TYPE_ONLY_
+// TYPES only matches when BOTH sides are the IDENTICAL type, since e.g. Mountains<->Desert
+// is a real, definable boundary (see _edgeHasNoValidType below for how the two combine).
+import { terrainColor, WATER_TYPES, SAME_TYPE_ONLY_TYPES } from '../../worldConfig/terrainConfig.js'
 
 export default class TerrainRenderer {
   constructor(scene) {
@@ -167,7 +168,7 @@ export default class TerrainRenderer {
   }
 
   _jitteredColorFor(assignedType, polygon) {
-    const base = TERRAIN_COLORS.get(assignedType) || TERRAIN_COLORS.unassigned
+    const base = terrainColor(assignedType) ?? terrainColor('unassigned')
     return this._jitterColor(base, this._polySeed(polygon))
   }
 
@@ -394,23 +395,36 @@ export default class TerrainRenderer {
       quadsByPlot.get(q.sourcePlotId).push(q)
     }
 
-    // Cliff-ribbon-sourced quads have no entry in plotById (a ribbon face isn't a coarse
-    // terrain plot) — see _isIceSheetAdjacentCliffFace for the white-near-Ice-Sheet rule.
-    const cliffFaceById = new Map((this.terrainData?.riverCliffFaces || []).map(f => [f.id, f]))
-
     let built = 0
     for (const [plotId, quads] of quadsByPlot) {
       const plot = plotById.get(plotId)
+      // Cliff-ribbon- and Cliff-Edge-band-sourced quads have no entry in plotById (a
+      // ribbon/band face isn't a coarse terrain plot) — iceSheetAdjacent now rides
+      // straight through subdivideTerrain's meta onto every quad (see its own doc
+      // comment), covering the Cliff face itself AND its bordering ramp band with the
+      // SAME white-near-Ice-Sheet rule (user-confirmed 2026-07-26: "never grey or sand
+      // yellow" — a grey/tan band ringing straight around a white Ice-Sheet cliff still
+      // read as "still a terrain edge"/"still not white" before this).
       const color = plot ? this._terrainPlotColor(plot)
-        : this._isIceSheetAdjacentCliffFace(cliffFaceById.get(plotId)) ? 0xffffff
-        : this._jitterColor(TERRAIN_COLORS.get(quads[0].assignedType), 0)
+        : quads[0].iceSheetAdjacent ? 0xffffff
+        : this._jitterColor(terrainColor(quads[0].assignedType), 0)
       const mesh = this._buildSubdividedPlotMesh(quads, color)
       if (!mesh) continue
       this.scene.add(mesh)
       this.terrainPlotMeshes.set(plotId, mesh)
-      const rid = plot?.parentRegionId ?? quads[0].parentRegionId
-      if (!this.regionTerrainPlots.has(rid)) this.regionTerrainPlots.set(rid, [])
-      this.regionTerrainPlots.get(rid).push(plotId)
+      // A Cliff face and its own Cliff-Edge band are a linear feature, not really part of
+      // EITHER bordering region — never registered into regionTerrainPlots, so region
+      // hover/select (setRegionHover/_applyRegionColor, both loop this map) can never
+      // touch them (user-confirmed 2026-07-26: hovering the land plot behind a white
+      // Ice-Sheet cliff was repainting the cliff's own mesh with the LAND region's
+      // lightened base colour — "the Cliff shouldn't be highlighted at all"). Real land
+      // plots (plot truthy) are unaffected — this only skips Cliff/Cliff-Edge quads,
+      // which never have a plotById match in the first place.
+      if (plot) {
+        const rid = plot.parentRegionId
+        if (!this.regionTerrainPlots.has(rid)) this.regionTerrainPlots.set(rid, [])
+        this.regionTerrainPlots.get(rid).push(plotId)
+      }
       built++
     }
     // Re-apply promoted-plot suppression to the freshly rebuilt meshes.
@@ -574,7 +588,7 @@ export default class TerrainRenderer {
     // re-colored by that identical formula, so the handoff produces no visible color
     // change. Computed from the pre-clip polygon (region.polygon) to match
     // GroundRenderer, which never clips.
-    const baseColor = TERRAIN_COLORS.get(region.assignedType) || TERRAIN_COLORS.unassigned
+    const baseColor = terrainColor(region.assignedType) ?? terrainColor('unassigned')
     const color = colorOverride != null ? colorOverride : this._jitterColor(baseColor, this._polySeed(region.polygon))
     // DoubleSide: every other renderer in this codebase (DistrictRenderer, GroundRenderer)
     // already renders this way — this was the one mesh left culling backfaces, so any
@@ -676,7 +690,7 @@ export default class TerrainRenderer {
     this.terrainPolylines.render(
       visibleEdges,
       this._pointsById || this.edgePointsById,
-      (edge) => edge.assignedType ? TERRAIN_COLORS.get(edge.assignedType) : TERRAIN_COLORS.unassigned
+      (edge) => edge.assignedType ? terrainColor(edge.assignedType) : terrainColor('unassigned')
     )
     console.log(`Successfully created ${this.edgeMeshes.size} edge meshes`)
   }
@@ -713,7 +727,7 @@ export default class TerrainRenderer {
   }
 
   updateRegionColor(regionId, terrainType) {
-    this._applyRegionColor(regionId, TERRAIN_COLORS.get(terrainType) || TERRAIN_COLORS.unassigned)
+    this._applyRegionColor(regionId, terrainColor(terrainType) ?? terrainColor('unassigned'))
     if (terrainType === 'Forest') this._spawnFeatureForRegion('forest', regionId)
   }
 
@@ -733,7 +747,7 @@ export default class TerrainRenderer {
   }
 
   previewRegionType(regionId, terrainType) {
-    const color = terrainType ? TERRAIN_COLORS.get(terrainType) : 0xffffff
+    const color = terrainType ? terrainColor(terrainType) : 0xffffff
     this._applyRegionColor(regionId, color)
   }
 
@@ -746,12 +760,12 @@ export default class TerrainRenderer {
   }
 
   previewEdgeType(edgeId, edgeType) {
-    const color = edgeType ? TERRAIN_COLORS.get(edgeType) : 0xffffff
+    const color = edgeType ? terrainColor(edgeType) : 0xffffff
     this.terrainPolylines?.setEdgeColor(edgeId, color)
   }
 
   updateEdgeColor(edgeId, terrainType) {
-    const color = TERRAIN_COLORS.get(terrainType) || TERRAIN_COLORS.unassigned
+    const color = terrainColor(terrainType) ?? terrainColor('unassigned')
     this.terrainPolylines?.updateBaseColor(edgeId, color)
   }
 
@@ -1703,7 +1717,7 @@ export default class TerrainRenderer {
 
   _regionBaseColor(regionId) {
     const region = this.terrainData?.regions?.find(r => r.id === regionId)
-    return TERRAIN_COLORS.get(region?.assignedType) || TERRAIN_COLORS.unassigned
+    return terrainColor(region?.assignedType) ?? terrainColor('unassigned')
   }
 
   _cellsForRegion(regionId) {

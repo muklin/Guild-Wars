@@ -4,12 +4,23 @@
 - added a canal to 3 District edges and it collapsed the 3 edges to one line, and hence affected the districts adjacent. 
 - Move all Terrain Config (terrain modifiers, extrude patterns, height changes settins etc.) into a new file: K:\UnityProjects\Guild-Wars\guild-wars-web\shared\terrainConfig.js, similar to districtConfig.js
 
+
+I want to replace all dimensions, so the world dimension are in metres. 
+
+Begin a search through the codebase for all distance metrics and multiply by a scale suct that street spacing of 1.0 -> 3 metres, so multiply all distances by 3.  
+
+
+
 # Features:
 ## General 
  
 ## Walk mode
-- Add space bar as a hot key to "Jump/climb"  
-if the cha
+- Add Action button E as a contextual action button:
+- if the player is in front of a wall/ladder, they climb it.
+- if the player is in front of a fence they can hop over, they jump.
+- if the player is in front of a door, they open it.  
+- if the player is in front of a window, they climb through it.
+- (future) if the player is in front of a sewer/hatch door, they climb down it.
 
 ## Terrain Mode
 I actually want to add a subdivision layer across all terrain. In Terrain mode, we will continue to store the existing geometry as a generative layer.  upon leaving Terrain mode, we store only the subdivided geometry as the full DCEL mesh. 
@@ -56,7 +67,18 @@ Use case:
 
 
 #### buildings and Landmark buildings
- - analyze the images in K:\UnityProjects\Guild-Wars\guild-wars-web\resources\images to identify how to generate buildings that have these features.  .. Parametrically.
+ 
+ 
+arches under buildings
+Archways, Portals or passages that pass under a building to the Courtyard beyond.  
+- only on ground floor. 
+- one or two bays wide. 
+- only up to 3 bays deep.
+- These are simple, internal walls facing inward to the archway 
+- Just leave the ceiling open at the moment.  We will add wood ceiling and knees later.
+
+
+- analyze the images in K:\UnityProjects\Guild-Wars\guild-wars-web\resources\images to identify how to generate buildings that have these features.  .. Parametrically.
 
 
 - Noble Note this will be some work as the castle needs to consume a large "block" area and be walled and grassed and etc.
@@ -121,14 +143,6 @@ Trade routes have a set of resources they will sell.  These follow the normal ru
  - Buildings should have a max wing size of 6.  If a street frontage is 12, split it into 2 wings of six wide.  If 15, then 3 wings of maybe 5,5,5 or maybe 4,7,4.  If 7 then maybe 4,3.  
  - Centre wings could be set back from the street.
 
-
-### Add arches under buildings
-Archways, Portals or passages that pass under a building to the Courtyard beyond.  
-- only on ground floor. 
-- one or two bays wide. 
-- only up to 3 bays deep.
-- These are simple, internal walls facing inward to the archway 
-- Just leave the ceiling open at the moment.  We will add wood ceiling and knees later.
 
 ### Generate Docks 
 

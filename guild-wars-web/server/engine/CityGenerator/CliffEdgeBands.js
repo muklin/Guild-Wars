@@ -109,6 +109,15 @@ export function buildCliffEdgeBands(registry, terrainPlots, riverCliffFaces) {
       hidden: false,
       pointIds,
       polygon,
+      // seg.other IS the riverCliffFace this band ramps away from — carries its own
+      // iceSheetAdjacent flag straight through (same white-near-Ice-Sheet rule as the
+      // cliff face itself, user-confirmed 2026-07-26: "never grey or sand yellow").
+      // Without this the band always rendered TERRAIN_COLORS['Cliff-Edge'] (a flat grey,
+      // "matches Cliff itself" — its own doc comment predates the white rule entirely),
+      // so a white Ice-Sheet cliff always had a grey ring drawn right around its own
+      // land-side edge, reading as "still a terrain edge"/"still not white" even after
+      // the cliff face itself went white.
+      iceSheetAdjacent: !!seg.other.iceSheetAdjacent,
     }),
   })
 }

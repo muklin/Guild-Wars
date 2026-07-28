@@ -28,8 +28,12 @@ const edgeKey = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`)
 
 // The perpendicular to a→b oriented toward (cx,cy) — same helper as
 // GroundplaneAudit._inwardNormal (duplicated rather than cross-imported; this module has
-// no other dependency on that class).
-function inwardNormal(a, b, cx, cy) {
+// no other dependency on that class). Exported 2026-07-27 — TerrainExtrusion.js reuses
+// this (and polygonCentroid below) for its own per-vertex inset, replacing a naive
+// centroid-lerp that could swing a corner across into a neighbouring plot's own wedge on
+// sufficiently irregular geometry (confirmed live: real AREA_OVERLAP findings on Hills/
+// Mountains regions).
+export function inwardNormal(a, b, cx, cy) {
   const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1
   let nx = -dy / L, ny = dx / L
   const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
@@ -39,7 +43,7 @@ function inwardNormal(a, b, cx, cy) {
 
 // True area-weighted centroid (not a plain vertex average — the two differ for any
 // non-regular polygon, which every Voronoi terrain plot here is).
-function polygonCentroid(poly) {
+export function polygonCentroid(poly) {
   let signedArea = 0, cx = 0, cy = 0
   for (let i = 0; i < poly.length; i++) {
     const p = poly[i], q = poly[(i + 1) % poly.length]

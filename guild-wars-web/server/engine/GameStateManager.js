@@ -301,5 +301,13 @@ export default class GameStateManager {
     this.groundplane.regions = []
     this.groundplane.outerRingEdgeKeys = []
     this.nextFactionAutoId = 100
+    // Groundplane audit findings/counts (GroundplaneAudit._auditAndLogGroundplane) are
+    // set directly on `this`, not inside `groundplane` — never reset here before now, so
+    // a New Game (TerrainSetup.initialize -> this.clear()) kept showing the PREVIOUS
+    // game's audit popup (findings count, hole/overlap breakdown) until the new game's
+    // own first pullback pass happened to run and overwrite it — user-confirmed
+    // 2026-07-28, "I think these Groundplane Audit Values are from the previous game".
+    this.lastAuditCounts = null
+    this.lastAuditFindings = []
   }
 }

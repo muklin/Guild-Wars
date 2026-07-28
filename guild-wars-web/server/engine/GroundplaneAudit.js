@@ -15,10 +15,11 @@ import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
 import { organicClipCircle, organicOuterClipRadius } from './CityGenerator/TerrainVoronoiGenerator.js'
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
-import { applyTerrainTypeZEffect, computeCliffChainSides, propagateFromPoints, CLIFF_Z_RULE } from './CityGenerator/TerrainZHeight.js'
+import { applyTerrainTypeZEffect, computeCliffChainSides } from './CityGenerator/TerrainZHeight.js'
 import { subdivideTerrain } from './CityGenerator/TerrainSubdivision.js'
 import { buildShoreBands } from './CityGenerator/ShoreBands.js'
 import { buildCliffEdgeBands } from './CityGenerator/CliffEdgeBands.js'
+import { buildTerrainExtrusion } from './CityGenerator/TerrainExtrusion.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { extractBoundaryChain, boundaryConnectionAt } from '../../shared/boundaryChain.js'
@@ -477,7 +478,7 @@ export default class GroundplaneAudit {
       edge.assignedType = null
       edge.description = ''
       this.sp.edgePlacements = this.sp.edgePlacements.filter(p => p.edgeId !== edgeId)
-      this.sp.log.push(`Cleared Cliff from edge ${edgeId} — too weak against a stronger local inversion elsewhere on the run`)
+      this.sp.log.push(`Cleared Cliff from edge ${edgeId} — either both sides are Ice Sheet, or too weak against a stronger local inversion elsewhere on the run`)
     }
     const sideAtVertex = new Map()
     for (const [edgeId, edge] of Object.entries(wt?.edges || {})) {
@@ -956,6 +957,19 @@ export default class GroundplaneAudit {
     for (const [chainId, corners] of boundaries) {
       const edge = edges[chainId]
       if (!edge) continue
+      // Render-time invariant, not just a creation-time one (user-confirmed 2026-07-26:
+      // "only terrain edges where both sides are not hidden can have a rendered edge /
+      // Cliff") — checked here unconditionally, same standing-invariant pattern as the
+      // Ice-Sheet-vs-Ice-Sheet check in computeCliffChainSides, so it holds regardless of
+      // WHICH path put assignedType='Cliff' on this edge (the Ice Sheet auto-cliff passes
+      // in TerrainSetup.js now also skip a still-hidden other side at creation time, but a
+      // pre-existing/differently-created edge could still be in this state otherwise). A
+      // "cliff to nowhere" wrapping past the edge of revealed territory is a real, visible
+      // bug (confirmed live), not just a technicality — the face simply isn't built at
+      // all while either side is hidden; it appears the moment that side is revealed and
+      // this pass re-runs.
+      const regionA = regionsById.get(edge.regionA), regionB = regionsById.get(edge.regionB)
+      if (regionA?.hidden || regionB?.hidden) continue
       const ptIds = edge.pointIds || []
       const idxs = []
       let lefts = [], rights = []
@@ -1039,6 +1053,15 @@ export default class GroundplaneAudit {
     const regionsById = new Map((this.sp.gameStateManager.worldTerrainData?.regions || []).map(r => [r.id, r]))
     const built = []
     for (const [ptId, data] of fillsOut) {
+      // Same render-time "neither side hidden" invariant as _buildRiverCliffFacesDirect
+      // — a junction cap sits at a confluence of several edges, so ALL of them (not just
+      // the first, cosmetic-type-pick one below) must clear it.
+      const anyHidden = [...(data.edgeIds || [])].some(eid => {
+        const e = edges[eid]
+        if (!e) return false
+        return !!regionsById.get(e.regionA)?.hidden || !!regionsById.get(e.regionB)?.hidden
+      })
+      if (anyHidden) continue
       const pts = (data.boundaryPts || []).filter(p => p && isFinite(p.x))
       // Drop consecutive near-duplicate points (a fully/partly mitered slot's capPt
       // coincides with its neighbour's) — left as literal duplicates, these would
@@ -1499,32 +1522,23 @@ export default class GroundplaneAudit {
       terrainPlots[ci].polygon = result.polygon
     }
 
-    // Cliff z-height (user-confirmed 2026-07-13, "both sides of the cliff connect to
-    // their adjacent terrain"): the split above already gave each side's own corner
-    // copies a differential z (posFor, inside _dcelPullbackMaterialize); this blends
-    // that new height outward into each side's own surrounding fine terrain, same
-    // hop-bounded/Euclidean-falloff shape every other terrain-type effect uses
-    // (TerrainZHeight.js's propagateFromPoints), clamped to only ever raise the high
-    // side and only ever lower the low side.
-    if (cliffHighIds.length || cliffLowIds.length) {
-      const targetZById = new Map()
-      for (const id of [...cliffHighIds, ...cliffLowIds]) {
-        const p = registry.get(id)
-        if (p) targetZById.set(id, p.z)
-      }
-      // Propagation graph includes hidden (generated-but-unrendered) terrain plots too
-      // (user-confirmed 2026-07-14, "those terrains are only hidden — they should still
-      // be getting height updates") — a hidden plot is real geometry with a real point
-      // graph, just not sent to the client; excluding it here meant a Cliff right at the
-      // kept/hidden boundary never propagated its z past that boundary at all. Scoped to
-      // ONLY these propagateFromPoints calls, not the pullback/split logic above (which
-      // stays kept-plots-only, unchanged) — this is a read-only graph-walk, not a
-      // geometry mutation, so there's no risk to the DCEL/split machinery from widening
-      // it.
-      const plotsForPropagation = this.sp.gameStateManager.worldTerrainData?.terrainPlots || []
-      if (cliffHighIds.length) propagateFromPoints(registry, plotsForPropagation, cliffHighIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'up')
-      if (cliffLowIds.length) propagateFromPoints(registry, plotsForPropagation, cliffLowIds, targetZById, CLIFF_Z_RULE.hopCount, CLIFF_Z_RULE.curve, 'down')
-    }
+    // Cliff z-height: this used to blend the split points' new height OUTWARD into the
+    // surrounding fine terrain (CLIFF_Z_RULE.hopCount, user-confirmed 2026-07-13, "both
+    // sides of the cliff connect to their adjacent terrain") — REMOVED 2026-07-26 as part
+    // of the local-snap Cliff redesign (see computeCliffChainSides' own doc comment): a
+    // split vertex's z is now ALREADY exactly its edge's own local natural neighbour
+    // average (posFor, inside _dcelPullbackMaterialize), so the surrounding terrain
+    // already connects smoothly by construction — this extra hop-bounded push just
+    // re-raised (or re-lowered) terrain that was already at the correct natural height,
+    // producing exactly the "mound at the cliff top" / "terrain still rises toward the
+    // cliff" symptoms the user kept reporting even after the redesign landed. It also
+    // corrupted CliffEdgeBands.js's own "natural height" reference (zForInland averages
+    // each land plot's non-boundary corners) by artificially inflating those same nearby
+    // points before that pass ever read them. Confirmed live against a real save
+    // (2026-07-26): every currently-Cliffed edge's own split points already show correct,
+    // stable separation without this step. cliffHighIds/cliffLowIds are still produced by
+    // _dcelPullbackMaterialize (used by _computeCliffSideAtVertex's caller for other
+    // bookkeeping) but no longer consumed here.
 
     // Real, gap-free filled Faces (see plan "typed-giggling-giraffe" addendum, and
     // _buildRiverCliffFacesDirect's doc comment for why this is now built directly from
@@ -1555,6 +1569,18 @@ export default class GroundplaneAudit {
     // run after riverCliffFaces is built, since it detects boundaries against those Cliff
     // faces directly; must run after this pass's own from-_rawPointIds reset).
     if (wtShore) wtShore.cliffEdgeBands = buildCliffEdgeBands(registry, wtShore.terrainPlots || [], riverCliffFaces)
+
+    // Terrain extrusion (re-added 2026-07-26 as Hills-only, generalized 2026-07-27 to any
+    // 'deltaandextterrainplots' type — see TerrainExtrusion.js's own doc comment for the
+    // full history/design): every such plot's own top gets inset+raised right here, the
+    // same "after cliff/shore/cliff-edge, before subdivision" slot as those two. Passed
+    // riverCliffFaces/cliffEdgeBands/shoreBands so it can PIN any corner already owned by
+    // one of them (found live 2026-07-27: Hills/Mountains are CLIFF_HIGH_TYPES, so a
+    // Hills/Mountains plot bordering a Cliff is the ordinary case, and insetting that
+    // shared corner away — same as any other — orphaned it from the exact position the
+    // Cliff-Edge band/ribbon already pinned there, a real HOLE, not just a stale-boundary
+    // risk as the comment here previously assumed).
+    if (wtShore) wtShore.extrusionSkirts = buildTerrainExtrusion(registry, wtShore.terrainPlots || [], [riverCliffFaces, wtShore.cliffEdgeBands, wtShore.shoreBands])
 
     // Terrain subdivision (ADR-0022) is rebuilt inside _syncGroundplaneSurfaces below —
     // it reads the freshly pulled-back plot footprints (river/cliff, shore, AND
@@ -1678,7 +1704,7 @@ export default class GroundplaneAudit {
       for (const id of raw) { if (quadIds[quadIds.length - 1] !== id) quadIds.push(id) }
       if (quadIds.length > 1 && quadIds[0] === quadIds[quadIds.length - 1]) quadIds.pop()
       if (quadIds.length < 3) continue
-      segments.push({ id: f.id, assignedType: f.assignedType, pointIds: quadIds })
+      segments.push({ id: f.id, assignedType: f.assignedType, pointIds: quadIds, iceSheetAdjacent: f.iceSheetAdjacent })
     }
     return segments.length ? segments : [f]
   }
@@ -1747,7 +1773,7 @@ export default class GroundplaneAudit {
     // a wall) would never be modelled as one giant fan-subdivided face either.
     const regionsById = new Map((wt.regions || []).map(r => [r.id, r]))
     const riverCliffSegments = (wt.riverCliffFaces || []).flatMap(f => this._ribbonFaceToSegments(f))
-    const terrainPlotsForSubdivision = [...(wt.terrainPlots || []), ...(wt.shoreBands || []), ...(wt.cliffEdgeBands || []), ...riverCliffSegments]
+    const terrainPlotsForSubdivision = [...(wt.terrainPlots || []), ...(wt.shoreBands || []), ...(wt.cliffEdgeBands || []), ...(wt.extrusionSkirts || []), ...riverCliffSegments]
     wt.terrainSurfaces = subdivideTerrain(this.sp.gameStateManager.pointRegistry, terrainPlotsForSubdivision, regionsById)
     for (const q of wt.terrainSurfaces) {
       surfaces.push({

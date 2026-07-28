@@ -265,6 +265,12 @@ export function subdivideTerrain(registry, terrainPlots, regionsById = null) {
       assignedType: p.assignedType ?? regionsById?.get(p.parentRegionId)?.assignedType ?? null,
       hidden: !!p.hidden,
       sourcePlotId: p.id,
+      // Undefined for an ordinary terrain plot — only riverCliffFace/cliff-edge-band
+      // source objects (see _ribbonFaceToSegments/CliffEdgeBands.js) carry this, and it
+      // rides straight through onto every quad it's subdivided into (see below) so the
+      // client can colour a Cliff-Edge band's own ramp quads white right alongside the
+      // Ice-Sheet cliff face they border, not just the face itself.
+      iceSheetAdjacent: p.iceSheetAdjacent,
     }
     const ids = p.pointIds
     if (ids.length <= 3) { faces.push({ vertexIds: ids, meta }); continue }
@@ -287,6 +293,7 @@ export function subdivideTerrain(registry, terrainPlots, regionsById = null) {
     assignedType: q.meta.assignedType,
     hidden: q.meta.hidden,
     sourcePlotId: q.meta.sourcePlotId,
+    iceSheetAdjacent: q.meta.iceSheetAdjacent,
     pointIds: q.pointIds,
     polygon: q.polygon,
   }))

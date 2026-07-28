@@ -243,6 +243,19 @@ export default class TerrainSetup {
       const edges = wt.edges
       const regionsById = new Map(regions.map(r => [r.id, r]))
       for (const [edgeId, edge] of Object.entries(edges)) {
+        // Only a fully-revealed edge — where the OTHER side is real, visible terrain,
+        // not still-hidden generated-but-unrendered territory — gets auto-Cliffed here
+        // (user-confirmed 2026-07-26: "only terrain edges where both sides are not
+        // hidden can have a rendered edge / Cliff"). Without this, an Ice Sheet touching
+        // a still-hidden neighbour got Cliffed immediately, and since neither the fill
+        // renderer (renderRiverCliffFaces) nor GroundRenderer's plot conversion ever
+        // gated on hidden status either, that Cliff face rendered right into the void —
+        // a "cliff to nowhere" wrapping past the edge of revealed territory. The correct
+        // Cliff gets (re-)created the moment that neighbour is genuinely revealed, via
+        // the second auto-cliff pass below (after _revealAdjacentHiddenTerrain) or a
+        // later Ice Sheet placement's own first pass.
+        const otherId = edge.regionA === regionId ? edge.regionB : edge.regionA
+        if (regionsById.get(otherId)?.hidden) continue
         if ((edge.regionA === regionId || edge.regionB === regionId) && !edge.assignedType) {
           edge.assignedType = 'Cliff'
           edge.description = ''
@@ -257,7 +270,8 @@ export default class TerrainSetup {
 
     const clearedEdgeIds = []
     if (terrainType === 'Lake' || terrainType === 'Sea') {
-      const edges = this.sp.gameStateManager.worldTerrainData.edges
+      const wt = this.sp.gameStateManager.worldTerrainData
+      const edges = wt.edges
       for (const [edgeId, edge] of Object.entries(edges)) {
         if ((edge.regionA === regionId || edge.regionB === regionId) && edge.assignedType === 'River') {
           edge.assignedType = null
@@ -267,20 +281,47 @@ export default class TerrainSetup {
           clearedEdgeIds.push(edgeId)
         }
       }
+
+      // Mirror of Ice Sheet's own auto-cliff pass below, from the OTHER direction (found
+      // live 2026-07-28, "there should be no yellow beach/coast under ice sheets" — Sea
+      // rising against an Ice Sheet): Ice Sheet only ever auto-cliffs its OWN bordering
+      // edges at the moment IT is placed — it has no way to reach forward in time to a
+      // Sea/Lake placed LATER against an already-existing Ice Sheet. Without this, that
+      // edge stays permanently unassigned, and ShoreBands.js (which has no Ice-Sheet
+      // awareness of its own) treats the Ice Sheet plot as ordinary "land bordering
+      // water" and pulls a sandy Shore-Sea band right up against it. Ice Sheet is
+      // CLIFF_HIGH_TYPES and Sea/Lake is CLIFF_LOW_TYPES (terrainConfig.js) — this is
+      // exactly the sidedness a Cliff already resolves correctly once one exists.
+      const regionsByIdForWater = new Map(regions.map(r => [r.id, r]))
+      for (const [edgeId, edge] of Object.entries(edges)) {
+        if (edge.assignedType) continue
+        const otherId = edge.regionA === regionId ? edge.regionB : edge.regionB === regionId ? edge.regionA : null
+        if (otherId === null) continue
+        if (regionsByIdForWater.get(otherId)?.assignedType !== 'Ice Sheet') continue
+        if (regionsByIdForWater.get(otherId)?.hidden) continue
+        edge.assignedType = 'Cliff'
+        edge.description = ''
+        edge.name = ''
+        this.sp.edgePlacements.push({ edgeId, edgeType: 'Cliff', description: '', name: '' })
+        this.sp.log.push(`Auto-cliffed edge ${edgeId} (${terrainType} borders Ice Sheet)`)
+        forceInitialCliffSeparation(this.sp.gameStateManager.pointRegistry, edges, edgeId, wt.terrainPlots || [], regionsByIdForWater)
+      }
     }
 
-    // Ice Sheet next to Ice Sheet: there are no valid edge types between two Ice Sheets,
-    // EVER, even a Cliff that was genuinely valid before both sides became Ice Sheet
-    // (user-confirmed 2026-07-26, "ice sheet should never have cliffs, even when the
-    // cliff was previously valid") — clear whatever's there, same as Sea/Lake clearing
-    // River above, but ANY assignedType (not just River). Must run again after the
-    // SECOND auto-cliff pass below (post-reveal), not just once here — that pass can
-    // just as easily auto-cliff a newly-revealed edge that turns out to border another
-    // Ice Sheet, and without a second sweep it would stay a Cliff forever (confirmed
-    // live 2026-07-26: cliffs appearing INSIDE a contiguous Ice Sheet area, from exactly
-    // this ordering gap). See _clearIceSheetAdjacentCliffs' own doc comment for why a
-    // freshly-Cliffed edge can't just skip itself instead of clearing after the fact.
-    if (terrainType === 'Ice Sheet') clearedEdgeIds.push(...this._clearIceSheetAdjacentCliffs(regionId))
+    // Ice Sheet next to Ice Sheet ("there are no valid edge types between two Ice
+    // Sheets, EVER, even a Cliff that was genuinely valid before both sides became Ice
+    // Sheet", user-confirmed 2026-07-26) is now a STANDING invariant enforced inside
+    // computeCliffChainSides itself (TerrainZHeight.js) — checked on EVERY pullback
+    // pass, not just here. No explicit call needed at this specific moment: the
+    // unconditional _applyRiverCliffPullbackToTerrainPlots() at the end of this method
+    // already re-derives it fresh and clears anything that qualifies, including
+    // whatever the auto-cliff passes above (or the reveal below) just created. An
+    // earlier version of this fix lived here instead (clear-immediately-after-
+    // auto-cliffing) — reverted 2026-07-26 after confirming live that it couldn't catch
+    // a Cliff that predates this code (created by an EARLIER Ice Sheet placement,
+    // before either side's current type existed) — a per-Apply guard can only ever see
+    // forward from the moment it runs, never re-validate old state; the standing
+    // invariant does both for free.
 
     // Restored (2026-07-11, after a same-day revert-and-re-revert): pullback runs here
     // again, during Terrain Setup, NOT deferred to District mode. The deferral (tried
@@ -329,6 +370,9 @@ export default class TerrainSetup {
       const edges = wt.edges
       const regionsById = new Map(regions.map(r => [r.id, r]))
       for (const [edgeId, edge] of Object.entries(edges)) {
+        // Same "other side must not still be hidden" guard as the first pass above.
+        const otherId = edge.regionA === regionId ? edge.regionB : edge.regionA
+        if (regionsById.get(otherId)?.hidden) continue
         if ((edge.regionA === regionId || edge.regionB === regionId) && !edge.assignedType) {
           edge.assignedType = 'Cliff'
           edge.description = ''
@@ -339,10 +383,9 @@ export default class TerrainSetup {
           forceInitialCliffSeparation(this.sp.gameStateManager.pointRegistry, edges, edgeId, wt.terrainPlots || [], regionsById)
         }
       }
-      // Re-sweep: this pass can just as easily have auto-cliffed a newly-revealed edge
-      // that borders another Ice Sheet — see _clearIceSheetAdjacentCliffs' own doc
-      // comment and the matching call right after the FIRST auto-cliff pass above.
-      clearedEdgeIds.push(...this._clearIceSheetAdjacentCliffs(regionId))
+      // No Ice-Sheet-adjacency re-check needed here — see the comment on the FIRST
+      // auto-cliff pass above: computeCliffChainSides' own standing invariant catches
+      // this (and anything else) on the unconditional pullback at the end of this method.
     }
 
     // Terrain z-height (§3/§4 minus Cliff, plan "rustling-churning-finch", ADR-0021):
@@ -389,39 +432,6 @@ export default class TerrainSetup {
     this.sp._applyRiverCliffPullbackToTerrainPlots()
 
     return { ok: true, clearedEdgeIds, autoCliffEdgeIds, revealedRegionIds, newEdgeIds, log: this.sp.log }
-  }
-
-  // Clears any edge touching `regionId` (a just-(re)confirmed Ice Sheet) whose OTHER
-  // side is ALSO Ice Sheet — there is no valid edge type between two Ice Sheets, EVER,
-  // even a Cliff that was genuinely valid before both sides became Ice Sheet
-  // (user-confirmed 2026-07-26: "ice sheet should never have cliffs, even when the
-  // cliff was previously valid" — confirmed live as cliffs appearing INSIDE a
-  // contiguous Ice Sheet area). Deliberately a clear-after-the-fact sweep, not a
-  // skip-before-cliffing guard in the auto-cliff passes themselves: two DIFFERENT Ice
-  // Sheets placed in sequence share an edge that was unassigned (so eligible for
-  // auto-cliff) when the FIRST one was placed, since the second region wasn't Ice
-  // Sheet yet — only a sweep run every time ANY Ice Sheet is (re)confirmed catches
-  // that retroactively. Callers: both auto-cliff passes in assignTerrainToRegion (each
-  // can freshly Cliff an edge that turns out to border another Ice Sheet — confirmed
-  // live for the second, post-reveal pass specifically, 2026-07-26).
-  _clearIceSheetAdjacentCliffs(regionId) {
-    const wt = this.sp.gameStateManager.worldTerrainData
-    const edges = wt.edges
-    const regions = wt.regions
-    const cleared = []
-    for (const [edgeId, edge] of Object.entries(edges)) {
-      if (!edge.assignedType) continue
-      const otherId = edge.regionA === regionId ? edge.regionB : edge.regionB === regionId ? edge.regionA : null
-      if (otherId === null) continue
-      const other = regions.find(r => r.id === otherId)
-      if (other?.assignedType !== 'Ice Sheet') continue
-      edge.assignedType = null
-      edge.description = ''
-      this.sp.edgePlacements = this.sp.edgePlacements.filter(p => p.edgeId !== edgeId)
-      this.sp.log.push(`Cleared ${edgeId}'s edge type — no valid edge type between two Ice Sheets`)
-      cleared.push(edgeId)
-    }
-    return cleared
   }
 
   // "Which hidden region(s) does this KEPT region border" — replaces the former
@@ -686,7 +696,7 @@ export default class TerrainSetup {
       this.sp.log.push(`Cleared Cliff from edge ${edgeId} — ${reason}`)
     }
 
-    for (const edgeId of downgradeEdgeIds) clear(edgeId, 'too weak against a stronger local inversion elsewhere on the run')
+    for (const edgeId of downgradeEdgeIds) clear(edgeId, 'either both sides are Ice Sheet, or too weak against a stronger local inversion elsewhere on the run')
 
     for (const [edgeId, sides] of sidesByEdge) {
       const edge = wt.edges[edgeId]
@@ -731,7 +741,7 @@ export default class TerrainSetup {
     const tradeRoadWaypoints = (this.sp.tradingDestinations || [])
       .map(td => this.sp._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.sp.gameStateManager.pointRegistry)
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.sp.gameStateManager.pointRegistry, wt?.cliffEdgeBands || [])
     cityData.plots = [...(cityData.plots || []).filter(p => p.type !== 'terrain'), ...terrainPlots]
     if (terrainPlots.length > 0) {
       const junctions = cityData.streetGraph?.junctions || []

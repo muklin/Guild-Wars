@@ -44,7 +44,7 @@ function inferTerrainType(cell, regionTypeById, worldRegions) {
 // TerrainRenderer) rendered every terrain plot dead flat regardless of the Terrain
 // Setup z-height work — confirmed live 2026-07-12 ("assigning one district cleared all
 // z heights", actually a rendering-handoff gap, not a data wipe).
-export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = [], worldRegions = [], riverCliffFaces = [], registry = null) {
+export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = [], worldRegions = [], riverCliffFaces = [], registry = null, cliffEdgeBands = []) {
   const regionTypeById = new Map(worldRegions.map(r => [r.id, r.assignedType]))
   // Resolves by ID, not by reading `.id` off the vertex object (user-confirmed
   // 2026-07-15, "SOMETHING at the end of District setup or start of Guild setup sets
@@ -127,7 +127,41 @@ export function convertTerrainCellsToPlots(terrainPlots, tradeRoadWaypoints = []
     })
   }
 
-  const failed = terrainPlots.length - (plots.length - riverCliffFaces.length)
-  console.log(`TerrainPlotConverter: ${plots.length - riverCliffFaces.length} terrain plots from ${terrainPlots.length} raw plots (${failed} degenerate), ${riverCliffFaces.length} river/cliff face(s)`)
+  // Cliff-Edge bands (ADR-0022 Stage 2, CliffEdgeBands.js): the SAME pull-back that opens
+  // room for these bands also permanently moves the bordering LAND plot's own cliff-side
+  // corners inland (TransitionBand.js "Rule 2: swap the inland copy into EVERY kept
+  // plot"), on the raw `terrainPlots` this function reads too — meaning the strip between
+  // a Cliff face and its now-set-back land plot is real, un-rendered void in walk mode
+  // unless something fills it. Terrain Setup mode's ADR-0022 terrainSurfaces merges these
+  // bands into its own subdivided mesh (_syncGroundplaneSurfaces), but that pipeline is
+  // never used here — GroundRenderer (which owns terrain from District Setup onward) only
+  // ever consumed riverCliffFaces above, so a Cliff-Edge band was a real, walkable-through
+  // gap right at every cliff's own land edge (confirmed live 2026-07-26: "terrain edge
+  // still showing"/"the high side berm" — the exposed, un-pulled-back sliver of the OLD
+  // land-plot edge peeking through). Converted exactly like riverCliffFaces above.
+  for (const band of cliffEdgeBands) {
+    const poly = band.polygon?.length
+      ? band.polygon.map((v, i) => ({ x: v.x, y: v.y, z: v.z ?? zOf(band.pointIds?.[i]) }))
+      : (band.pointIds?.length && registry
+        ? band.pointIds.map(id => registry.get(id)).filter(Boolean).map(p => ({ x: p.x, y: p.y, z: p.z }))
+        : [])
+    if (poly.length < 3) continue
+    plots.push({
+      id: `ceb${band.id}`,
+      terrainPlotId: null,
+      regionId: band.parentRegionId ?? null,
+      blockId: null,
+      districtId: null,
+      assignedType: band.assignedType,
+      iceSheetAdjacent: !!band.iceSheetAdjacent,
+      blockCorners: poly,
+      streetEdges: [],
+      type: 'terrain',
+      hasRoad: false,
+    })
+  }
+
+  const failed = terrainPlots.length - (plots.length - riverCliffFaces.length - cliffEdgeBands.length)
+  console.log(`TerrainPlotConverter: ${plots.length - riverCliffFaces.length - cliffEdgeBands.length} terrain plots from ${terrainPlots.length} raw plots (${failed} degenerate), ${riverCliffFaces.length} river/cliff face(s), ${cliffEdgeBands.length} cliff-edge band(s)`)
   return plots
 }

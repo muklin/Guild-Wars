@@ -14,46 +14,96 @@
 //   - TERRAIN_REVEAL_TYPES, EDGE_ONLY_TYPES, NORTH_HALF_ANGLE_DEG
 //     (server/engine/TerrainSetup.js)
 //   - TERRAIN_COLORS, WATER_TYPES, SAME_TYPE_ONLY_TYPES (client/rendering/TerrainRenderer.js)
-// Terrain types don't have districtConfig.js's per-type "whole object" shape (no building
-// style, no sub-classing) — the tunables are more heterogeneous (some per-region-TYPE,
-// some per-linear-FEATURE), so this file stays as the same set of distinctly-named,
-// independently-documented exports those five files already had, just gathered into one
-// place instead of five, unlike districtConfig.js's single merged DISTRICTS table.
+// TERRAIN_TYPES (renamed from TERRAIN_TYPE_Z_RULES, 2026-07-27 — TERRAIN_COLORS merged
+// into it the same call) is now the single per-type "whole object" table
+// districtConfig.js's DISTRICTS already was — every OTHER export below stays its own
+// distinctly-named, independently-documented constant (linear-FEATURE tuning, adjacency
+// sets, placement rules) since those aren't per-region-TYPE data at all.
 
-// ── Per-region-type z-height (ADR-0021 "Terrain z-height propagation") ─────────────────
-// Each terrain type's z effect (applied on Apply — see TerrainSetup.assignTerrainToRegion)
-// sets a delta on the source region's own corners, then propagates outward by walking the
-// FINE Point/Edge graph from all of the source region's corners, blending each reached
-// point's current z toward the source region's z along a distance-based falloff curve.
-// Live-tuned 2026-07-12 (user feedback: original magnitudes "a bit too much" once actually
-// rendered) — every non-zero amount below is the original design value /3.
-// `direction`: the ONLY way this type's propagation is allowed to move a point (fixed
-// 2026-07-13, user-confirmed "the only direction Hills should move terrain points is
-// upwards") — a safety clamp in TerrainZHeight.propagateFromRegion.
-export const TERRAIN_TYPE_Z_RULES = {
-  Sea:        { mode: 'set',   amount: 0,    cornerAmount: 0,    hopCount: 8, curve: 'scurve', direction: 'down' },
+// ── Per-region-type config (ADR-0021 "Terrain z-height propagation" for the z-effect
+// fields; colour for client rendering) ──────────────────────────────────────────────────
+// `color`: every type — including ones with no z-effect at all (Plains/Forest) and ones
+// that are never a player-placed region type at all (City, River, Shore-Sea/Shore-Lake,
+// Cliff-Edge, unassigned) — has one; it's the only field those latter entries carry.
+//
+// z-effect fields (only on types that actually have one — see `mode` below): applied on
+// Apply (TerrainSetup.assignTerrainToRegion) as a delta on the source region's own
+// corners, then propagated outward by walking the FINE Point/Edge graph from all of the
+// source region's corners, blending each reached point's current z toward the source
+// region's z along a distance-based falloff curve. Live-tuned 2026-07-12 (user feedback:
+// original magnitudes "a bit too much" once actually rendered) — every non-zero amount
+// below is the original design value /3. `direction`: the ONLY way this type's
+// propagation is allowed to move a point (fixed 2026-07-13, user-confirmed "the only
+// direction Hills should move terrain points is upwards") — a safety clamp in
+// TerrainZHeight.propagateFromRegion. `mode` is the actual signal for "has a z-effect at
+// all" (TerrainZHeight.applyTerrainTypeZEffect's own guard is `!rule?.mode`, not
+// `!rule`) — a colour-only entry (Plains, Forest, City, ...) simply has no `mode`.
+export const TERRAIN_TYPES = {
+  Sea:        { mode: 'set',   amount: 0,    cornerAmount: 0,    hopCount: 8, curve: 'scurve', direction: 'down', color: 0x0e6e6c },
   // Lake's own flat height is no longer `mode`/`amount`/`cornerAmount` (superseded
   // 2026-07-19 — see the dedicated `region.assignedType === 'Lake'` branch in
   // TerrainZHeight.applyTerrainTypeZEffect: settles to its lowest shore corner instead).
-  // Those three fields are dead for Lake now, kept only so this entry stays truthy for the
-  // `if (!rule) return` guard; hopCount/curve/direction still govern how the lake's (now
-  // corner-derived) height propagates into the surrounding terrain.
-  Lake:       { mode: 'delta', amount: -1 / 3, cornerAmount: -1 / 3, hopCount: 1, curve: 'linear', direction: 'down' },
-  // Hills is now a rolling height field (ADR-0022): this delta/taper is its ENTIRE
-  // shaping — the old extrude/inset/wall machinery retired once terrain-wide subdivision
-  // could weld and smooth across every seam on its own.
-  Hills:      { mode: 'delta', amount: 2 / 3, cornerAmount: 1 / 3, hopCount: 1, curve: 'linear', direction: 'up' },
-  Mountains:  { mode: 'delta', amount: 1, cornerAmount: 2 / 3, hopCount: 3, curve: 'linear', direction: 'up' },
-  Swamp:      { mode: 'flattenThenDelta', amount: -1 / 3, floor: 1 / 3, hopCount: 1, curve: 'linear', direction: 'down' },
+  // Those three fields are dead for Lake now, kept only so `mode` stays set (the
+  // `!rule?.mode` guard's actual signal); hopCount/curve/direction still govern how the
+  // lake's (now corner-derived) height propagates into the surrounding terrain.
+  Lake:       { mode: 'delta', amount: -0.33, cornerAmount: -0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0x1a5abf },
+  // ── 'deltaandextterrainplots' mode (re-added 2026-07-26/generalized 2026-07-27,
+  // TerrainExtrusion.js — Hills' own extrude/inset/wall version "got lost somewhere" when
+  // ADR-0022 retired it in favour of a plain rolling height field; a rolling field alone
+  // never actually reads as "a hill"/"a mountain" in play). `amount`/`cornerAmount`/
+  // `hopCount`/`curve`/`direction` still give the region its gentle rolling-field slope
+  // exactly like plain `'delta'` mode does (TerrainZHeight.applyTerrainTypeZEffect
+  // matches both modes identically there) — the per-PLOT inset+extrude below sits on top
+  // of that, same relationship the original (pre-ADR-0022) version had. Any type using
+  // this mode needs its own TOP_INSET_RANGE/EXTRUDE_HEIGHT_RATIO (below); a type on plain
+  // `'delta'` mode never reads them.
+  //
+  // TOP_INSET_RANGE: each plot's own top is pulled toward its own centroid by a randomly-
+  // chosen fraction in this [min, max] range (a different draw per plot, seeded off its
+  // centroid — organic per-plot variety, same "individual faces" look the original Hills-
+  // only extrude had) before terrain-wide subdivision (subsurf) rounds the resulting mesa/
+  // plateau shape off. 1.0 would mean no inset at all (the top stays the plot's full
+  // original footprint); smaller values leave more room for the sloped skirt around each
+  // plot's edge — Mountains' own narrower range keeps more of its footprint as a steep
+  // peak than Hills' gentler, more-inset mound.
+  //
+  // EXTRUDE_HEIGHT_RATIO: NOT a fixed world-unit constant (the original 2026-07-20
+  // Hills-only version's HILLS_EXTRUDE_HEIGHT was) — always scaled proportional to the
+  // plot's own size (user-confirmed 2026-07-26), specifically height = this ratio ×
+  // sqrt(plot footprint area), so a small Voronoi plot gets a proportionally small bump
+  // and a large one a proportionally tall one, instead of every plot in a region popping
+  // up by the same absolute amount regardless of how big it is.
+  //
+  // Starting values, tune once seen live.
+  Hills:      { mode: 'deltaandextterrainplots', amount: 1, cornerAmount: 0.33, hopCount: 1, curve: 'linear', direction: 'up', TOP_INSET_RANGE: [0.3, 0.6], EXTRUDE_HEIGHT_RATIO: 0.15, color: 0x699B4F },
+  Mountains:  { mode: 'deltaandextterrainplots', amount: 2, cornerAmount: 0.66, hopCount: 3, curve: 'linear', direction: 'up', TOP_INSET_RANGE: [0.3, 0.3], EXTRUDE_HEIGHT_RATIO: 0.7, color: 0x8d8d8d },
+  Swamp:      { mode: 'flattenThenDelta', amount: -0.33, floor: 0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0x4a6b4a },
   // Ice Sheet (superseded 2026-07-13 — see the dedicated branch in
   // TerrainZHeight.applyTerrainTypeZEffect): map-average-of-centres+3 (or the average of
   // already-placed Ice Sheets), +/-0.25 jitter, permanently locked. This entry only needs
-  // to stay truthy so the `if (!rule) return` guard doesn't treat Ice Sheet as a no-op —
-  // none of these fields are read for it anymore.
-  'Ice Sheet': { mode: 'delta' },
-  Desert:     { mode: 'delta', amount: -1 / 3, floor: 1 / 3, cornerAmount: -1 / 3, hopCount: 1, curve: 'linear', direction: 'down' },
-  Plains:     null,
-  Forest:     null,
+  // `mode` truthy so the `!rule?.mode` guard doesn't treat Ice Sheet as a no-op — none of
+  // the OTHER z-effect fields are read for it.
+  'Ice Sheet': { mode: 'delta', color: 0xf4f8ff },
+  Desert:     { mode: 'delta', amount: -0.33, floor: 0.33, cornerAmount: -0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0xedca72 },
+  // Cliff (an Edge type, not a Region type — see CONTEXT_WorldTerrain.md), folded in here
+  // 2026-07-27 (was the standalone CLIFF_Z_RULE export below, now dead). Outward
+  // propagation shape once a Cliff's own high/low split has been computed — the
+  // split-vertex magnitude itself comes from computeCliffChainSides' own per-edge local
+  // neighbour average (full snap, no lerp — see that function's own doc comment), not a
+  // fixed magnitude here. hopCount 4→2 (user-confirmed 2026-07-26, "cliff depths should be
+  // reduced, then they will be steeper"): the same height difference now spreads over half
+  // the horizontal run, roughly doubling the visual slope.
+  Cliff:      { mode: 'delta', hopCount: 2, curve: 'linear', color: 0xaaaaaa },
+  // Colour-only from here down — no z-effect (`mode` intentionally absent).
+  Plains:      { color: 0xb2de69 },
+  Forest:      { color: 0x218c21 },
+  City:        { color: 0x808080 },
+  River:       { color: 0x1a5abf },   // same as Lake — a river is the same water, just flowing
+  'Shore-Sea': { color: 0xedca72 },   // matches Desert — sand
+  'Shore-Lake': { color: 0x8d8d8d },  // matches Mountains — stone
+  'Cliff-Edge': { color: 0xaaaaaa },  // matches Cliff itself — no separate design decision
+  // made yet for it, revisit once it's visible in-game.
+  unassigned:  { color: 0xb8a680 },
 }
 
 // Region types whose z is permanently flat and locked (TerrainZHeight.applyTerrainTypeZEffect
@@ -62,19 +112,16 @@ export const TERRAIN_TYPE_Z_RULES = {
 // (GroundplaneAudit._dcelPullbackMaterialize) the same way.
 export const ALWAYS_LOCKED_TERRAIN_TYPES = new Set(['Sea', 'Lake', 'Ice Sheet'])
 
-// ── Cliff (an Edge type, not a Region type — see CONTEXT_WorldTerrain.md) ──────────────
-// Outward propagation shape once a Cliff's own high/low split has been computed — the
-// split-vertex magnitude itself comes from computeCliffChainSides' own per-edge local
-// neighbour average (full snap, no lerp — see that function's own doc comment), not a
-// fixed magnitude here. hopCount 4→2 (user-confirmed 2026-07-26, "cliff depths should be
-// reduced, then they will be steeper"): the same height difference now spreads over half
-// the horizontal run, roughly doubling the visual slope.
-export const CLIFF_Z_RULE = { hopCount: 2, curve: 'linear' }
-
 // A region touching any of these is always the LOW side of a Cliff run it's part of
 // (TerrainZHeight.computeCliffChainSides) — Swamp is forced-low here without being
 // ALWAYS_LOCKED_TERRAIN_TYPES (it still needs a real target average, not null).
-export const CLIFF_LOW_TYPES = new Set(['Sea', 'Swamp', 'Ice Sheet', 'Lake'])
+export const CLIFF_LOW_TYPES = new Set(['Sea', 'Swamp', 'Lake'])
+// A region touching any of these is always the HIGH side of a Cliff run it's part of
+// (TerrainZHeight.computeCliffChainSides) — Ice Sheet moved here from CLIFF_LOW_TYPES
+// 2026-07-27. Ice Sheet is also ALWAYS_LOCKED_TERRAIN_TYPES, so this only affects
+// sidedness bookkeeping (which side the run treats as "high" for the OTHER side's
+// forced resolution/topology), never Ice Sheet's own frozen z.
+export const CLIFF_HIGH_TYPES = new Set(['Mountains', 'Hills', 'Ice Sheet'])
 
 // Minimum |high - low| local separation (world z units) a Cliff edge must keep. Used two
 // places (user-confirmed 2026-07-26): (1) TerrainSetup.assignEdgeType forces a Cliff up to
@@ -136,7 +183,11 @@ export const CLIFF_EDGE_WIDTH = 0.35   // same starting width as SHORE_WIDTH —
 // River genuinely can run between them). Only matches when BOTH sides are the IDENTICAL
 // type, since e.g. Mountains<->Desert is a real, definable boundary. (Sea/Lake<->Sea/Lake
 // is covered by WATER_TYPES above instead, matching on EITHER side.)
-export const SAME_TYPE_ONLY_TYPES = new Set(['Mountains', 'Desert'])
+// Ice Sheet<->Ice Sheet added 2026-07-26 (user-confirmed: "should not exist between
+// icesheets") — matches computeCliffChainSides' own standing invariant (TerrainZHeight.js)
+// that a Cliff between two Ice Sheets is never valid either; this is the client-side
+// rendering half of that same rule, for the plain-unassigned-edge case.
+export const SAME_TYPE_ONLY_TYPES = new Set(['Mountains', 'Desert', 'Ice Sheet', 'Lake', 'Sea'])
 
 // ── Placement eligibility (TerrainSetup.assignTerrainToRegion) ─────────────────────────
 // Only ever placed on an `isEdge` region (the "edge of the known world") — placing one
@@ -150,28 +201,10 @@ export const EDGE_ONLY_TYPES = ['Desert', 'Mountains', 'Sea']
 export const NORTH_HALF_ANGLE_DEG = 60
 
 // ── Client rendering (TerrainRenderer.js) ───────────────────────────────────────────────
-// Map/UI colour per terrain type. Shore-Sea/Shore-Lake (ADR-0022 Stage 2, ShoreBands.js)
-// match Desert (sand) and Mountains (stone) respectively, per design. Cliff-Edge
-// (CliffEdgeBands.js) matches the Cliff face's own colour — no separate design decision
-// made yet for it, revisit once it's visible in-game.
-export const TERRAIN_COLORS = {
-  City:          0x808080,
-  Plains:        0xb2de69,
-  Desert:        0xedca72,
-  Mountains:     0x8d8d8d,
-  Forest:        0x218c21,
-  Lake:          0x1a5abf,
-  Sea:           0x0e6e6c,
-  Hills:         0x699B4F,
-  Swamp:         0x4a6b4a,
-  'Ice Sheet':   0xf4f8ff,
-  unassigned:    0xb8a680,
-  Cliff:         0xaaaaaa,
-  River:         0x1a5abf,   // same as Lake — a river is the same water, just flowing
-  'Shore-Sea':   0xedca72,   // matches Desert — sand
-  'Shore-Lake':  0x8d8d8d,   // matches Mountains — stone
-  'Cliff-Edge':  0xaaaaaa,   // matches Cliff itself
-  get(type) {
-    return this[type] ?? null
-  },
+// TERRAIN_COLORS retired 2026-07-27 — every type's colour now lives on its own
+// TERRAIN_TYPES entry above (`.color`); this is just a thin accessor so call sites don't
+// each repeat `TERRAIN_TYPES[type]?.color` — same null-for-unknown contract
+// TERRAIN_COLORS.get(type) had.
+export function terrainColor(type) {
+  return TERRAIN_TYPES[type]?.color ?? null
 }

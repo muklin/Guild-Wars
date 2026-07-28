@@ -879,8 +879,10 @@ export default class GroundRenderer {
       // River/Cliff DCEL faces (see TerrainPlotConverter's riverCliffFaces param, plan
       // "typed-giggling-giraffe" addendum) — same hex values as TerrainRenderer's
       // TERRAIN_COLORS, so the fill doesn't change color across the Terrain Setup ->
-      // live gameplay rendering handoff.
-      River: 0x1a5abf, Cliff: 0xaaaaaa,
+      // live gameplay rendering handoff. Cliff-Edge (CliffEdgeBands.js, threaded through
+      // TerrainPlotConverter 2026-07-26 to close the walk-mode gap those bands otherwise
+      // left) matches Cliff itself, same as TerrainRenderer's own TERRAIN_COLORS entry.
+      River: 0x1a5abf, Cliff: 0xaaaaaa, 'Cliff-Edge': 0xaaaaaa,
     }
 
     for (const plot of plots) {
@@ -888,12 +890,13 @@ export default class GroundRenderer {
       if (plot.type === 'terrain') {
         // If we preserved existing terrain meshes, skip re-creating them.
         if (preserveTerrainPlots) continue
-        // A Cliff face bordering Ice Sheet is always white (user-confirmed 2026-07-26:
-        // "never grey or sand yellow") — snow-capped, not bare rock. iceSheetAdjacent is
-        // computed once, server-side (GroundplaneAudit._buildRiverCliffFacesDirect,
-        // threaded through TerrainPlotConverter) since this renderer has no edges/
-        // regions data of its own to re-derive it from.
-        const baseColor = plot.assignedType === 'Cliff' && plot.iceSheetAdjacent
+        // A Cliff face (or its own bordering Cliff-Edge ramp band) next to Ice Sheet is
+        // always white (user-confirmed 2026-07-26: "never grey or sand yellow") —
+        // snow-capped, not bare rock. iceSheetAdjacent is computed once, server-side
+        // (GroundplaneAudit._buildRiverCliffFacesDirect / CliffEdgeBands.js, threaded
+        // through TerrainPlotConverter) since this renderer has no edges/regions data of
+        // its own to re-derive it from.
+        const baseColor = (plot.assignedType === 'Cliff' || plot.assignedType === 'Cliff-Edge') && plot.iceSheetAdjacent
           ? 0xffffff
           : TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
         const seed = this._polySeed(plot.blockCorners)

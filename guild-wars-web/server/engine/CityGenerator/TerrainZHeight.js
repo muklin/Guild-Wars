@@ -10,16 +10,20 @@
 // whose zero point is fixed at the farthest point actually reached — no discontinuity,
 // no separately-calibrated endpoint.
 //
-// TERRAIN_TYPE_Z_RULES/CLIFF_Z_RULE/CLIFF_LOW_TYPES/CLIFF_MIN_SEPARATION/
+// TERRAIN_TYPES/CLIFF_LOW_TYPES/CLIFF_HIGH_TYPES/CLIFF_MIN_SEPARATION/
 // CLIFF_SPLIT_EQUAL_TOLERANCE live in worldConfig/terrainConfig.js (the single source of
 // truth for every terrain tunable, alongside worldConfig/districtConfig.js's district
 // equivalent) — re-exported here so every existing caller of THIS file keeps working
 // unchanged. CLIFF_LERP_T retired (ADR-0022 Cliff redesign, 2026-07-26): a Cliff split
 // vertex now snaps straight to its own local natural neighbour average — see
 // computeCliffChainSides' own doc comment — instead of an 80/20 blend toward a
-// chain-wide one, so there is no lerp factor left to tune.
-import { TERRAIN_TYPE_Z_RULES, CLIFF_Z_RULE, CLIFF_LOW_TYPES, CLIFF_MIN_SEPARATION, CLIFF_SPLIT_EQUAL_TOLERANCE } from '../../../worldConfig/terrainConfig.js'
-export { TERRAIN_TYPE_Z_RULES, CLIFF_Z_RULE, CLIFF_MIN_SEPARATION }
+// chain-wide one, so there is no lerp factor left to tune. CLIFF_Z_RULE retired
+// 2026-07-27 (folded into TERRAIN_TYPES.Cliff) — its own hopCount/curve are now read
+// straight off TERRAIN_TYPES.Cliff wherever still needed. TERRAIN_TYPE_Z_RULES itself
+// renamed to TERRAIN_TYPES the same day (TERRAIN_COLORS merged into it — every type now
+// carries its own `.color` alongside whatever z-effect fields it has, or none).
+import { TERRAIN_TYPES, CLIFF_LOW_TYPES, CLIFF_HIGH_TYPES, CLIFF_MIN_SEPARATION, CLIFF_SPLIT_EQUAL_TOLERANCE } from '../../../worldConfig/terrainConfig.js'
+export { TERRAIN_TYPES, CLIFF_HIGH_TYPES, CLIFF_MIN_SEPARATION }
 
 function lerp(a, b, t) { return a + (b - a) * t }
 
@@ -62,9 +66,26 @@ function lerp(a, b, t) { return a + (b - a) * t }
 //     (weak side of a resolved local inversion). Never populated for a forced-low run —
 //     forced sidedness is absolute, not a locally-decided candidate.
 export function computeCliffChainSides(edges, terrainPlots, registry, regionsById) {
-  const cliffEntries = Object.entries(edges).filter(([, e]) => e.assignedType === 'Cliff')
   const sidesByEdge = new Map()
   const downgradeEdgeIds = new Set()
+
+  // Ice Sheet next to Ice Sheet: there is no valid edge type between two Ice Sheets,
+  // EVER, even a Cliff that was genuinely valid before both sides became Ice Sheet
+  // (user-confirmed 2026-07-26). A STANDING invariant, checked here on every call (every
+  // pullback pass), not just a one-time guard at the moment an Ice Sheet is placed
+  // (TerrainSetup._clearIceSheetAdjacentCliffs, which only fires when THAT specific
+  // region is placed/re-confirmed) — confirmed live via a real save: a Cliff between two
+  // Ice Sheets can persist indefinitely once created, since nothing else ever re-visits
+  // an edge whose OWN two regions never change again. Filtered out before run-grouping
+  // entirely — never a sidedness/local-inversion candidate.
+  const isIceSheetVsIceSheet = (e) => regionsById.get(e.regionA)?.assignedType === 'Ice Sheet' && regionsById.get(e.regionB)?.assignedType === 'Ice Sheet'
+  const cliffEntries = []
+  for (const entry of Object.entries(edges)) {
+    const [id, e] = entry
+    if (e.assignedType !== 'Cliff') continue
+    if (isIceSheetVsIceSheet(e)) { downgradeEdgeIds.add(id); continue }
+    cliffEntries.push(entry)
+  }
   if (!cliffEntries.length) return { sidesByEdge, downgradeEdgeIds }
 
   // 1. Group into runs via shared endpoint pointIds (first/last id of each edge chain).
@@ -139,13 +160,24 @@ export function computeCliffChainSides(edges, terrainPlots, registry, regionsByI
       }
     }
 
-    // 4. Forced-low check (Sea/Swamp/Ice Sheet/Lake on either bucket) — absolute for the
-    // WHOLE run, same as before; a forced run is never a local-inversion candidate.
+    // 4. Forced-low/high check (Sea/Swamp/Lake force LOW; Mountains/Hills/Ice Sheet force
+    // HIGH — worldConfig/terrainConfig.js) — absolute for the WHOLE run, same as before; a
+    // forced run is never a local-inversion candidate. The two sets are just two ways of
+    // saying the same thing (a bucket is "definitively low" either because it's a
+    // CLIFF_LOW_TYPES type itself, OR because the OTHER bucket is a CLIFF_HIGH_TYPES type),
+    // so they're combined per-side before the usual "exactly one side is forced" check —
+    // both sides forced the same direction (e.g. Mountains vs Hills, or a genuine
+    // contradiction) is left undetermined, same as today's both-forced-low case, and falls
+    // through to the local-average decision below.
     const regionIdsByKey = { A: [], B: [] }
     for (const [rid, key] of sideKeyByRegion) regionIdsByKey[key].push(rid)
-    const isForcedLow = (rid) => CLIFF_LOW_TYPES.has(regionsById.get(rid)?.assignedType)
-    const aForced = regionIdsByKey.A.some(isForcedLow)
-    const bForced = regionIdsByKey.B.some(isForcedLow)
+    const isType = (rid, set) => set.has(regionsById.get(rid)?.assignedType)
+    const aLowType = regionIdsByKey.A.some(rid => isType(rid, CLIFF_LOW_TYPES))
+    const bLowType = regionIdsByKey.B.some(rid => isType(rid, CLIFF_LOW_TYPES))
+    const aHighType = regionIdsByKey.A.some(rid => isType(rid, CLIFF_HIGH_TYPES))
+    const bHighType = regionIdsByKey.B.some(rid => isType(rid, CLIFF_HIGH_TYPES))
+    const aForced = aLowType || bHighType
+    const bForced = bLowType || aHighType
     const forcedHighKey = aForced && !bForced ? 'B' : bForced && !aForced ? 'A' : null
 
     // 5. Per-EDGE local average (replaces the old whole-run averageLinkedNeighbors/
@@ -247,7 +279,7 @@ export function computeCliffChainSides(edges, terrainPlots, registry, regionsByI
 // definition time (user-confirmed 2026-07-26: "one side should be forced to be higher, at
 // time of application" — today's computeCliffChainSides/z-hook is purely reactive, with no
 // such moment; this restores it as a real, one-time terrain-shaping action, the same way
-// every TERRAIN_TYPE_Z_RULES effect applies a real delta on Apply). Splits any shortfall
+// every TERRAIN_TYPES effect applies a real delta on Apply). Splits any shortfall
 // 50/50 around the edge's own existing natural midpoint — the high side's own local
 // neighbours nudge up, the low side's nudge down — then a short outward blend
 // (propagateFromPoints, same primitive the ongoing Cliff propagation uses) so it isn't an
@@ -274,26 +306,45 @@ export function forceInitialCliffSeparation(registry, allEdges, edgeId, terrainP
   const highRegionId = regionAInfo.side === 'high' ? edge.regionA : edge.regionB
   const lowRegionId = regionAInfo.side === 'high' ? edge.regionB : edge.regionA
 
-  // Same 1-hop neighbour walk as computeCliffChainSides' own local average, this time
-  // collecting point ids (not just averaging them) so they can be nudged directly.
-  const graph = buildPointGraph(terrainPlots)
-  const plotsByPoint = new Map()
+  // Same physical-edge-keyed lookup as computeCliffChainSides' own localAverage (NOT a
+  // vertex-graph walk — reverted here 2026-07-26 for the exact reason localAverage itself
+  // was rewritten: a shared junction vertex is a graph-neighbour of every plot touching
+  // it, including plots of an entirely different region at a DIFFERENT physical edge, so
+  // the old `graph.get(pid)` walk could add the same point id to both the high-side AND
+  // low-side neighbour sets. Since the two nudge loops below write `p.z` directly and
+  // unconditionally, that collision let the low-side write silently clobber the
+  // high-side write on the same point — confirmed live against a real save (2026-07-26):
+  // several freshly-forced Cliff edges showed near-zero or exactly-zero separation
+  // despite genuinely-distinct high/low point ids, traced back to this exact collision.
+  // Scoping by physical edge instead guarantees each segment maps to exactly the ONE
+  // real bordering plot per region — the identical set `localAverage` will read back on
+  // every later pullback pass, so the forced push and the ongoing reactive average never
+  // disagree about which points are "this edge's own neighbours".
+  const plotsByPhysicalEdge = new Map()
   for (const plot of terrainPlots) {
-    for (const pid of plot.pointIds || []) {
-      if (!plotsByPoint.has(pid)) plotsByPoint.set(pid, [])
-      plotsByPoint.get(pid).push(plot)
+    const ids = plot.pointIds
+    if (!ids || ids.length < 2) continue
+    for (let i = 0; i < ids.length; i++) {
+      const p1 = ids[i], p2 = ids[(i + 1) % ids.length]
+      if (p1 === p2) continue
+      const key = p1 < p2 ? `${p1},${p2}` : `${p2},${p1}`
+      if (!plotsByPhysicalEdge.has(key)) plotsByPhysicalEdge.set(key, [])
+      plotsByPhysicalEdge.get(key).push(plot)
     }
   }
   const edgePointSet = new Set(edge.pointIds)
   const neighborsInRegion = (regionId) => {
     const ids = new Set()
-    for (const pid of edgePointSet) {
-      const myPlots = plotsByPoint.get(pid) || []
-      for (const nb of graph.get(pid) || []) {
-        if (edgePointSet.has(nb)) continue
-        const nbPlotSet = new Set(plotsByPoint.get(nb) || [])
-        const sharedPlot = myPlots.find(p => nbPlotSet.has(p))
-        if (sharedPlot && sharedPlot.parentRegionId === regionId) ids.add(nb)
+    const pts = edge.pointIds
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1]
+      if (a === b) continue
+      const key = a < b ? `${a},${b}` : `${b},${a}`
+      const plot = (plotsByPhysicalEdge.get(key) || []).find(p => p.parentRegionId === regionId)
+      if (!plot) continue
+      for (const pid of plot.pointIds) {
+        if (edgePointSet.has(pid)) continue
+        ids.add(pid)
       }
     }
     return [...ids]
@@ -388,8 +439,11 @@ function dist(a, b) {
 // needed only for Ice Sheet's map-average calculation (see below).
 const _zEffectCallCount = new Map()   // TEMP diagnostic — remove once root cause confirmed
 export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlots, allRegions = []) {
-  const rule = TERRAIN_TYPE_Z_RULES[region.assignedType]
-  if (!rule) return   // Plains/Forest/unrecognized: no effect
+  const rule = TERRAIN_TYPES[region.assignedType]
+  // `!rule?.mode`, not `!rule` (2026-07-27, TERRAIN_TYPES merge) — every type now has AT
+  // LEAST a `color` entry (Plains/Forest included), so plain truthiness no longer means
+  // "has a z-effect"; `mode` is the actual signal.
+  if (!rule?.mode) return   // Plains/Forest/unrecognized: no effect
   {
     const n = (_zEffectCallCount.get(region.id) ?? 0) + 1
     _zEffectCallCount.set(region.id, n)
@@ -491,7 +545,7 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     for (const p of domainPoints) {
       p.z = taperedAmount(p)
     }
-  } else if (rule.mode === 'delta') {
+  } else if (rule.mode === 'delta' || rule.mode === 'deltaandextterrainplots') {
     if (!region.seedPoint.zLocked) region.seedPoint.z += rule.amount
     for (const p of domainPoints) {
       p.z += taperedAmount(p)
@@ -523,7 +577,7 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
 //     the falloff curve's zero point — f(maxDistance) = 0 exactly, by construction.
 //  4. Blend each point's z toward the source region's (already-updated) seedPoint.z by
 //     f(t), t = that point's own nearest-corner distance / maxDistance.
-// `direction` ('up'|'down', from TERRAIN_TYPE_Z_RULES): a safety clamp (user-confirmed
+// `direction` ('up'|'down', from TERRAIN_TYPES): a safety clamp (user-confirmed
 // 2026-07-13, "the only direction Hills should move terrain points is upwards") — skip
 // a point entirely rather than move it the wrong way.
 // `excludeIds`: the source region's own FULL domain (fixed 2026-07-13) — the BFS graph

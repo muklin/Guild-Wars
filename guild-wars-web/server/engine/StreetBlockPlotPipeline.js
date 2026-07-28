@@ -771,7 +771,7 @@ export default class StreetBlockPlotPipeline {
     const tradeRoadWaypoints = (this.sp.tradingDestinations || [])
       .map(td => this.sp._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.sp.gameStateManager.pointRegistry)
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.sp.gameStateManager.pointRegistry, wt?.cliffEdgeBands || [])
     cityData.plots = [...cityData.plots, ...terrainPlots]
     console.log(`[perf]   terrain plots: ${(performance.now()-tTerrain).toFixed(1)}ms (${terrainPlots.length} plots)`)
     if (terrainPlots.length > 0) {
@@ -836,7 +836,7 @@ export default class StreetBlockPlotPipeline {
     const tradeRoadWaypoints = (this.sp.tradingDestinations || [])
       .map(td => this.sp._tradeRoadWaypoints(td.roadPath || []))
       .filter(Boolean)
-    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.sp.gameStateManager.pointRegistry)
+    const terrainPlots = convertTerrainCellsToPlots(rawTerrainPlots, tradeRoadWaypoints, wt?.regions || [], wt?.riverCliffFaces || [], this.sp.gameStateManager.pointRegistry, wt?.cliffEdgeBands || [])
 
     cityData.plots = [...plots, ...terrainPlots]
 
