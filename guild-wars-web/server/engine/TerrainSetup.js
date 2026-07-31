@@ -10,6 +10,7 @@ import TerrainVoronoiGenerator, { organicClipCircle, organicOuterClipRadius } fr
 import { gutterRoadEdges } from './CityGenerator/CityBlockGenerator.js'
 import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
 import { applyTerrainTypeZEffect, getRegionCornerIds, applyRiverZGradient, computeCliffChainSides, forceInitialCliffSeparation } from './CityGenerator/TerrainZHeight.js'
+import { findHighGroundClusterContaining, getClusterCornerIds, regenerateHighGroundCluster } from './CityGenerator/TerrainPeak.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { pip, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { computeTerrainPlotStreetAdjacency } from './StreetBlockPlotPipeline.js'
@@ -183,6 +184,26 @@ export default class TerrainSetup {
     if (dx === 0 && dy === 0) return false
     const bearing = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360
     return bearing <= NORTH_HALF_ANGLE_DEG || bearing >= 360 - NORTH_HALF_ANGLE_DEG
+  }
+
+  // Z-height delta/taper for ONE region (ADR-0021) — factored out so assignTerrainToRegion
+  // can apply the exact same one-time Apply-moment effect to a just-revealed neighbour
+  // region as it does to the region the player actually clicked (see
+  // _revealAdjacentHiddenTerrain's own doc comment: revealed regions are no longer folded
+  // into the triggering region's domain, so each needs this run for itself). Peak cone
+  // generation is NOT part of this anymore (ADR-0024) — it's scoped to a whole High-ground
+  // cluster, not one region, and runs separately after every region in this Apply has had
+  // its own delta/taper (and `p.baseZ` snapshot) written — see the cluster-regeneration
+  // block in assignTerrainToRegion below.
+  _applyRegionZEffect(region) {
+    const regionCornerIds = getRegionCornerIds(this.sp.gameStateManager.worldTerrainData.edges, region.id)
+    applyTerrainTypeZEffect(
+      this.sp.gameStateManager.pointRegistry,
+      region,
+      regionCornerIds,
+      this.sp.gameStateManager.worldTerrainData.terrainPlots || [],
+      this.sp.gameStateManager.worldTerrainData.regions || []
+    )
   }
 
   assignTerrainToRegion(regionId, terrainType, description = '', name = '') {
@@ -391,15 +412,13 @@ export default class TerrainSetup {
     // Terrain z-height (§3/§4 minus Cliff, plan "rustling-churning-finch", ADR-0021):
     // runs on Apply, not on preview/selection — this IS Apply, `region.assignedType`
     // above is the commit point. Deliberately placed AFTER the reveal-hidden-terrain
-    // block above, not right after `region.assignedType` is set: Sea/Mountains/Desert/
-    // Ice Sheet can absorb hidden terrain plots into this SAME region here, and Sea's
-    // whole-domain flatten-and-lock (see applyTerrainTypeZEffect) must see the region's
-    // FINAL plot membership, including anything just revealed/absorbed — running earlier
-    // would silently miss those plots' points (confirmed live: an edge-of-map Sea left
-    // its newly-revealed hidden water unflattened). "Adjust, don't freeze" still holds
-    // for every OTHER type: a later-Applied neighbour's own effect can still adjust this
-    // region's already-set corners afterward — nothing about this call prevents that,
-    // since it only ever touches `.z`, never `.assignedType`.
+    // block above, not right after `region.assignedType` is set: `getRegionCornerIds`
+    // (inside the helper below) needs this region's FINAL edge graph, including any new
+    // Terrain Edges the reveal above just created against newly-shown neighbours — running
+    // earlier would compute corners against a stale, pre-reveal edge set. "Adjust, don't
+    // freeze" still holds for every OTHER type: a later-Applied neighbour's own effect can
+    // still adjust this region's already-set corners afterward — nothing about this call
+    // prevents that, since it only ever touches `.z`, never `.assignedType`.
     // Hidden (generated-but-unrendered) terrain plots are included alongside the kept
     // ones (user-confirmed 2026-07-14, "those terrains are only hidden — they should
     // still be getting height updates resultant of nearby hills etc changes"): a hidden
@@ -408,13 +427,41 @@ export default class TerrainSetup {
     // Point/Edge graph propagateFromRegion walks, so a wave from a kept region's Apply
     // can now actually cross into hidden territory instead of stopping dead at the
     // kept/hidden boundary.
-    applyTerrainTypeZEffect(
-      this.sp.gameStateManager.pointRegistry,
-      region,
-      getRegionCornerIds(this.sp.gameStateManager.worldTerrainData.edges, regionId),
-      this.sp.gameStateManager.worldTerrainData.terrainPlots || [],
-      this.sp.gameStateManager.worldTerrainData.regions || []
-    )
+    this._applyRegionZEffect(region)
+
+    // Each revealed neighbour (see _revealAdjacentHiddenTerrain's own doc comment: it no
+    // longer folds these into `region`'s domain, they stay distinct regions of their own)
+    // gets the exact same one-time z-effect treatment, sequentially, right here — the only
+    // place a region's Apply-moment delta/taper is ever triggered. Order (region first,
+    // then each revealed neighbour) mostly matters for Ice Sheet's own target formula,
+    // which averages every OTHER already-placed Ice Sheet's centre — each subsequent one
+    // in this loop sees the previous ones' already-committed seedPoint.z, converging
+    // naturally instead of all reading a stale average.
+    const regionsById = new Map(regions.map(r => [r.id, r]))
+    for (const revealedId of revealedRegionIds) {
+      const revealedRegion = regionsById.get(revealedId)
+      if (revealedRegion) this._applyRegionZEffect(revealedRegion)
+    }
+
+    // Peak cones (ADR-0024): scoped to a whole High-ground cluster (a maximal connected
+    // group of Mountains+Hills regions), not one region — regenerated only when a region's
+    // type-assignment changes cluster membership, which is exactly what just happened for
+    // `region` and every revealed neighbour above. Every region touched by THIS Apply could
+    // belong to the SAME cluster (e.g. two of them share an edge), so clusters are
+    // deduplicated by id before regenerating — regenerating the same cluster twice in one
+    // Apply would re-run the (idempotent, but not free) search/write for nothing. Regions
+    // not typed Mountains/Hills are silently skipped (findHighGroundClusterContaining
+    // returns null for them) — everything else in this method is unaffected.
+    const wt = this.sp.gameStateManager.worldTerrainData
+    const seenClusterRegionIds = new Set()
+    for (const touchedRegion of [region, ...revealedRegionIds.map(id => regionsById.get(id)).filter(Boolean)]) {
+      if (seenClusterRegionIds.has(touchedRegion.id)) continue
+      const cluster = findHighGroundClusterContaining(touchedRegion.id, wt.regions, wt.edges)
+      if (!cluster) continue
+      for (const r of cluster) seenClusterRegionIds.add(r.id)
+      const clusterCornerIds = getClusterCornerIds(wt.edges, cluster.map(r => r.id))
+      regenerateHighGroundCluster(this.sp.gameStateManager.pointRegistry, cluster, wt.terrainPlots || [], clusterCornerIds)
+    }
 
     // Single unconditional pullback call, moved here (after applyTerrainTypeZEffect, not
     // before) so everything downstream of it sees THIS Apply's own z-height changes —
@@ -488,7 +535,21 @@ export default class TerrainSetup {
     const hiddenIdSet = new Set(hiddenIds)
     const revealedPlots = wt.terrainPlots.filter(p => p.hidden && hiddenIdSet.has(p.parentRegionId))
     for (const p of revealedPlots) p.hidden = false
-    for (const r of wt.regions) if (hiddenIdSet.has(r.id)) r.hidden = false
+    // Each revealed neighbour keeps its OWN region identity and gets its OWN
+    // assignedType set here (changed 2026-07-29, "keep them as distinct, apply the
+    // multiple assignments sequentially" — see the plot loop below and
+    // assignTerrainToRegion's own sequential-effects loop for the rest of this). An
+    // EARLIER version folded every revealed plot's parentRegionId into `regionId`
+    // instead, leaving the revealed region object itself permanently type-less — that
+    // merge meant a whole sprawling multi-region Mountains reveal only ever got ONE
+    // peak-cone search (over `regionId`'s own now-enormous domain), so everything
+    // absorbed but far from wherever that one peak landed stayed flat despite reading
+    // as "Mountains" (confirmed live 2026-07-29).
+    for (const r of wt.regions) {
+      if (!hiddenIdSet.has(r.id)) continue
+      r.hidden = false
+      r.assignedType = terrainType
+    }
 
     // Clip each revealed plot to the same organic outer clip circle every kept plot
     // already gets at generation time. Hidden plots already receive this exact clip
@@ -538,28 +599,34 @@ export default class TerrainSetup {
     })
     for (const plot of clippedPlots) {
       plot.pointIds = plot.polygon.map(v => v.id)
-      plot.parentRegionId = regionId
+      // parentRegionId deliberately left untouched — plot stays owned by its own
+      // (now-revealed, now-typed) region, not folded into `regionId` (see the region
+      // loop above). `assignedType` still mirrors the region's own, same as every kept
+      // plot already does (assignTerrainToRegion's own `for (const cell of rawCells)...`
+      // loop, right after `region.assignedType` is set).
       plot.assignedType = terrainType
       // No push here — the plot is already resident in wt.terrainPlots (merged array),
       // only its fields are updated in place.
     }
 
-    // Rebuild the revealing region's own merged-hull polygon (click hit-testing
-    // fallback only — see generate()'s Step 6 doc comment) now that it includes the
-    // newly-merged plots.
+    // Rebuild each revealed region's OWN hull polygon (click hit-testing fallback only —
+    // see generate()'s Step 6 doc comment) from its OWN now-clipped plots — no longer
+    // merged into `regionId`'s hull, since the plots themselves were never reassigned to
+    // it. `regionId`'s own hull is untouched here: its own plot footprint didn't change.
     const region = wt.regions.find(r => r.id === regionId)
-    const allVerts = []
-    for (const p of wt.terrainPlots) {
-      if (p.parentRegionId !== regionId) continue
-      for (const v of p.polygon) if (isFinite(v.x) && isFinite(v.y)) allVerts.push(v)
+    const plotsByRevealedRegion = new Map()
+    for (const p of clippedPlots) {
+      if (!plotsByRevealedRegion.has(p.parentRegionId)) plotsByRevealedRegion.set(p.parentRegionId, [])
+      plotsByRevealedRegion.get(p.parentRegionId).push(p)
     }
-    region.polygon = this.sp.worldGenerator.convexHull(allVerts)
-    // Staleness bug fix: the hull rebuild above used to update `.polygon` without ever
-    // refreshing `.pointIds` to match — every vertex here already carries a real
-    // registry id (they come from already-minted plot polygons), so this is a direct
-    // map, no fresh minting needed. Mirrors _recoverGeometryFromSeeds's own region-hull
-    // refresh (SetupPhase.js, its own `r.pointIds = hull.map(v => v.id)` line).
-    region.pointIds = region.polygon.map(v => v.id)
+    for (const [revealedId, plots] of plotsByRevealedRegion) {
+      const revealedRegion = wt.regions.find(r => r.id === revealedId)
+      if (!revealedRegion) continue
+      const verts = []
+      for (const p of plots) for (const v of p.polygon) if (isFinite(v.x) && isFinite(v.y)) verts.push(v)
+      revealedRegion.polygon = this.sp.worldGenerator.convexHull(verts)
+      revealedRegion.pointIds = revealedRegion.polygon.map(v => v.id)
+    }
 
     // Recompute boundary edges fresh over the CURRENT plot set (kept + still-hidden)
     // — the exact same adjacency scan generate() used initially. generateBoundaryEdges
@@ -592,24 +659,16 @@ export default class TerrainSetup {
       }
     }
 
-    // Remove now-stale edges that still reference a just-absorbed hidden region. Every one
-    // of `hiddenIds`' plots was reassigned to `regionId` above, so any edge to/from those
-    // regions is now either interior to the merged region, or has already been re-created
-    // against `regionId` (keyed by the new region pair) by the generateBoundaryEdges
-    // refresh above. Left in place they render as stray boundary strokes floating INSIDE
-    // the merged Sea/Mountains/Desert blob — the client's same-type edge hider
-    // (_edgeHasNoValidType) can't catch them because the absorbed region object is left
-    // type-less, so the edge reads as "typed region vs untyped region", not same-type.
-    // This is exactly the "edges bordering previously-hidden terrain aren't removed" bug
-    // (2026-07-26): Lake never hit it because Lake isn't a TERRAIN_REVEAL_TYPE and so never
-    // absorbs anything, which is why Lake|Lake looked correct while Sea/Mountains/Desert
-    // did not. Doing it HERE — after the unhide/absorb — is the fix the symptom pointed to.
-    // A player-assigned edge never references a still-hidden region (it was never shown to
-    // click), so nothing typed is lost.
-    for (const key of Object.keys(wt.edges)) {
-      const e = wt.edges[key]
-      if (hiddenIdSet.has(e.regionA) || hiddenIdSet.has(e.regionB)) delete wt.edges[key]
-    }
+    // NOTE: an earlier version deleted every edge referencing a revealed region here, on
+    // the theory that it had been absorbed into `regionId` and any edge still pointing at
+    // it was stale. That's no longer true (2026-07-29, "keep them as distinct" — see the
+    // region loop near the top of this function): a revealed region is a real, separate,
+    // now-typed region, and an edge between it and `regionId` (or any other now-shown
+    // neighbour) is a genuine boundary, not debris. It's freshly (re-)created by the
+    // generateBoundaryEdges refresh above with `assignedType: null`, same as any other
+    // newly-adjacent same-type pair — the client's same-type edge hider
+    // (_edgeHasNoValidType) already suppresses rendering a seam between two same-type
+    // regions with no assigned edge type, so nothing further needs to happen here.
 
     // Only regionId's own adjacency changed (its footprint grew) — every other
     // region's neighbours are unaffected. isEdge is the only per-region bookkeeping

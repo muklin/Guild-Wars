@@ -19,7 +19,7 @@ import { applyTerrainTypeZEffect, computeCliffChainSides } from './CityGenerator
 import { subdivideTerrain } from './CityGenerator/TerrainSubdivision.js'
 import { buildShoreBands } from './CityGenerator/ShoreBands.js'
 import { buildCliffEdgeBands } from './CityGenerator/CliffEdgeBands.js'
-import { buildTerrainExtrusion } from './CityGenerator/TerrainExtrusion.js'
+import { applyTerrainErosion } from './CityGenerator/TerrainErosion.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { extractBoundaryChain, boundaryConnectionAt } from '../../shared/boundaryChain.js'
@@ -29,6 +29,10 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
 const _dir = dirname(fileURLToPath(import.meta.url))
+// Same convention every other file in this codebase keeps its own local copy of
+// (TerrainSetup.js, TerrainSubdivision.js, auditGroundplane.js) rather than sharing one
+// import — undirected edge key for a directed pointId pair.
+const edgeKey = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`)
 // Dev-only diagnostic (user-confirmed 2026-07-14, "will be removed in production"):
 // appends one JSON line per _auditAndLogGroundplane call — see that method's own doc
 // comment for what it logs and why.
@@ -1570,18 +1574,6 @@ export default class GroundplaneAudit {
     // faces directly; must run after this pass's own from-_rawPointIds reset).
     if (wtShore) wtShore.cliffEdgeBands = buildCliffEdgeBands(registry, wtShore.terrainPlots || [], riverCliffFaces)
 
-    // Terrain extrusion (re-added 2026-07-26 as Hills-only, generalized 2026-07-27 to any
-    // 'deltaandextterrainplots' type — see TerrainExtrusion.js's own doc comment for the
-    // full history/design): every such plot's own top gets inset+raised right here, the
-    // same "after cliff/shore/cliff-edge, before subdivision" slot as those two. Passed
-    // riverCliffFaces/cliffEdgeBands/shoreBands so it can PIN any corner already owned by
-    // one of them (found live 2026-07-27: Hills/Mountains are CLIFF_HIGH_TYPES, so a
-    // Hills/Mountains plot bordering a Cliff is the ordinary case, and insetting that
-    // shared corner away — same as any other — orphaned it from the exact position the
-    // Cliff-Edge band/ribbon already pinned there, a real HOLE, not just a stale-boundary
-    // risk as the comment here previously assumed).
-    if (wtShore) wtShore.extrusionSkirts = buildTerrainExtrusion(registry, wtShore.terrainPlots || [], [riverCliffFaces, wtShore.cliffEdgeBands, wtShore.shoreBands])
-
     // Terrain subdivision (ADR-0022) is rebuilt inside _syncGroundplaneSurfaces below —
     // it reads the freshly pulled-back plot footprints (river/cliff, shore, AND
     // cliff-edge), so it must run AFTER all three of this pass's pointIds resets.
@@ -1593,6 +1585,21 @@ export default class GroundplaneAudit {
     // — with each Cliff/River quad's own sourcePlotId tag — before
     // _syncLinearFeatureRegions can compute each chain's real surfaceIds from them.
     this._syncGroundplaneSurfaces()
+
+    // Erosion filter (ADR-0023): must run AFTER _syncGroundplaneSurfaces, since it
+    // operates on the freshly-subdivided mesh (wt.terrainSurfaces) — the coarse
+    // generative-layer mesh above is too sparse for gully/ridge detail to read. Runs on
+    // EVERY pullback pass (not just the Apply that placed the Hills/Mountains region),
+    // since TerrainSubdivision.js fully re-mints the subdivided point kind every call —
+    // see TerrainErosion.js's own doc comment for why this is safe/idempotent. Passed the
+    // same [riverCliffFaces, cliffEdgeBands, shoreBands] pin sources TerrainExtrusion.js
+    // used to pin against, for the identical reason (a corner already owned by a
+    // transition band must never move here either).
+    if (wtShore) {
+      const regionsByIdForErosion = new Map((wtShore.regions || []).map(r => [r.id, r]))
+      applyTerrainErosion(registry, wtShore.terrainSurfaces || [], regionsByIdForErosion, [riverCliffFaces, wtShore.cliffEdgeBands, wtShore.shoreBands])
+    }
+
     this._syncLinearFeatureRegions(riverCliffFaces)
 
     console.log(`[river-cliff-pullback] ${boundaryById.size} river/cliff boundary point(s), ${matchedCount}/${terrainPlots.length} terrain plot(s) pulled back (miter, junction-averaged), ${riverCliffFaces.length} river/cliff face(s) built`)
@@ -1773,9 +1780,38 @@ export default class GroundplaneAudit {
     // a wall) would never be modelled as one giant fan-subdivided face either.
     const regionsById = new Map((wt.regions || []).map(r => [r.id, r]))
     const riverCliffSegments = (wt.riverCliffFaces || []).flatMap(f => this._ribbonFaceToSegments(f))
-    const terrainPlotsForSubdivision = [...(wt.terrainPlots || []), ...(wt.shoreBands || []), ...(wt.cliffEdgeBands || []), ...(wt.extrusionSkirts || []), ...riverCliffSegments]
+    const terrainPlotsForSubdivision = [...(wt.terrainPlots || []), ...(wt.shoreBands || []), ...(wt.cliffEdgeBands || []), ...riverCliffSegments]
     wt.terrainSurfaces = subdivideTerrain(this.sp.gameStateManager.pointRegistry, terrainPlotsForSubdivision, regionsById)
+    // Promoted plots (StreetBlockPlotPipeline.promoteTerrainPlotToDistrict — a City
+    // Expansion district) are deliberately left in worldTerrainData.terrainPlots (other
+    // code still needs their raw geometry — see _rawSurroundingTerrainPlots' own doc
+    // comment), so they still get subdivided above like ordinary terrain, and the
+    // client's own promoted-plot suppression already hides their mesh. But their quads
+    // must NOT also be registered as audited Groundplane Surfaces here: the district's
+    // own block/plot/building Surfaces (below, from cityDistrictData) occupy the exact
+    // same footprint, so keeping both is a genuine, structural AREA_OVERLAP, not a false
+    // positive (confirmed live 2026-07-29: 208 overlaps + 142 holes appearing the moment
+    // a district was added, growing with every further district). Excluding a promoted
+    // plot's quads here without anything else would just trade "overlap" for "hole" at
+    // its old boundary though (its terrain neighbours' own edges there would go
+    // unpaired) — `_promotedPlotBoundaryEdgeKeys` collects every edge of every excluded
+    // quad so the caller can fold them into the same outerRingEdgeKeys-style HOLE
+    // exemption the world's own outer rim already uses (see _auditAndLogGroundplane).
+    // This is a real design choice, not a workaround: once a plot is promoted, its
+    // future boundary is the district's own street/block system's problem, same as the
+    // world's outer rim is nobody's problem past the edge of the map.
+    const promotedPlotIds = new Set(
+      (this.sp.gameStateManager.cityDistrictData?.districts || [])
+        .filter(d => d.promotedFromPlotId != null)
+        .map(d => d.promotedFromPlotId)
+    )
+    this._promotedPlotBoundaryEdgeKeys = new Set()
     for (const q of wt.terrainSurfaces) {
+      if (promotedPlotIds.has(q.sourcePlotId)) {
+        const ids = q.pointIds || [], n = ids.length
+        for (let i = 0; i < n; i++) this._promotedPlotBoundaryEdgeKeys.add(edgeKey(ids[i], ids[(i + 1) % n]))
+        continue
+      }
       surfaces.push({
         id: `${q.hidden ? 'hts' : 'ts'}:${q.id}`,
         kind: 'terrain-surface',
@@ -1874,7 +1910,13 @@ export default class GroundplaneAudit {
     // every terrain-topology change (Cliff/River/Berm splits, District→Street→Block→
     // Plot generation) re-audits through this same method, so it's the single place
     // that needs to thread the ring through.
-    const snapshot = { points: gp.points.toJSON(), surfaces: gp.surfaces || [], terrain: gp.terrain || {}, outerRingEdgeKeys: gp.outerRingEdgeKeys || null }
+    // Merged with _promotedPlotBoundaryEdgeKeys (see _syncGroundplaneSurfaces's own doc
+    // comment) — NOT written back into gp.outerRingEdgeKeys itself, since that field is
+    // persisted to the save and means specifically "the world's outer rim". This merge
+    // is local to this one audit call; a promoted plot's boundary is recomputed fresh
+    // from the CURRENT district list every sync, same as everything else here.
+    const exemptEdgeKeys = new Set([...(gp.outerRingEdgeKeys || []), ...(this._promotedPlotBoundaryEdgeKeys || [])])
+    const snapshot = { points: gp.points.toJSON(), surfaces: gp.surfaces || [], terrain: gp.terrain || {}, outerRingEdgeKeys: exemptEdgeKeys }
     const { counts, findings } = auditGroundplane(snapshot)
     this.sp.gameStateManager.lastAuditCounts = counts
     this.sp.gameStateManager.lastAuditFindings = findings

@@ -34,7 +34,7 @@
 // which land-plot edges border a Cliff-type riverCliffFace (treating each face as one
 // more "plot" purely for TransitionBand's adjacency scan — never mutated), and pull those
 // land plots' boundary corners further out to a genuinely more natural height (see
-// zForVertex below) — deliberately NOT the flat "keep the same z" Shore uses, since a
+// naturalZForVertex below) — deliberately NOT the flat "keep the same z" Shore uses, since a
 // Cliff-edge band's whole purpose is a smooth ramp DOWN/UP from the cliff, whereas Shore's
 // water side has no "more natural" height to ramp toward (it's already flat everywhere).
 import { CLIFF_EDGE_WIDTH } from '../../../worldConfig/terrainConfig.js'
@@ -59,47 +59,28 @@ export function buildCliffEdgeBands(registry, terrainPlots, riverCliffFaces) {
   )
   if (!segments.length) return []
 
-  // Per-vertex "natural" (non-cliff-boundary) height: for each land plot touching the
-  // cliff, average the z of its OWN corners that are NOT themselves on a cliff boundary
-  // (falling back to the plot's whole-corner average if every corner happens to be
-  // boundary — a tiny sliver plot at a confluence). Averaged again across every segment
-  // incident on a given vertex, same "blend the neighbours" spirit
-  // buildTransitionBand's own offset-normal averaging already uses, for a vertex shared
-  // by two different cliff-adjacent plots.
-  const boundaryVertexIdsByPlot = new Map()
-  for (const seg of segments) {
-    const set = boundaryVertexIdsByPlot.get(seg.landPlot) || new Set()
-    set.add(seg.a); set.add(seg.b)
-    boundaryVertexIdsByPlot.set(seg.landPlot, set)
+  // Per-vertex "natural" (no-cliff-ever-happened) height: read straight off the boundary
+  // vertex's own root 'terrain' point's `p.baseZ` (see TerrainZHeight.js/ADR-0024 — the
+  // pre-relief snapshot every region z-effect writes). This used to be derived by
+  // averaging the bordering land plot's OTHER (non-boundary) corners instead — wrong
+  // whenever that same plot ALSO touched a much taller unrelated feature elsewhere on its
+  // own cell (e.g. a Mountains peak corner), which dragged the "natural" target for the
+  // inland band vertex up toward that outlier instead of the terrain actually beside the
+  // cliff — confirmed live 2026-08-01: the inland vertex barely dropped below the cliff
+  // lip at all, reading as a rise/plateau right where the band should have been ramping
+  // down. `baseZ` has no such pollution risk — it's this exact point's own pre-cliff
+  // height, not an average of its neighbours.
+  const naturalZForVertex = (vertexId) => {
+    const p = registry.get(vertexId)
+    if (!p) return null
+    const base = p.baseId != null ? registry.get(p.baseId) : p
+    return base?.baseZ ?? null
   }
-  const naturalZSumByVertex = new Map()   // vertexId -> { sum, count }
-  const naturalZByPlot = new Map()
-  for (const [plot, boundarySet] of boundaryVertexIdsByPlot) {
-    const ids = plot.pointIds
-    const pts = registry.resolve(ids)
-    let sum = 0, count = 0, allSum = 0
-    for (let i = 0; i < pts.length; i++) {
-      const z = pts[i].z ?? 0
-      allSum += z
-      if (!boundarySet.has(ids[i])) { sum += z; count++ }
-    }
-    naturalZByPlot.set(plot, count ? sum / count : (pts.length ? allSum / pts.length : 0))
-  }
-  for (const seg of segments) {
-    const naturalZ = naturalZByPlot.get(seg.landPlot) ?? 0
-    for (const v of [seg.a, seg.b]) {
-      const cur = naturalZSumByVertex.get(v) || { sum: 0, count: 0 }
-      cur.sum += naturalZ; cur.count++
-      naturalZSumByVertex.set(v, cur)
-    }
-  }
-  const naturalZByVertex = new Map()
-  for (const [v, { sum, count }] of naturalZSumByVertex) naturalZByVertex.set(v, sum / count)
 
   return buildTransitionBand(registry, terrainPlots, segments, {
     splitKind: 'cliff-edge-split',
     width: CLIFF_EDGE_WIDTH,
-    zForInland: (vertexId, baseZ) => naturalZByVertex.get(vertexId) ?? baseZ,
+    zForInland: (vertexId, baseZ) => naturalZForVertex(vertexId) ?? baseZ,
     // No isImmutable needed — unlike Shore's water plot, the cliff face itself is a
     // riverCliffFace, never a terrainPlot, so it's never among the plots this pulls.
     makeBand: (seg, pointIds, polygon, index) => ({

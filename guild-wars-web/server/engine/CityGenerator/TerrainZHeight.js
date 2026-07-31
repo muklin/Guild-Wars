@@ -437,6 +437,16 @@ function dist(a, b) {
 // Point/Edge graph for propagation, and (Sea/Lake/Ice Sheet) to find the region's full
 // domain. `allRegions`: worldTerrainData.regions — every kept region's own seedPoint.z,
 // needed only for Ice Sheet's map-average calculation (see below).
+// `p.baseZ` (ADR-0024): every z write in this function and propagateFromRegion below ALSO
+// snapshots `p.baseZ = p.z` — the canonical "terrain before any relief" height. Mountains/
+// Hills' own cone+erosion regeneration (TerrainPeak.regenerateHighGroundCluster,
+// TerrainErosion.applyTerrainErosion) reads FROM `p.baseZ`, never `p.z` directly, and always
+// WRITES (never `+=`) — so re-running a High-ground cluster's regeneration any number of
+// times from the same delta/taper state always produces the same result, instead of
+// compounding a cone/erosion pass on top of its own prior output. `baseZ` is never written
+// by cone/erosion, only read; it stays whatever the delta/taper system (this function) most
+// recently set it to, same "adjust, don't freeze" semantics `p.z` itself already has for
+// every non-locked type.
 const _zEffectCallCount = new Map()   // TEMP diagnostic — remove once root cause confirmed
 export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlots, allRegions = []) {
   const rule = TERRAIN_TYPES[region.assignedType]
@@ -481,19 +491,24 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     region.seedPoint.z = target
     region.seedPoint.zLocked = true
     for (const p of domainPoints) {
-      p.z = target; p.zLocked = true
+      p.z = target; p.zLocked = true; p.baseZ = target
     }
     if (!rule.hopCount) return
     propagateFromRegion(registry, region, cornerIds, terrainPlots, rule.hopCount, rule.curve, rule.direction, domainIds)
     return
   }
 
-  // Ice Sheet (user-confirmed 2026-07-13, supersedes the flat delta/propagation rule):
-  // target = the average of every OTHER already-placed Ice Sheet region's own centre
-  // (terrain centre = seedPoint.z), if any exist yet; otherwise the current map-wide
-  // average of every region's centre, +3. Every domain point (whole region, not just
-  // corners — same reasoning as Hills/Mountains/Desert below) gets that target jittered
-  // +/-0.25, and — user-confirmed — permanently locked exactly like Sea/Lake: "Ice
+  // Ice Sheet (redesigned 2026-08-01, supersedes the 2026-07-13 map-average rule — a
+  // plateau raised above whatever terrain was actually there, not an absolute height tied
+  // to the whole map's average): target = this region's own boundary corners' CURRENT z
+  // (read BEFORE this block writes anything, same "read cornerIds first" pattern Lake
+  // uses just above) averaged, plus PLATEAU_RISE — UNLESS another Ice Sheet already
+  // exists, in which case target instead matches the average of every OTHER already-
+  // placed Ice Sheet region's own centre, so a connected ice cap stays one consistent
+  // height (there is never a Cliff between two Ice Sheets to explain a mismatch — see the
+  // isIceSheetVsIceSheet guard above). Every domain point (whole region, not just corners
+  // — same reasoning as Hills/Mountains/Desert below) gets that target jittered
+  // +/-JITTER, and — user-confirmed — permanently locked exactly like Sea/Lake: "Ice
   // sheets should also not be affected by adjacent changes."
   if (region.assignedType === 'Ice Sheet') {
     const others = (allRegions || []).filter(r => r.id !== region.id && r.assignedType === 'Ice Sheet' && r.seedPoint && isFinite(r.seedPoint.z))
@@ -501,17 +516,19 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     if (others.length) {
       target = others.reduce((s, r) => s + r.seedPoint.z, 0) / others.length
     } else {
-      const withCentres = (allRegions || []).filter(r => r.id !== region.id && r.seedPoint && isFinite(r.seedPoint.z))
-      const mapAvg = withCentres.length ? withCentres.reduce((s, r) => s + r.seedPoint.z, 0) / withCentres.length : 0
-      target = mapAvg + 1
+      const cornerZs = (cornerIds || []).map(id => registry.get(id)).filter(p => p && isFinite(p.z)).map(p => p.z)
+      const localBase = cornerZs.length ? cornerZs.reduce((s, z) => s + z, 0) / cornerZs.length : region.seedPoint.z
+      target = localBase + (rule.PLATEAU_RISE ?? 1)
     }
     region.seedPoint.z = target
     region.seedPoint.zLocked = true
+    const jitter = rule.JITTER ?? 0.25
     // Same shared-boundary-with-an-already-locked-neighbour exclusion as Sea/Lake above.
     const domainPoints = getRegionDomainPointIds(terrainPlots, region.id).map(id => registry.get(id)).filter(p => p && !p.zLocked)
     for (const p of domainPoints) {
-      p.z = target + (Math.random() * 2 - 1) * 0.25
+      p.z = target + (Math.random() * 2 - 1) * jitter
       p.zLocked = true
+      p.baseZ = p.z
     }
     return   // no propagation for Ice Sheet — unchanged from the prior rule
   }
@@ -544,12 +561,14 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     if (!region.seedPoint.zLocked) region.seedPoint.z = rule.amount
     for (const p of domainPoints) {
       p.z = taperedAmount(p)
+      p.baseZ = p.z
     }
-  } else if (rule.mode === 'delta' || rule.mode === 'deltaandextterrainplots') {
+  } else if (rule.mode === 'delta') {
     if (!region.seedPoint.zLocked) region.seedPoint.z += rule.amount
     for (const p of domainPoints) {
       p.z += taperedAmount(p)
       if (rule.floor != null) p.z = Math.max(rule.floor, p.z)
+      p.baseZ = p.z
     }
     if (rule.floor != null && !region.seedPoint.zLocked) region.seedPoint.z = Math.max(rule.floor, region.seedPoint.z)
   } else if (rule.mode === 'flattenThenDelta') {
@@ -561,6 +580,7 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
     if (!region.seedPoint.zLocked) region.seedPoint.z = z
     for (const p of domainPoints) {
       p.z = z
+      p.baseZ = z
     }
   }
 
@@ -629,6 +649,7 @@ export function propagateFromRegion(registry, region, cornerIds, terrainPlots, h
     if (direction === 'up' && newZ < p.z) continue    // never lower a point for a "raise" type
     if (direction === 'down' && newZ > p.z) continue  // never raise a point for a "lower" type
     p.z = newZ
+    p.baseZ = newZ
   }
 }
 

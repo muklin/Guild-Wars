@@ -9,7 +9,7 @@ I want to replace all dimensions, so the world dimension are in metres.
 
 Begin a search through the codebase for all distance metrics and multiply by a scale suct that street spacing of 1.0 -> 3 metres, so multiply all distances by 3.  
 
-
+![1785497980750](image/TODO/1785497980750.png)
 
 # Features:
 ## General 
@@ -87,6 +87,27 @@ Archways, Portals or passages that pass under a building to the Courtyard beyond
 - Better and more varied churches
 - Better Industrial buildings 
 - Warehouses.
+
+
+
+Common miscellaneous items found on medieval city streets include wooden market stalls, public water troughs, and stray livestock. These everyday objects added clutter, utility, and life to crowded urban thoroughfares.
+
+Market and Trade DebrisWooden Carts and Benches: 
+Improvised or wheeled stalls used by merchants to display cloth, pottery, and produce.
+Baskets and Crates: Wicker baskets filled with root vegetables, dried goods, or salt, stacked near shop fronts.
+Hanging Trade Signs: Iron brackets and painted wooden symbols (like a boot, key, or pretzel) swinging above doorways to show shop types.
+
+Sanitation and Infrastructure
+Gutter Channels: Open central stone gutters running down the middle of the street for runoff and waste.
+Public Water Troughs: Stone basins or wooden troughs fed by springs or pipes for horses and public use.
+Dung Heaps and Refuse: Piles of straw, animal manure, and household garbage swept out into side alleys.
+
+Animals and Transport
+Tethering Posts: Iron rings or heavy wooden posts driven into walls for tying horses and mules.
+Stray Livestock: Free-roaming pigs, chickens, and geese foraging in the road.
+Stepping Stones: Large flat stones laid across muddy unpaved roads for pedestrian crossings.
+
+
 
 
 I am considering how best to create models that fit in well with the game look and feel.  But I do plan to explore adding a "customize building" toolset in the future, so that may be what we use to add castles too.  

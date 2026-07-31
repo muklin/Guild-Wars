@@ -197,3 +197,17 @@ _Avoid_: beach, coast, waterline
 **Cliff-edge**:
 The Transition band on each bank of a Cliff — pinned to the cliff top/bottom on its inner edge and the neighbouring terrain height on its outer edge. The steep Cliff face sits between the two banks' inner edges; the Cliff-edge bands are what let a Cliff read as sharp while the surrounding mesh stays smooth and manifold.
 _Avoid_: cliff apron, cliff skirt, ledge
+
+### Terrain relief (High-ground clusters, supersedes ADR-0023's one-time cone — redesign in progress 2026-07-30)
+
+**High-ground cluster**:
+A maximal connected group of Mountains and/or Hills regions (connected via shared Terrain Edges — Mountains and Hills freely connect to each other, not just their own type). The unit that Peaks and erosion are generated and Regenerated against — never a single region in isolation.
+_Avoid_: mountain range (implies Mountains-only), region group
+
+**Peak**:
+One summit within a High-ground cluster: a cosine-falloff cone raised from a found high point, sized (radius and height) proportional to its own *containing region's* own bounding radius — using that region's `CONE_RADIUS_FRACTION`/`CONE_HEIGHT_RATIO` (the only fields that still differ between Mountains and Hills; every `EROSION_*` field is one shared config across the whole cluster). A cluster holds however many Peaks its total area calls for, placed with a minimum separation to avoid two landing on top of each other. Where two Peaks' cones overlap anyway, the taller one wins at each point (a natural saddle between summits).
+_Avoid_: mound, cone (ambiguous with the raw math shape), summit
+
+**Regenerate** (High-ground cluster action):
+Recomputing every Peak (location and height) and the erosion pass for an entire High-ground cluster from its own current base terrain, from scratch — never additive on a cluster's own prior output (same idempotency discipline the erosion filter already had). Triggered only when a region's type-assignment changes the cluster's own membership (a region directly Applied as Mountains/Hills, or auto-revealed/absorbed as one) — never by an unrelated later edit (a Cliff carved through it, a neighbour's own Apply) once membership is stable.
+_Avoid_: recalculate, refresh, rebuild

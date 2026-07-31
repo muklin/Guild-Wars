@@ -178,6 +178,16 @@ export default class DistrictRenderer {
 
     for (const district of districts) {
       if (district.assignedType) continue   // assigned districts are covered by streets + plots; no polygon needed
+      // A City-Expansion-promoted district (promotedFromPlotId set) is never drawn here
+      // either way, typed or not — "only one subdivided groundplane" (confirmed live
+      // 2026-07-31): its footprint already has REAL terrain relief (the plot it was
+      // promoted from), which TerrainRenderer keeps showing right up until this district
+      // gets real replacement content (see WorldRenderer.syncPromotedPlots) — a flat,
+      // unsubdivided ear-clipped fill drawn on top of that was reading as the whole
+      // groundplane reverting to a coarse, unsubdivided mesh right where it was promoted.
+      // An ordinary (non-promoted) blank district never had real terrain underneath it in
+      // the first place, so it still needs this fallback fill.
+      if (district.promotedFromPlotId != null) continue
       const mesh = this.buildDistrictMesh(district)
       if (mesh) {
         this.scene.add(mesh)

@@ -872,45 +872,24 @@ export default class GroundRenderer {
 
     const plotBase = (districtId) => this.finishedGround ? GRASSY_BROWN : getColor(districtId)
 
-    const TERRAIN_FILL_COLORS = {
-      Plains: 0xb2de69, Desert: 0xedca72, Mountains: 0x8d8d8d,
-      Forest: 0x218c21, Lake:   0x1a5abf, Sea:       0x0e6e6c,
-      Hills:  0x699B4F, Swamp:  0x4a6b4a, 'Ice Sheet': 0xf4f8ff, unassigned: 0xb8a680,
-      // River/Cliff DCEL faces (see TerrainPlotConverter's riverCliffFaces param, plan
-      // "typed-giggling-giraffe" addendum) — same hex values as TerrainRenderer's
-      // TERRAIN_COLORS, so the fill doesn't change color across the Terrain Setup ->
-      // live gameplay rendering handoff. Cliff-Edge (CliffEdgeBands.js, threaded through
-      // TerrainPlotConverter 2026-07-26 to close the walk-mode gap those bands otherwise
-      // left) matches Cliff itself, same as TerrainRenderer's own TERRAIN_COLORS entry.
-      River: 0x1a5abf, Cliff: 0xaaaaaa, 'Cliff-Edge': 0xaaaaaa,
-    }
-
     for (const plot of plots) {
-      // ── Terrain plots: simple fill, no fences or buildings ──────────────────
+      // ── Terrain plots ("surrounding countryside") ───────────────────────────
+      // No fill mesh drawn here at all (confirmed live 2026-07-31, "there should only be
+      // one, subdivided ground plane"): this flat, single-colour-per-plot fill at a fixed
+      // GROUND_Y predates ADR-0022's subdivided/eroded terrain mesh, which already covers
+      // this exact footprint (continuously, with real relief) everywhere outside the city
+      // — drawing this on top of it was the "terrain reverts to a flat unsubdivided
+      // version" bug the moment District mode rendered ANY terrain-type plot (every one of
+      // them, since _rawSurroundingTerrainPlots has no reason to exclude hidden ones
+      // either — the real terrain mesh already respects `.hidden` on its own). Still
+      // tracked in `_terrainPlots` (no mesh) purely for hit-testing/highlight-outline
+      // purposes (getTerrainPlotAtWorldPos/highlightTerrainPlot both work off
+      // `plot.blockCorners` polygon math, not a mesh) — TerrainRenderer's own
+      // getTerrainPlotAtWorldPos already covers the same query independently; this stays
+      // only so City-mode's OWN hover/tooltip code keeps working unchanged.
       if (plot.type === 'terrain') {
-        // If we preserved existing terrain meshes, skip re-creating them.
         if (preserveTerrainPlots) continue
-        // A Cliff face (or its own bordering Cliff-Edge ramp band) next to Ice Sheet is
-        // always white (user-confirmed 2026-07-26: "never grey or sand yellow") —
-        // snow-capped, not bare rock. iceSheetAdjacent is computed once, server-side
-        // (GroundplaneAudit._buildRiverCliffFacesDirect / CliffEdgeBands.js, threaded
-        // through TerrainPlotConverter) since this renderer has no edges/regions data of
-        // its own to re-derive it from.
-        const baseColor = (plot.assignedType === 'Cliff' || plot.assignedType === 'Cliff-Edge') && plot.iceSheetAdjacent
-          ? 0xffffff
-          : TERRAIN_FILL_COLORS[plot.assignedType] ?? TERRAIN_FILL_COLORS.unassigned
-        const seed = this._polySeed(plot.blockCorners)
-        const color = this._jitterColor(baseColor, seed)
-        const mesh = this._makeFill(plot.blockCorners, color, GROUND_Y, { roughness: 0.6, emissiveIntensity: 0.2 })
-        if (!mesh) continue
-        if (this.showDebug) {
-          this.originalMaterials.set(mesh, mesh.material)
-          mesh.material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.7, 0.6), side: THREE.DoubleSide })
-        }
-        this.scene.add(mesh)
-        this.plotMeshes.push(mesh)
         this._terrainPlots.push(plot)
-        if (plot.id) this._terrainPlotMeshMap.set(plot.id, mesh)
         continue
       }
 

@@ -12,6 +12,7 @@
 // a FRESH 'terrain-subdiv' Point, so the coarse layer stays pristine while the subdivided
 // mesh is a parallel, authoritative set of Surfaces. 'terrain-subdiv' is ephemeral, cleared
 // and rebuilt on every subdivide pass (same discipline as 'terrain-split').
+import { TERRAIN_SUBDIVISION_PASSES } from '../../../worldConfig/terrainConfig.js'
 
 const edgeKey = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`)
 
@@ -245,22 +246,58 @@ export function catmullClarkFresh(registry, faces, kind) {
 // face-point is its own area-weighted centroid (see catmullClarkFresh), which for a
 // concave polygon can fall OUTSIDE it — pushing that face's corner quads out past the
 // plot's true boundary into a neighbour (confirmed live 2026-07-26 as AREA_OVERLAP,
-// entirely at concave outer-ring cells). Handled with a narrow, plot-scoped fallback: ONLY
-// when a plot's own centroid tests outside its polygon, ear-clip triangulate just that one
-// plot instead (occasional slivers confined to that rare case, not the general rule).
+// entirely at concave outer-ring cells). Handled with a narrow, per-face fallback: ONLY
+// when a face's own centroid tests outside its polygon, ear-clip triangulate just that one
+// face instead (occasional slivers confined to that rare case, not the general rule).
+//
+// This guard must run on EVERY pass, not just the first (confirmed live 2026-07-29, root-
+// caused after a screenshot showed 559 AREA_OVERLAP findings covering most of the map): a
+// real Catmull-Clark fan-quad ([movedVertex, edgePt, facePt, edgePt]) is not guaranteed
+// convex — an earlier version of this function only guarded the initial per-plot n-gon
+// faces and fed every later pass's own output quads back in unprotected, so a concave
+// quad produced by pass 1 (common at obtuse/high-valence Voronoi corners) folded its own
+// pass-2 subdivision outside itself exactly the same way an unguarded concave PLOT once
+// did. `buildProtectedFaces` below is applied uniformly to the plot n-gons AND to every
+// later pass's quad list, so no face list ever skips the check.
 //
 // Clears and re-mints the ephemeral 'terrain-subdiv' point layer every call (full
 // re-subdivide, ADR-0022 §10). Returns the quad Surface array
 // ({ id, parentRegionId, assignedType, hidden, sourcePlotId, pointIds, polygon }) — caller
 // stores it as worldTerrainData.terrainSurfaces.
+//
+// Runs TERRAIN_SUBDIVISION_PASSES total Catmull-Clark passes (worldConfig/terrainConfig.js
+// — ADR-0022 shipped hardcoded at 1; ADR-0023's erosion filter needs more vertex density
+// to read as more than noise). Every pass after the first just feeds the PRIOR pass's own
+// output quads back in as plain 4-gon faces (catmullClarkFresh already carries `meta`
+// through on its own output, so no re-tagging needed) — this is the exact technique
+// validated in the synthetic-mesh prototype this was ported from, now with the same
+// per-face concave guard applied at every step instead of only the first.
+function buildProtectedFaces(registry, items) {
+  const faces = []
+  for (const item of items) {
+    const ids = item.vertexIds
+    if (ids.length <= 3) { faces.push({ vertexIds: ids, meta: item.meta }); continue }
+    const pts = registry.resolve(ids)
+    // resolve() silently drops any missing id — a length mismatch means we can't safely
+    // test the centroid against the polygon. Treat as one n-gon face regardless (rare — a
+    // genuinely missing registry point is already a data problem elsewhere).
+    const centroidOutside = pts.length === ids.length && !pointInPolygon(polygonCentroid(pts), pts)
+    if (!centroidOutside) { faces.push({ vertexIds: ids, meta: item.meta }); continue }
+    const tris = triangulate(pts)
+    if (!tris.length) { faces.push({ vertexIds: ids, meta: item.meta }); continue }
+    for (const [a, b, c] of tris) faces.push({ vertexIds: [ids[a], ids[b], ids[c]], meta: item.meta })
+  }
+  return faces
+}
+
 export function subdivideTerrain(registry, terrainPlots, regionsById = null) {
   registry.clearKind('terrain-subdiv')
   const plots = (terrainPlots || []).filter(p => p.pointIds && p.pointIds.length >= 3)
   if (!plots.length) return []
 
-  const faces = []
-  for (const p of plots) {
-    const meta = {
+  const rawFaces = plots.map(p => ({
+    vertexIds: p.pointIds,
+    meta: {
       parentRegionId: p.parentRegionId,
       assignedType: p.assignedType ?? regionsById?.get(p.parentRegionId)?.assignedType ?? null,
       hidden: !!p.hidden,
@@ -271,21 +308,14 @@ export function subdivideTerrain(registry, terrainPlots, regionsById = null) {
       // client can colour a Cliff-Edge band's own ramp quads white right alongside the
       // Ice-Sheet cliff face they border, not just the face itself.
       iceSheetAdjacent: p.iceSheetAdjacent,
-    }
-    const ids = p.pointIds
-    if (ids.length <= 3) { faces.push({ vertexIds: ids, meta }); continue }
-    const pts = registry.resolve(ids)
-    // resolve() silently drops any missing id — a length mismatch means we can't safely
-    // test the centroid against the polygon. Treat as one n-gon face regardless (rare — a
-    // genuinely missing registry point is already a data problem elsewhere).
-    const centroidOutside = pts.length === ids.length && !pointInPolygon(polygonCentroid(pts), pts)
-    if (!centroidOutside) { faces.push({ vertexIds: ids, meta }); continue }
-    const tris = triangulate(pts)
-    if (!tris.length) { faces.push({ vertexIds: ids, meta }); continue }
-    for (const [a, b, c] of tris) faces.push({ vertexIds: [ids[a], ids[b], ids[c]], meta })
-  }
+    },
+  }))
 
-  const quads = catmullClarkFresh(registry, faces, 'terrain-subdiv')
+  let quads = catmullClarkFresh(registry, buildProtectedFaces(registry, rawFaces), 'terrain-subdiv')
+  for (let pass = 1; pass < TERRAIN_SUBDIVISION_PASSES; pass++) {
+    const nextItems = quads.map(q => ({ vertexIds: q.pointIds, meta: q.meta }))
+    quads = catmullClarkFresh(registry, buildProtectedFaces(registry, nextItems), 'terrain-subdiv')
+  }
   let counter = 0
   return quads.map(q => ({
     id: `ts:${counter++}`,

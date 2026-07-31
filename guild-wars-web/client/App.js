@@ -552,8 +552,11 @@ export default class App {
         if (this.renderer.districtRenderer) {
           this.renderer.districtRenderer.cityDistrictData = response.cityDistrictData
         }
-        // Hide/un-hover/un-hit-test the source terrain plot immediately — it's now
-        // part of a city district, even before the district itself renders.
+        // Un-hover/un-hit-test the source terrain plot immediately — it's now part of a
+        // city district, even before the district itself renders. Its own terrain MESH
+        // stays visible though (not hidden here) — a promoted-but-untyped district has no
+        // real content of its own yet, so the real terrain relief underneath is what's
+        // meant to keep showing ("only one subdivided groundplane") until it's typed.
         this.renderer.syncPromotedPlots(response.cityDistrictData)
         const newId = response.newDistrictId
         if (newId !== undefined) {
@@ -1590,11 +1593,16 @@ export default class App {
       this.renderer.setCityEdgesHidden(guildPhase)
       this._finalizeTerrainDisplay()
       this.renderer.setCityDistrictData(cityData, pointsById)
-      // Re-hide any already-promoted (City Expansion) terrain plots' source meshes —
-      // setTerrainData above just rebuilt every terrain plot mesh fresh (all visible),
-      // and _renderCityGeometry below (which normally does this) only runs when
-      // cityData.streetGraph exists, which a promoted-but-not-yet-typed district won't
-      // have yet. Without this, such a plot's terrain mesh reappears on every reload/sync.
+      // Re-apply promoted-plot hit-test exclusion AND re-hide any promoted-and-TYPED
+      // district's own terrain mesh — setTerrainData above just rebuilt every terrain
+      // plot mesh fresh (all visible, all hit-testable), and _renderCityGeometry below
+      // (which normally does this) only runs when cityData.streetGraph exists, which a
+      // promoted-but-not-yet-typed district won't have. A promoted-but-untyped one is
+      // meant to keep showing its own real terrain mesh here ("only one subdivided
+      // groundplane" — see WorldRenderer.syncPromotedPlots's own doc comment for why);
+      // this call is still needed for the OTHER half (hit-testing, and any ALREADY-typed
+      // promoted district whose mesh must stay hidden behind its real street/block/plot
+      // content).
       this.renderer.syncPromotedPlots(cityData)
       this.renderer.setMode('city')
       this.renderer.setFinishedGround(guildPhase)

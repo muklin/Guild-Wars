@@ -68,28 +68,47 @@ export default class TerrainRenderer {
     this.selectedTerrainPlotId = null
     this._debugPreHoverColors = new Map()
 
-    // Plots currently the source of a promoted (City Expansion) city district — hidden
-    // and excluded from hit-testing while promoted; reversible if the promotion is undone.
+    // Plots currently the source of a promoted (City Expansion) city district — excluded
+    // from getTerrainPlotAtWorldPos hit-testing the moment they're promoted (it's already
+    // conceptually a district, never terrain again, even before it has a type); reversible
+    // if the promotion is undone. Deliberately NOT the same set that hides the mesh — see
+    // _hiddenTerrainPlotIds below.
     this.promotedPlotIds = new Set()
+    // Plots whose terrain MESH should be hidden — "only one subdivided groundplane"
+    // (confirmed live 2026-07-31): a promoted-but-not-yet-typed district has no real
+    // content of its own yet (generateForLocked only generates streets/blocks/plots for
+    // districts with an assignedType), so its own real subdivided/eroded terrain mesh
+    // should keep showing right up until it actually gets replaced by real city content —
+    // NOT hidden immediately on promotion the way hit-testing is. See
+    // WorldRenderer.syncPromotedPlots for the two different filters that feed these two
+    // sets.
+    this._hiddenTerrainPlotIds = new Set()
   }
 
-  // Hide/show terrain plot meshes and keep them out of getTerrainPlotAtWorldPos hit-testing
-  // while they're the source of a promoted city district. Reversible: ids removed from the
-  // set (promotion abandoned/reverted) become visible and clickable again.
+  // Excludes ids from getTerrainPlotAtWorldPos hit-testing only — does NOT touch mesh
+  // visibility (see setHiddenTerrainPlotIds for that).
   setPromotedPlotIds(ids) {
-    for (const id of this.promotedPlotIds) {
+    this.promotedPlotIds = ids
+  }
+
+  // Hide/show terrain plot meshes — a promoted district only actually needs its terrain
+  // mesh hidden once it has real replacement content (streets/blocks/plots), not the
+  // moment it's merely promoted. Reversible: ids removed from the set become visible again
+  // (e.g. a district reverted back to blank, or its promotion abandoned).
+  setHiddenTerrainPlotIds(ids) {
+    for (const id of this._hiddenTerrainPlotIds) {
       if (!ids.has(id)) {
         const mesh = this.terrainPlotMeshes.get(id)
         if (mesh) mesh.visible = true
       }
     }
     for (const id of ids) {
-      if (!this.promotedPlotIds.has(id)) {
+      if (!this._hiddenTerrainPlotIds.has(id)) {
         const mesh = this.terrainPlotMeshes.get(id)
         if (mesh) mesh.visible = false
       }
     }
-    this.promotedPlotIds = ids
+    this._hiddenTerrainPlotIds = ids
   }
 
   setDebugVisible(show) {
@@ -168,8 +187,28 @@ export default class TerrainRenderer {
   }
 
   _jitteredColorFor(assignedType, polygon) {
-    const base = terrainColor(assignedType) ?? terrainColor('unassigned')
+    const base = this._highGroundElevationColor(assignedType, polygon) ?? terrainColor(assignedType) ?? terrainColor('unassigned')
     return this._jitterColor(base, this._polySeed(polygon))
+  }
+
+  // High-ground (Mountains/Hills) plots recolour by their own average elevation instead of
+  // a flat per-type colour (confirmed live 2026-07-30) — ADR-0024's Peaks vary a single
+  // region's own height a lot (a small foothilly Mountains region and a tall Hills summit
+  // are both plausible now), so a flat grey-for-Mountains/green-for-Hills no longer reads
+  // right regardless of how tall any given plot actually is. Bands are absolute world-z,
+  // not relative to the region: 0-1 null (no change — falls back to the plot's own type
+  // colour, same as every other terrain type); 1-2 Hills' own colour ("foothills"); 2-3
+  // Mountains' own colour; 3+ Ice Sheet's own colour ("snow") — applies regardless of which
+  // of the two types the plot's own region is actually assigned; elevation decides which of
+  // the three shows, not the type label. Null for every other type (unaffected).
+  _highGroundElevationColor(assignedType, polygon) {
+    if (assignedType !== 'Mountains' && assignedType !== 'Hills') return null
+    if (!polygon?.length) return null
+    const avgZ = polygon.reduce((s, v) => s + (v.z ?? 0), 0) / polygon.length
+    if (avgZ < 1) return null
+    if (avgZ < 2) return terrainColor('Hills')
+    if (avgZ < 3) return terrainColor('Mountains')
+    return terrainColor('Ice Sheet')
   }
 
   _restoreTerrainPlotColor(cellId) {
@@ -427,8 +466,8 @@ export default class TerrainRenderer {
       }
       built++
     }
-    // Re-apply promoted-plot suppression to the freshly rebuilt meshes.
-    for (const id of this.promotedPlotIds) {
+    // Re-apply hidden-terrain-plot suppression to the freshly rebuilt meshes.
+    for (const id of this._hiddenTerrainPlotIds) {
       const mesh = this.terrainPlotMeshes.get(id)
       if (mesh) mesh.visible = false
     }
@@ -493,8 +532,8 @@ export default class TerrainRenderer {
         }
       }
       console.log(`Rendered ${count}/${terrainPlots.length} terrain plots across ${this.regionTerrainPlots.size} merged regions`)
-      // Re-apply promoted-plot suppression to the freshly rebuilt meshes.
-      for (const id of this.promotedPlotIds) {
+      // Re-apply hidden-terrain-plot suppression to the freshly rebuilt meshes.
+      for (const id of this._hiddenTerrainPlotIds) {
         const mesh = this.terrainPlotMeshes.get(id)
         if (mesh) mesh.visible = false
       }
@@ -1318,23 +1357,6 @@ export default class TerrainRenderer {
 
   // Remove all non-city terrain plot meshes — called when ground terrain plots take over
   // rendering of the terrain outside the city with gutter-aligned boundaries.
-  deleteNonCityTerrainPlots() {
-    const cityRegion = this.terrainData?.regions?.find(r => r.assignedType === 'City')
-    const cityRegionId = cityRegion?.id ?? -1
-    for (const [regionId, cellIds] of this.regionTerrainPlots) {
-      if (regionId === cityRegionId) continue
-      for (const cellId of cellIds) {
-        const mesh = this.terrainPlotMeshes.get(cellId)
-        if (mesh) { disposeOne(this.scene, mesh); this.terrainPlotMeshes.delete(cellId) }
-      }
-      this.regionTerrainPlots.delete(regionId)
-    }
-    // GroundRenderer takes over river/cliff face rendering too, from this point on (see
-    // TerrainPlotConverter's riverCliffFaces param) — retire these meshes the same way
-    // terrain-plot fills above are retired, or the two would double-render.
-    if (this.riverCliffFaceMeshes) disposeAll(this.scene, this.riverCliffFaceMeshes)
-  }
-
   // ── Hit testing ─────────────────────────────────────────────────────────────
 
   getRegionAtWorldPos(worldX, worldY) {

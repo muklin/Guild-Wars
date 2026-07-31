@@ -47,44 +47,48 @@ export const TERRAIN_TYPES = {
   // `!rule?.mode` guard's actual signal); hopCount/curve/direction still govern how the
   // lake's (now corner-derived) height propagates into the surrounding terrain.
   Lake:       { mode: 'delta', amount: -0.33, cornerAmount: -0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0x1a5abf },
-  // ── 'deltaandextterrainplots' mode (re-added 2026-07-26/generalized 2026-07-27,
-  // TerrainExtrusion.js — Hills' own extrude/inset/wall version "got lost somewhere" when
-  // ADR-0022 retired it in favour of a plain rolling height field; a rolling field alone
-  // never actually reads as "a hill"/"a mountain" in play). `amount`/`cornerAmount`/
-  // `hopCount`/`curve`/`direction` still give the region its gentle rolling-field slope
-  // exactly like plain `'delta'` mode does (TerrainZHeight.applyTerrainTypeZEffect
-  // matches both modes identically there) — the per-PLOT inset+extrude below sits on top
-  // of that, same relationship the original (pre-ADR-0022) version had. Any type using
-  // this mode needs its own TOP_INSET_RANGE/EXTRUDE_HEIGHT_RATIO (below); a type on plain
-  // `'delta'` mode never reads them.
+  // ── Peak cone + erosion (ADR-0024, supersedes ADR-0023's one-time/per-region/single-peak
+  // version): a Hills/Mountains region still mints no new topology — `mode` stays plain
+  // `'delta'` (identical dispatch to Lake/Desert) — but the peak/erosion passes themselves
+  // are now fully REGENERATABLE and scoped to the region's own High-ground cluster (a
+  // maximal connected group of Mountains+Hills regions — the two types freely connect to
+  // each other), not the single region in isolation. See TerrainPeak.js
+  // (regenerateHighGroundCluster) and TerrainErosion.js (applyTerrainErosion, now grouped
+  // by cluster) for the algorithms; docs/adr/0024 for the full design/why.
   //
-  // TOP_INSET_RANGE: each plot's own top is pulled toward its own centroid by a randomly-
-  // chosen fraction in this [min, max] range (a different draw per plot, seeded off its
-  // centroid — organic per-plot variety, same "individual faces" look the original Hills-
-  // only extrude had) before terrain-wide subdivision (subsurf) rounds the resulting mesa/
-  // plateau shape off. 1.0 would mean no inset at all (the top stays the plot's full
-  // original footprint); smaller values leave more room for the sloped skirt around each
-  // plot's edge — Mountains' own narrower range keeps more of its footprint as a steep
-  // peak than Hills' gentler, more-inset mound.
-  //
-  // EXTRUDE_HEIGHT_RATIO: NOT a fixed world-unit constant (the original 2026-07-20
-  // Hills-only version's HILLS_EXTRUDE_HEIGHT was) — always scaled proportional to the
-  // plot's own size (user-confirmed 2026-07-26), specifically height = this ratio ×
-  // sqrt(plot footprint area), so a small Voronoi plot gets a proportionally small bump
-  // and a large one a proportionally tall one, instead of every plot in a region popping
-  // up by the same absolute amount regardless of how big it is.
+  // CONE_RADIUS_FRACTION / CONE_HEIGHT_RATIO are the ONLY fields left per-type — every
+  // `EROSION_*` field moved to the single shared HIGH_GROUND_EROSION constant below
+  // (confirmed live 2026-07-30: "the difference between Hills and Mountains is the height
+  // of the cones, and then the colour of polygons after" — nothing about the erosion math
+  // itself should differ). Both are a fraction/ratio of the region's own bounding radius
+  // (seedPoint to its farthest domain point) — proportional, not a fixed world-unit
+  // distance, so a huge region and a tiny one each get a sensibly-scaled peak of their own
+  // when a Peak happens to land in them.
   //
   // Starting values, tune once seen live.
-  Hills:      { mode: 'deltaandextterrainplots', amount: 1, cornerAmount: 0.33, hopCount: 1, curve: 'linear', direction: 'up', TOP_INSET_RANGE: [0.3, 0.6], EXTRUDE_HEIGHT_RATIO: 0.15, color: 0x699B4F },
-  Mountains:  { mode: 'deltaandextterrainplots', amount: 2, cornerAmount: 0.66, hopCount: 3, curve: 'linear', direction: 'up', TOP_INSET_RANGE: [0.3, 0.3], EXTRUDE_HEIGHT_RATIO: 0.7, color: 0x8d8d8d },
-  Swamp:      { mode: 'flattenThenDelta', amount: -0.33, floor: 0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0x4a6b4a },
-  // Ice Sheet (superseded 2026-07-13 — see the dedicated branch in
-  // TerrainZHeight.applyTerrainTypeZEffect): map-average-of-centres+3 (or the average of
-  // already-placed Ice Sheets), +/-0.25 jitter, permanently locked. This entry only needs
-  // `mode` truthy so the `!rule?.mode` guard doesn't treat Ice Sheet as a no-op — none of
-  // the OTHER z-effect fields are read for it.
-  'Ice Sheet': { mode: 'delta', color: 0xf4f8ff },
-  Desert:     { mode: 'delta', amount: -0.33, floor: 0.33, cornerAmount: -0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0xedca72 },
+  Mountains: { mode: 'delta', amount: 0.5, cornerAmount: 0.1, hopCount: 3, curve: 'linear', direction: 'up',
+    CONE_RADIUS_FRACTION: 0.8,
+    CONE_HEIGHT_RATIO: 0.2,
+    color: 0x8d8d8d },
+  Hills: { mode: 'delta', amount: 0.2, cornerAmount: 0.1, hopCount: 2, curve: 'linear', direction: 'up',
+    CONE_RADIUS_FRACTION: 0.9,
+    CONE_HEIGHT_RATIO: 0.1,
+    color: 0x699B4F },
+
+  Swamp: { mode: 'flattenThenDelta', amount: -0.33, floor: 0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0x4a6b4a },
+  // Ice Sheet (superseded 2026-08-01 — see the dedicated branch in
+  // TerrainZHeight.applyTerrainTypeZEffect): a plateau raised PLATEAU_RISE above the
+  // EXISTING local terrain at placement (this region's own boundary corners, read before
+  // the effect writes anything — same "read cornerIds first" pattern Lake uses), or
+  // matched to the average of every OTHER already-placed Ice Sheet region's own centre
+  // when one already exists (keeps a connected ice cap at one consistent height instead
+  // of each region plateauing off its own local terrain — there is never a Cliff between
+  // two Ice Sheets to explain a mismatch). JITTER applied per-point, permanently locked.
+  // Every bordering edge is auto-assigned Cliff (TerrainSetup.js) and rendered white
+  // (`iceSheetAdjacent` — CliffEdgeBands.js/GroundplaneAudit.js), so the plateau reads as
+  // ringed by ice cliffs once there's an actual height difference to show.
+  'Ice Sheet': { mode: 'delta', PLATEAU_RISE: 1, JITTER: 0.25, color: 0xf4f8ff },
+  Desert: { mode: 'delta', amount: -0.33, floor: 0.33, cornerAmount: -0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0xedca72 },
   // Cliff (an Edge type, not a Region type — see CONTEXT_WorldTerrain.md), folded in here
   // 2026-07-27 (was the standalone CLIFF_Z_RULE export below, now dead). Outward
   // propagation shape once a Cliff's own high/low split has been computed — the
@@ -93,18 +97,50 @@ export const TERRAIN_TYPES = {
   // fixed magnitude here. hopCount 4→2 (user-confirmed 2026-07-26, "cliff depths should be
   // reduced, then they will be steeper"): the same height difference now spreads over half
   // the horizontal run, roughly doubling the visual slope.
-  Cliff:      { mode: 'delta', hopCount: 2, curve: 'linear', color: 0xaaaaaa },
+  Cliff: { mode: 'delta', hopCount: 2, curve: 'linear', color: 0xaaaaaa },
   // Colour-only from here down — no z-effect (`mode` intentionally absent).
-  Plains:      { color: 0xb2de69 },
-  Forest:      { color: 0x218c21 },
-  City:        { color: 0x808080 },
-  River:       { color: 0x1a5abf },   // same as Lake — a river is the same water, just flowing
+  Plains: { color: 0xb2de69 },
+  Forest: { color: 0x218c21 },
+  City: { color: 0x808080 },
+  River: { color: 0x1a5abf },   // same as Lake — a river is the same water, just flowing
   'Shore-Sea': { color: 0xedca72 },   // matches Desert — sand
   'Shore-Lake': { color: 0x8d8d8d },  // matches Mountains — stone
-  'Cliff-Edge': { color: 0xaaaaaa },  // matches Cliff itself — no separate design decision
-  // made yet for it, revisit once it's visible in-game.
-  unassigned:  { color: 0xb8a680 },
+  'Cliff-Edge': { color: 0xaaaaaa },  // matches Cliff itself — no separate design decision made yet for it, revisit once it's visible in-game.
+  unassigned: { color: 0xb8a680 },
 }
+
+// ── High-ground cluster erosion (ADR-0024) — ONE shared config for every Mountains/Hills
+// Peak's erosion pass, regardless of which type's region it happens to land in (confirmed
+// live 2026-07-30: only cone height/radius and colour differ between the two types now).
+// Same fields TERRAIN_TYPES.Mountains/.Hills used to carry individually — see
+// TerrainErosion.js's own doc comment for what each one does. EROSION_FREQ is a RAW value,
+// same semantics/range as the original validated prototype's "Gully frequency" slider
+// (~0.5-6) — NOT normalized by CONE_RADIUS_FRACTION or region size (confirmed live
+// 2026-07-29: it feeds erosionFilterAt's own strength/scale coupling, which is only
+// well-behaved in that same range the prototype validated against).
+export const HIGH_GROUND_EROSION = {
+  RADIUS_FRACTION: 1.0,
+  STRENGTH: 0.25,
+  GAIN: 0.15,
+  OCTAVES: 6,
+  FREQ: 0.5,
+  LACUNARITY: 1.3,
+  DETAIL: 3.5,
+  GULLY_WEIGHT: 0.8,
+  RIDGE_ROUNDING: 1.5,
+  CREASE_ROUNDING: 6.0,
+  NORMALIZATION: 0.26,
+}
+
+// ── High-ground cluster Peak placement (ADR-0024, TerrainPeak.regenerateHighGroundCluster)
+// PEAK_PLOTS_PER_PEAK: a cluster's own terrain-plot count / this = its Peak count (min 1) —
+// plot count as a cheap, always-available area proxy rather than computing true polygon
+// area. PEAK_MIN_SEPARATION_FRACTION: x the cluster's own overall bounding radius = the
+// minimum distance enforced between two chosen Peaks (overlapping cones are otherwise fine
+// — the taller one wins at each point — this only guards against two Peaks landing right on
+// top of each other). Starting values, tune once seen live.
+export const PEAK_PLOTS_PER_PEAK = 12
+export const PEAK_MIN_SEPARATION_FRACTION = 0.15
 
 // Region types whose z is permanently flat and locked (TerrainZHeight.applyTerrainTypeZEffect
 // sets zLocked=true on their whole domain) — a Cliff touching one of these must NEVER move
@@ -139,6 +175,19 @@ export const CLIFF_MIN_SEPARATION = 0.3
 // user-confirmed 2026-07-26: "if the height differences of the two ends are about the
 // same... it's ok to swap the cliffs halfway"). Starting value, tune once seen live.
 export const CLIFF_SPLIT_EQUAL_TOLERANCE = 0.85
+
+// ── Terrain subdivision (ADR-0022/ADR-0023, TerrainSubdivision.subdivideTerrain) ──────
+// How many Catmull-Clark passes the WHOLE map's terrain gets, every pullback pass (any
+// Cliff/River assignment, any region Apply, etc. — not just once). ADR-0022 shipped with
+// exactly 1, hardcoded (no loop at all); ADR-0023's erosion filter needs materially more
+// vertex density than that to read as more than noise (validated live against a
+// synthetic-mesh prototype: 1 pass looked like almost nothing, 3 passes was the first
+// level the gully/ridge detail actually showed) — but this now runs over the WHOLE map's
+// terrain plots at once, not the prototype's own 2-region/41-plot test, and quad count
+// roughly 4x's per extra pass, so 3 was judged too expensive to ship as the default
+// sight unseen. Starting at 2 (1 extra pass) as a more conservative middle ground —
+// tune once seen live, same as every other magnitude in this file.
+export const TERRAIN_SUBDIVISION_PASSES = 3
 
 // ── River/Cliff pullback width (GroundplaneAudit._applyRiverCliffPullbackToTerrainPlots) ──
 // Was 0.25 ("purely visual/feature-placement — no block-tracing slop to buffer against"),

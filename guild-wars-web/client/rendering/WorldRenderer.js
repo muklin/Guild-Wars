@@ -426,16 +426,30 @@ export default class WorldRenderer {
     this.districtRenderer.setFlattened(flat)
   }
 
-  // Hide/show terrain plot meshes and exclude/include them from hit-testing based on
-  // which plots are currently the source of a promoted (City Expansion) city district.
-  // Reversible — a plot dropped from cityData (promotion abandoned/reverted) is un-suppressed.
+  // Excludes/includes terrain plots from hit-testing, and hides/shows their own terrain
+  // mesh, based on which plots are the source of a promoted (City Expansion) city
+  // district — but on two DIFFERENT triggers now ("only one subdivided groundplane",
+  // confirmed live 2026-07-31): hit-testing excludes a plot the MOMENT it's promoted (it's
+  // conceptually a district from then on, never terrain again), but its own real terrain
+  // mesh keeps showing until the district actually HAS real replacement content
+  // (assignedType set — generateForLocked only generates streets/blocks/plots for typed
+  // districts) — otherwise a promoted-but-untyped district has nothing under it at all
+  // except DistrictRenderer's own flat, unsubdivided placeholder mesh (removed for exactly
+  // this reason — see DistrictRenderer.renderDistricts). Both reversible — a plot dropped
+  // from cityData, or a district reverted back to blank, is un-suppressed either way.
   syncPromotedPlots(cityData) {
     const promotedPlotIds = new Set(
       (cityData?.districts || [])
         .filter(d => d.promotedFromPlotId != null)
         .map(d => d.promotedFromPlotId)
     )
-    return this.terrainRenderer.setPromotedPlotIds(promotedPlotIds)
+    this.terrainRenderer.setPromotedPlotIds(promotedPlotIds)
+    const hiddenPlotIds = new Set(
+      (cityData?.districts || [])
+        .filter(d => d.promotedFromPlotId != null && d.assignedType != null)
+        .map(d => d.promotedFromPlotId)
+    )
+    return this.terrainRenderer.setHiddenTerrainPlotIds(hiddenPlotIds)
   }
 
 
@@ -733,12 +747,16 @@ export default class WorldRenderer {
 
   renderPlots(plots, districtData, opts) {
     if (!RENDER_PLOTS) return
-    // Terrain plots are now part of the unified plots array. When present, retire the
-    // coarse TerrainRenderer fills so fine city-boundary plots take over without double-render.
-    // Skip this when preserving terrain plots (they're already showing correctly).
-    if (!opts?.preserveTerrainPlots && (plots || []).some(p => p.type === 'terrain')) {
-      this.terrainRenderer.deleteNonCityTerrainPlots()
-    }
+    // Terrain plots ("surrounding countryside") are part of the unified plots array, but
+    // no longer retire TerrainRenderer's own meshes here (removed 2026-07-31, "there
+    // should only be one, subdivided ground plane"): this used to delete every non-City
+    // terrain-plot mesh the moment ANY type:'terrain' entry appeared, handing rendering
+    // off to GroundRenderer's flat, single-colour-per-plot fill — a pre-ADR-0022 design
+    // (GroundRenderer's fill predates the subdivided/eroded terrain mesh) that was
+    // deleting the real relief-carrying mesh and replacing it with a flat placeholder the
+    // moment District mode rendered any plots at all. GroundRenderer no longer draws that
+    // fill (see its own renderPlots doc comment) — the real terrain mesh now simply
+    // persists, visible, through District/City mode exactly as Terrain Setup left it.
     const result = this.groundRenderer.renderPlots(plots, districtData, opts)
     this._reapplyTopDownFlatten()
     return result

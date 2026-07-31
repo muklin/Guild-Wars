@@ -103,16 +103,35 @@ function pointInPolygon(pt, poly) {
   }
   return inside
 }
+// Plain vertex average — NOT the true area-weighted centroid (see TerrainSubdivision.js's
+// own polygonCentroid for that). Only used as a sample point for the containment check
+// below, where all that matters is "safely interior for a convex-ish quad", not precise
+// weighting.
+function roughCentroid(poly) {
+  let x = 0, y = 0
+  for (const p of poly) { x += p.x; y += p.y }
+  return { x: x / poly.length, y: y / poly.length }
+}
 // True if A and B overlap in area: any boundary edges transversally cross, or one
-// polygon's first vertex lies strictly inside the other (full/partial containment with
-// no crossing — e.g. one polygon entirely swallowed by another).
+// polygon's centroid lies strictly inside the other (full/partial containment with no
+// crossing — e.g. one polygon entirely swallowed by another).
+//
+// Deliberately NOT polyA[0]/polyB[0] (confirmed live 2026-07-29, root cause of 559 false
+// AREA_OVERLAP findings after enabling multi-pass subdivision): two quads that share
+// exactly one vertex — a completely ordinary "several quads meet at a point" mesh
+// junction, common in this fan-quad topology — reach this fallback with shared===1, and
+// testing a polygon's OWN first vertex for containment in its neighbour is a guaranteed
+// on-boundary degenerate case whenever that vertex IS the shared one, since ray-casting
+// point-in-polygon has no reliable answer for a point exactly equal to one of the
+// polygon's own vertices. A centroid is generically far from any boundary and doesn't
+// hit this case.
 function polygonsOverlap(polyA, polyB) {
   for (let i = 0; i < polyA.length; i++) {
     for (let j = 0; j < polyB.length; j++) {
       if (segmentsCross(polyA[i], polyA[(i + 1) % polyA.length], polyB[j], polyB[(j + 1) % polyB.length])) return true
     }
   }
-  return pointInPolygon(polyA[0], polyB) || pointInPolygon(polyB[0], polyA)
+  return pointInPolygon(roughCentroid(polyA), polyB) || pointInPolygon(roughCentroid(polyB), polyA)
 }
 
 // groundplane: {points, surfaces, terrain: {worldSize}, outerRingEdgeKeys}. The last
