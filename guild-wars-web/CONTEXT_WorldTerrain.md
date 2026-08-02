@@ -191,12 +191,16 @@ A strip of Surfaces that pins one edge to a feature's height and its other edge 
 _Avoid_: skirt, apron, blend band
 
 **Shore**:
-The Transition band ringing every Sea/Lake and both banks of every River — water-level on the water side, terrain height on the land side, carved from the land margin (the water keeps its placed extent). Rendered sand-yellow for Sea, stone-grey for Lake.
+The Transition band ringing every Sea/Lake — water-level on the water side, terrain height on the land side, carved from the land margin (the water keeps its placed extent). Rendered sand-yellow for Sea, stone-grey for Lake. Scoped to Sea/Lake only (2026-08-01) — a River's own banks are a River-Bank wall instead, not a Shore band; see that entry.
 _Avoid_: beach, coast, waterline
 
 **Cliff-edge**:
 The Transition band on each bank of a Cliff — pinned to the cliff top/bottom on its inner edge and the neighbouring terrain height on its outer edge. The steep Cliff face sits between the two banks' inner edges; the Cliff-edge bands are what let a Cliff read as sharp while the surrounding mesh stays smooth and manifold.
 _Avoid_: cliff apron, cliff skirt, ledge
+
+**River-Bank**:
+The vertical wall face on each bank of a River, resolving any height difference between the River's own flat bank z and the neighbouring land's natural height — unlike Shore/Cliff-edge, this is NOT a sloped Transition band: both edges of the wall sit at (nearly) the same x,y with different z, reading as a small grey cliff/retaining-wall rather than a graded ramp (player-confirmed 2026-08-01: this is the intended visual language for a river bank, not a mistake to avoid the way a hard-clipped Peak cone falloff would be). Absent wherever the river's bank z already matches the land.
+_Avoid_: river shore, bank ramp, water's edge
 
 ### Terrain relief (High-ground clusters, supersedes ADR-0023's one-time cone — redesign in progress 2026-07-30)
 

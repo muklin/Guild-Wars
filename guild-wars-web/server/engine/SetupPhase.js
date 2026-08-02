@@ -10,7 +10,7 @@ import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter
 import GroundPointRegistry from './CityGenerator/GroundPointRegistry.js'
 import DCEL, { dedupeConsecutiveIds } from './CityGenerator/DCEL.js'
 import { computeRiverCliffBoundaries } from './CityGenerator/riverCliffBoundary.js'
-import { applyTerrainTypeZEffect, getRegionCornerIds, computeCliffChainSides, propagateFromPoints, CLIFF_MIN_SEPARATION, lerp, applyRiverZGradient } from './CityGenerator/TerrainZHeight.js'
+import { applyTerrainTypeZEffect, getRegionCornerIds, computeCliffChainSides, propagateFromPoints, CLIFF_MIN_SEPARATION, lerp } from './CityGenerator/TerrainZHeight.js'
 import { applyCanalZDelta } from './CityGenerator/DistrictZHeight.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { pip, clipPolygonToSide, polygonCrossesSegment, computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'

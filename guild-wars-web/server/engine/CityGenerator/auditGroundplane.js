@@ -25,6 +25,11 @@ import { organicOuterRadius } from './TerrainVoronoiGenerator.js'
 
 const WORLD_EPS = 1e-6
 const NEAR_MISS_TOLERANCE = 0.05
+// A real terrain quad's 2D footprint is orders of magnitude above this even at the finest
+// subdivision level (~1e-3 or larger) — only a genuinely vertical/degenerate surface (a
+// River-Bank wall) or a truly degenerate sliver lands below it. See signedArea2D's own doc
+// comment for why such a surface is exempted from the AREA_OVERLAP test entirely.
+const AREA_OVERLAP_MIN_AREA = 1e-6
 // Tolerance INSIDE organicOuterRadius (the outer ring's seed-selection cutoff) to start
 // treating a point as "possibly boundary". Buffer-zone follow-up (2026-07-13, "sunburst"
 // screenshot): the outer ring's rim cells are now naturally bounded by a throwaway
@@ -74,6 +79,24 @@ function onWorldBoundary(p, worldSize, minBoundaryRadius) {
 function edgeKey(a, b) { return a < b ? `${a},${b}` : `${b},${a}` }
 function onOuterRing(originId, otherId, outerRingEdgeKeys) {
   return !!outerRingEdgeKeys && outerRingEdgeKeys.has(edgeKey(originId, otherId))
+}
+
+// Shoelace, absolute value — a Surface's own 2D (x,y) footprint area, ignoring z entirely.
+// Used only to exempt a genuinely VERTICAL surface (e.g. RiverBankWall.js's River-Bank walls —
+// two corners directly below/above the other two, same x,y, only z differs, by design — see
+// CONTEXT_WorldTerrain.md's own River-Bank entry) from the AREA_OVERLAP test below: a surface
+// with ~zero 2D footprint cannot have a real AREA overlap with anything by definition, so
+// flagging one is always a false positive of this specific (inherently 2D-projection) test,
+// not a real geometric defect — confirmed live: a real River-Bank wall's own two x,y-coincident
+// corner pairs collapsed its shoelace area to ~0, and it was still being flagged as overlapping
+// the very land/river surfaces it exists to sit flush against.
+function signedArea2D(poly) {
+  let a = 0
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length]
+    a += p.x * q.y - q.x * p.y
+  }
+  return Math.abs(a) / 2
 }
 
 function bbox(poly) {
@@ -205,6 +228,14 @@ export function auditGroundplane(groundplane) {
       if (otherId != null) boundaryEdgeKeys.add(edgeKey(originId, otherId))
       continue
     }
+    // A River-Bank wall (RiverBankWall.js) is a single-sided vertical quad, by design —
+    // its own "top" edge (between its two freshly-minted, kind='river-bank-wall' outer
+    // corners) and its edges at a river's true open end have no "other side" to pair
+    // against, the same structural reason the world's own outer rim is exempted above.
+    // Confirmed live: every one of these is at wall-quad indices [1,2] (the minted pair),
+    // never a real gap in the land/river/wall stitching itself.
+    const onWallOpenEdge = originPt?.kind === 'river-bank-wall' || otherPt?.kind === 'river-bank-wall'
+    if (onWallOpenEdge) continue
     const borderingSurfaceId = otherId != null ? directedPairToSurfaceId.get(`${otherId},${originId}`) : undefined
     const finding = {
       category: 'HOLE',
@@ -266,10 +297,26 @@ export function auditGroundplane(groundplane) {
   const polysById = surfaces.map(s => {
     const ids = dedupeConsecutiveIds(s.pointIds || [])
     const poly = ids.map(id => registry.get(id)).filter(Boolean)
-    return poly.length >= 3 ? { id: s.id, kind: s.kind, ids: new Set(ids), poly, box: bbox(poly) } : null
+    return poly.length >= 3 ? { id: s.id, kind: s.kind, ids: new Set(ids), poly, box: bbox(poly), area2D: signedArea2D(poly) } : null
   }).filter(Boolean)
 
-  const cellSize = 4
+  // Adaptive, not a fixed constant — this was `cellSize = 4` (tuned for an era before
+  // ADR-0022's terrain-wide subdivision, when Surfaces meant coarse terrain
+  // plots/districts/blocks: hundreds, not tens of thousands). Once subdivision made the
+  // mesh ~100x denser, a fixed cellSize=4 put ~500 tiny quads in every bucket — the
+  // bucket-pairwise loop below is O(bucket^2), so that alone cost 1.17s of a real save's
+  // 1.6s total audit time (confirmed via direct profiling: cellSize=4 -> 1175ms pair-loop
+  // vs cellSize=0.5 -> 215ms, identical overlap count both ways). Scaling to the current
+  // Surface set's own median width keeps bucket occupancy roughly constant whether this
+  // runs against a sparse coarse-plot-only audit (early Terrain Setup) or a fully-
+  // subdivided one (tens of thousands of fine quads) — a fixed constant is only ever
+  // correctly tuned for one of those.
+  const widths = polysById
+    .map(s => Math.max(s.box.maxX - s.box.minX, s.box.maxY - s.box.minY))
+    .filter(w => w > 0)
+    .sort((a, b) => a - b)
+  const medianWidth = widths.length ? widths[Math.floor(widths.length / 2)] : 4
+  const cellSize = Math.max(0.1, medianWidth * 2)
   const cellKey = (x, y) => `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`
   const grid = new Map()
   for (const s of polysById) {
@@ -288,6 +335,9 @@ export function auditGroundplane(groundplane) {
         const a = bucket[i], b = bucket[j]
         const pairKey = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`
         if (reportedPairs.has(pairKey)) continue
+        // A near-zero-2D-area surface (a vertical wall — see signedArea2D's own doc comment)
+        // structurally cannot have a real area overlap; skip rather than false-positive.
+        if (a.area2D < AREA_OVERLAP_MIN_AREA || b.area2D < AREA_OVERLAP_MIN_AREA) continue
         if (!bboxOverlap(a.box, b.box)) continue
         let shared = 0
         for (const id of a.ids) if (b.ids.has(id)) shared++

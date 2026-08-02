@@ -9,7 +9,8 @@
 import TerrainVoronoiGenerator, { organicClipCircle, organicOuterClipRadius } from './CityGenerator/TerrainVoronoiGenerator.js'
 import { gutterRoadEdges } from './CityGenerator/CityBlockGenerator.js'
 import { convertTerrainCellsToPlots } from './CityGenerator/TerrainPlotConverter.js'
-import { applyTerrainTypeZEffect, getRegionCornerIds, applyRiverZGradient, computeCliffChainSides, forceInitialCliffSeparation } from './CityGenerator/TerrainZHeight.js'
+import { applyTerrainTypeZEffect, getRegionCornerIds, computeCliffChainSides, forceInitialCliffSeparation } from './CityGenerator/TerrainZHeight.js'
+import { regradeAllRiverNetworks } from './CityGenerator/RiverZHeight.js'
 import { findHighGroundClusterContaining, getClusterCornerIds, regenerateHighGroundCluster } from './CityGenerator/TerrainPeak.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { pip, clipToPolygon } from './voronoi/VoronoiUtils.js'
@@ -696,21 +697,24 @@ export default class TerrainSetup {
     // always remain at the same z-height"): the pullback mints each bank corner as its
     // own registry point, snapshotting z from the raw centreline point at THAT moment
     // (_dcelPullbackMaterialize's posFor copies `base.z` unchanged for a River — no
-    // per-side differentiation the way Cliff gets). Grading the centreline first, then
-    // splitting, means both bank copies snapshot the SAME already-correct z for free —
-    // no separate bank-sync step needed. Grading AFTER the split (the original order)
-    // would edit the raw point too late: the split copies already exist with their own
-    // frozen z, and wouldn't pick up the change until some later, unrelated pullback
-    // recompute. Defining a River doesn't itself trigger propagation elsewhere
-    // ("adjust, don't freeze"'s one exception) — this only grades the River's OWN path,
-    // reading whatever z already exists at each endpoint/crossing right now.
+    // per-side differentiation the way Cliff gets; RiverBankWall.flattenRiverBankZ, run
+    // later in _applyRiverCliffPullbackToTerrainPlots, is what makes this a guaranteed
+    // invariant rather than an accidental side effect). Grading the centreline first,
+    // then splitting, means both bank copies snapshot the SAME already-correct z for
+    // free. Grading AFTER the split (the original order) would edit the raw point too
+    // late: the split copies already exist with their own frozen z, and wouldn't pick up
+    // the change until some later, unrelated pullback recompute.
+    //
+    // Whole-map regrade (2026-08-01 redesign, plan "splendid-beaming-narwhal"), not just
+    // this one new edge — source/mouth is a NETWORK-wide concept (the lowest free end of
+    // the whole connected River graph), so a newly-drawn edge can legitimately change
+    // which end of an ALREADY-existing, already-graded stretch elsewhere on the map is
+    // now the true mouth (e.g. it just connected that stretch to the sea for the first
+    // time). See RiverZHeight.js's own header for the full design.
     if (edgeType === 'River') {
       const wt = this.sp.gameStateManager.worldTerrainData
-      const cliffPointIds = new Set()
-      for (const e of Object.values(wt.edges)) {
-        if (e.assignedType === 'Cliff') for (const pid of e.pointIds || []) cliffPointIds.add(pid)
-      }
-      applyRiverZGradient(this.sp.gameStateManager.pointRegistry, edge, cliffPointIds)
+      const regionsById = new Map((wt.regions || []).map(r => [r.id, r]))
+      regradeAllRiverNetworks(this.sp.gameStateManager.pointRegistry, wt.edges, wt.terrainPlots || [], regionsById)
     }
     // Forces this Cliff's two sides to at least CLIFF_MIN_SEPARATION apart, right now —
     // user-confirmed 2026-07-26, "one side should be forced to be higher, at time of

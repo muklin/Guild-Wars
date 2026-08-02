@@ -155,13 +155,28 @@ export function regenerateHighGroundCluster(registry, clusterRegions, terrainPlo
   // Height: baseZ + the TALLEST reaching Peak's own cosine-falloff contribution (not
   // summed) — where two Peaks' cones overlap, the taller one wins at each point, giving a
   // natural saddle between summits instead of a fused blob (confirmed live 2026-07-30).
+  //
+  // Cross-type dampening (user-confirmed 2026-08-01: a Mountains peak's cone could reach
+  // across a cluster's own internal Mountains/Hills border and bump a Hills region up to
+  // mountain height/jaggedness, since this loop runs over the cluster's WHOLE combined
+  // domain with no notion of which region a point belongs to — the exact bug behind "a
+  // Hills region ringed by Mountains should stay looking like Hills"). Explicitly NOT a
+  // hard clip at the border (user: "we'll end up with sharp edges") — the falloff curve
+  // itself is untouched, still one smooth cosine cone; a point outside the peak's OWN
+  // region's type just gets half that same contribution, so the cone still fades
+  // continuously across the border, just toward a lower ceiling on the far side. Two
+  // same-type neighbours in one cluster (Mountains next to Mountains) are unaffected —
+  // this only softens a cone crossing into a DIFFERENT type.
+  const CROSS_TYPE_FALLOFF = 0.5
   for (const p of domainPoints) {
     let bump = 0
+    const pRegion = regionOfPoint.get(p.id)
     for (const peak of peaks) {
       const d = Math.hypot(p.x - peak.x, p.y - peak.y)
       if (d >= peak.coneRadius) continue
       const t = d / peak.coneRadius
-      const contribution = peak.peakBump * (Math.cos(t * Math.PI) + 1) * 0.5
+      let contribution = peak.peakBump * (Math.cos(t * Math.PI) + 1) * 0.5
+      if (pRegion && pRegion.assignedType !== peak.region.assignedType) contribution *= CROSS_TYPE_FALLOFF
       if (contribution > bump) bump = contribution
     }
     p.z = p.baseZ + bump

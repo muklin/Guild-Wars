@@ -48,11 +48,10 @@ export const TERRAIN_TYPES = {
   // lake's (now corner-derived) height propagates into the surrounding terrain.
   Lake:       { mode: 'delta', amount: -0.33, cornerAmount: -0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0x1a5abf },
   // ── Peak cone + erosion (ADR-0024, supersedes ADR-0023's one-time/per-region/single-peak
-  // version): a Hills/Mountains region still mints no new topology — `mode` stays plain
-  // `'delta'` (identical dispatch to Lake/Desert) — but the peak/erosion passes themselves
-  // are now fully REGENERATABLE and scoped to the region's own High-ground cluster (a
-  // maximal connected group of Mountains+Hills regions — the two types freely connect to
-  // each other), not the single region in isolation. See TerrainPeak.js
+  // version): a Hills/Mountains region still mints no new topology — the peak/erosion
+  // passes themselves are fully REGENERATABLE and scoped to the region's own High-ground
+  // cluster (a maximal connected group of Mountains+Hills regions — the two types freely
+  // connect to each other), not the single region in isolation. See TerrainPeak.js
   // (regenerateHighGroundCluster) and TerrainErosion.js (applyTerrainErosion, now grouped
   // by cluster) for the algorithms; docs/adr/0024 for the full design/why.
   //
@@ -65,14 +64,21 @@ export const TERRAIN_TYPES = {
   // distance, so a huge region and a tiny one each get a sensibly-scaled peak of their own
   // when a Peak happens to land in them.
   //
-  // Starting values, tune once seen live.
-  Mountains: { mode: 'delta', amount: 0.5, cornerAmount: 0.1, hopCount: 3, curve: 'linear', direction: 'up',
+  // `mode: 'raiseTo'` (changed 2026-08-01 from `'delta'` — user-confirmed: "set height
+  // values explicitly, not delta/add... corners should be set to that value only if they
+  // are currently lower than that, if higher leave as they are"): amount/cornerAmount are
+  // now ABSOLUTE target heights (centre/edge of the taper), not deltas added onto
+  // whatever height was already there — see applyTerrainTypeZEffect's `raiseTo` branch. A
+  // point already at or above its tapered target is left untouched. Starting values
+  // picked well above a typical pre-effect baseline (~0.7-0.8, observed live) so the
+  // raise is actually visible — tune once seen live, same as everything else here.
+  Mountains: { mode: 'raiseTo', amount: 1.3, cornerAmount: 0.9, hopCount: 3, curve: 'linear', direction: 'up',
     CONE_RADIUS_FRACTION: 0.8,
     CONE_HEIGHT_RATIO: 0.2,
     color: 0x8d8d8d },
-  Hills: { mode: 'delta', amount: 0.2, cornerAmount: 0.1, hopCount: 2, curve: 'linear', direction: 'up',
+  Hills: { mode: 'raiseTo', amount: 1.0, cornerAmount: 0.8, hopCount: 2, curve: 'linear', direction: 'up',
     CONE_RADIUS_FRACTION: 0.9,
-    CONE_HEIGHT_RATIO: 0.1,
+    CONE_HEIGHT_RATIO: 0.15,
     color: 0x699B4F },
 
   Swamp: { mode: 'flattenThenDelta', amount: -0.33, floor: 0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0x4a6b4a },
@@ -87,7 +93,7 @@ export const TERRAIN_TYPES = {
   // Every bordering edge is auto-assigned Cliff (TerrainSetup.js) and rendered white
   // (`iceSheetAdjacent` — CliffEdgeBands.js/GroundplaneAudit.js), so the plateau reads as
   // ringed by ice cliffs once there's an actual height difference to show.
-  'Ice Sheet': { mode: 'delta', PLATEAU_RISE: 1, JITTER: 0.25, color: 0xf4f8ff },
+  'Ice Sheet': { mode: 'delta', PLATEAU_RISE: 3, JITTER: 0.25, color: 0xf4f8ff },
   Desert: { mode: 'delta', amount: -0.33, floor: 0.33, cornerAmount: -0.33, hopCount: 1, curve: 'linear', direction: 'down', color: 0xedca72 },
   // Cliff (an Edge type, not a Region type — see CONTEXT_WorldTerrain.md), folded in here
   // 2026-07-27 (was the standalone CLIFF_Z_RULE export below, now dead). Outward
@@ -106,8 +112,19 @@ export const TERRAIN_TYPES = {
   'Shore-Sea': { color: 0xedca72 },   // matches Desert — sand
   'Shore-Lake': { color: 0x8d8d8d },  // matches Mountains — stone
   'Cliff-Edge': { color: 0xaaaaaa },  // matches Cliff itself — no separate design decision made yet for it, revisit once it's visible in-game.
+  // River-Bank (new 2026-08-01, plan "splendid-beaming-narwhal"): the vertical wall
+  // RiverBankWall.js builds wherever a river's own flat bank z doesn't match the
+  // neighbouring land's natural height — deliberately grey/matches Cliff-Edge's own
+  // visual language (a vertical rock face, not a sloped sandy/stony ramp like Shore),
+  // since CONTEXT_WorldTerrain.md's Shore entry no longer covers River banks at all.
+  'River-Bank': { color: 0xaaaaaa },
   unassigned: { color: 0xb8a680 },
 }
+
+// River-Bank wall z-step tolerance (RiverBankWall.js): a wall triangle whose two z values
+// differ by less than this is snapped flat / skipped entirely, so a stretch of river that's
+// already flush with the land doesn't produce a field of degenerate near-zero-area slivers.
+export const RIVER_BANK_WALL_MIN_STEP = 0.01
 
 // ── High-ground cluster erosion (ADR-0024) — ONE shared config for every Mountains/Hills
 // Peak's erosion pass, regardless of which type's region it happens to land in (confirmed

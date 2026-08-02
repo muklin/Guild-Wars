@@ -7,7 +7,9 @@
       "Bash(npm run build)",
       "Bash(git status)",
       "Bash(git diff *)",
-      "Skill(update-config)"
+      "Skill(update-config)",
+      "Bash(node --test *)",
+      "Bash(node *.test.mjs)"
     ],
     "deny": [
       "Read(.env*)",

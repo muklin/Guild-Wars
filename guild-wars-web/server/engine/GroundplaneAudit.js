@@ -20,6 +20,7 @@ import { subdivideTerrain } from './CityGenerator/TerrainSubdivision.js'
 import { buildShoreBands } from './CityGenerator/ShoreBands.js'
 import { buildCliffEdgeBands } from './CityGenerator/CliffEdgeBands.js'
 import { applyTerrainErosion } from './CityGenerator/TerrainErosion.js'
+import { flattenRiverBankZ, buildRiverBankWalls, raiseGroundplaneNearRiverBanks } from './CityGenerator/RiverBankWall.js'
 import { auditGroundplane } from './CityGenerator/auditGroundplane.js'
 import { computeVoronoiCellsHalfPlane, clipToPolygon } from './voronoi/VoronoiUtils.js'
 import { extractBoundaryChain, boundaryConnectionAt } from '../../shared/boundaryChain.js'
@@ -1560,6 +1561,14 @@ export default class GroundplaneAudit {
     ]
     if (this.sp.gameStateManager.worldTerrainData) this.sp.gameStateManager.worldTerrainData.riverCliffFaces = riverCliffFaces
 
+    // Flat cross-section (plan "splendid-beaming-narwhal", 2026-08-01): force every River
+    // face's left/right bank z to match its own centreline z at every chain point, right
+    // after riverCliffFaces exists (so the real bank-corner ids are known) and before
+    // subdivision — see RiverBankWall.flattenRiverBankZ's own doc comment for the real gap
+    // this closes (a Cliff/River crossing's split copies can otherwise silently land on
+    // opposite sides of a Cliff's own high/low split).
+    flattenRiverBankZ(registry, riverCliffFaces, riverCliffEdges)
+
     // Shore bands (ADR-0022 Stage 2): every Sea/Lake perimeter's land margin gets pulled
     // inland to open room for a band, right here — directly after this pass's own
     // from-_rawPointIds reset, so buildShoreBands always starts from the TRUE current
@@ -1597,7 +1606,7 @@ export default class GroundplaneAudit {
     // transition band must never move here either).
     if (wtShore) {
       const regionsByIdForErosion = new Map((wtShore.regions || []).map(r => [r.id, r]))
-      applyTerrainErosion(registry, wtShore.terrainSurfaces || [], regionsByIdForErosion, [riverCliffFaces, wtShore.cliffEdgeBands, wtShore.shoreBands])
+      applyTerrainErosion(registry, wtShore.terrainSurfaces || [], regionsByIdForErosion, [riverCliffFaces, wtShore.cliffEdgeBands, wtShore.shoreBands, wtShore.riverBankWalls])
     }
 
     this._syncLinearFeatureRegions(riverCliffFaces)
@@ -1780,8 +1789,48 @@ export default class GroundplaneAudit {
     // a wall) would never be modelled as one giant fan-subdivided face either.
     const regionsById = new Map((wt.regions || []).map(r => [r.id, r]))
     const riverCliffSegments = (wt.riverCliffFaces || []).flatMap(f => this._ribbonFaceToSegments(f))
-    const terrainPlotsForSubdivision = [...(wt.terrainPlots || []), ...(wt.shoreBands || []), ...(wt.cliffEdgeBands || []), ...riverCliffSegments]
+    // River segments are excluded from the generic Catmull-Clark pass entirely (plan
+    // "splendid-beaming-narwhal", 2026-08-01) — a River must never gain extra subdivision
+    // points along its own length beyond its original chain vertices (user-confirmed, with
+    // an ASCII diagram), but catmullClarkFresh has no directional awareness and would
+    // otherwise subdivide a ribbon quad's length-wise edges identically to its width-wise
+    // ones, every pass. Cliff segments (and River/Cliff junction caps — compact fan
+    // polygons, not elongated strips, so the "along their length" concern doesn't apply)
+    // are UNCHANGED, still welded into the same subdivideTerrain pass as before. Kept coarse,
+    // River segments are appended straight to terrainSurfaces afterward; RiverBankWall.js's
+    // buildRiverBankWalls (below) is what lets their banks still conform to the land mesh's
+    // own finer subdivision, without the river itself gaining any new length-wise points.
+    const riverSegments = riverCliffSegments.filter(f => f.assignedType === 'River')
+    const nonRiverRibbonSegments = riverCliffSegments.filter(f => f.assignedType !== 'River')
+    const terrainPlotsForSubdivision = [...(wt.terrainPlots || []), ...(wt.shoreBands || []), ...(wt.cliffEdgeBands || []), ...nonRiverRibbonSegments]
     wt.terrainSurfaces = subdivideTerrain(this.sp.gameStateManager.pointRegistry, terrainPlotsForSubdivision, regionsById)
+    {
+      let counter = wt.terrainSurfaces.length
+      for (const f of riverSegments) {
+        const polygon = this.sp.gameStateManager.pointRegistry.resolve(f.pointIds).map(p => ({ x: p.x, y: p.y, z: p.z }))
+        if (polygon.length < 3) continue
+        wt.terrainSurfaces.push({
+          id: `ts:${counter++}`,
+          parentRegionId: undefined,
+          assignedType: f.assignedType,
+          hidden: false,
+          sourcePlotId: f.id,
+          iceSheetAdjacent: f.iceSheetAdjacent,
+          pointIds: f.pointIds,
+          polygon,
+        })
+      }
+      // Terrain below a river's own bank is raised to meet it (3-hop flood-fill from every
+      // bank point over the fine mesh's own point graph — user-confirmed 2026-08-02
+      // process) BEFORE wall-building, so a wall only ever needs to cover terrain that's
+      // genuinely ABOVE the bank once this has already run.
+      raiseGroundplaneNearRiverBanks(this.sp.gameStateManager.pointRegistry, wt.terrainSurfaces, wt.riverCliffFaces || [])
+      // Ephemeral, cleared+re-minted every sync — same convention every other split/band
+      // point kind in this pipeline already follows (terrain-split, coarse-nudge-split).
+      this.sp.gameStateManager.pointRegistry.clearKind('river-bank-wall')
+      wt.riverBankWalls = buildRiverBankWalls(this.sp.gameStateManager.pointRegistry, wt.terrainSurfaces, wt.riverCliffFaces || [])
+      wt.terrainSurfaces.push(...wt.riverBankWalls)
+    }
     // Promoted plots (StreetBlockPlotPipeline.promoteTerrainPlotToDistrict — a City
     // Expansion district) are deliberately left in worldTerrainData.terrainPlots (other
     // code still needs their raw geometry — see _rawSurroundingTerrainPlots' own doc

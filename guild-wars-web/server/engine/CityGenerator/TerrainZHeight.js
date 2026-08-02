@@ -571,6 +571,20 @@ export function applyTerrainTypeZEffect(registry, region, cornerIds, terrainPlot
       p.baseZ = p.z
     }
     if (rule.floor != null && !region.seedPoint.zLocked) region.seedPoint.z = Math.max(rule.floor, region.seedPoint.z)
+  } else if (rule.mode === 'raiseTo') {
+    // Explicit target height, not a delta (user-confirmed 2026-08-01, "set height values
+    // explicitly... corners should be set to that value only if they are currently lower
+    // than that, if higher leave as they are") — Mountains/Hills no longer add onto
+    // whatever height was already there. taperedAmount(p) is now an absolute target
+    // (amount at the seed/centre, cornerAmount at the domain's own farthest point); a
+    // point already at or above its own tapered target is left completely untouched,
+    // same "never lower" spirit `direction: 'up'` already enforces in propagateFromRegion
+    // below (see that function's matching `raiseTo`-style pre-check).
+    if (!region.seedPoint.zLocked) region.seedPoint.z = Math.max(region.seedPoint.z, rule.amount)
+    for (const p of domainPoints) {
+      p.z = Math.max(p.z, taperedAmount(p))
+      p.baseZ = p.z
+    }
   } else if (rule.mode === 'flattenThenDelta') {
     // Swamp: flatten to its own average z first, then apply the delta — no propagation.
     const avg = domainPoints.length
@@ -643,11 +657,18 @@ export function propagateFromRegion(registry, region, cornerIds, terrainPlots, h
   for (const [id, d] of nearestDistById) {
     const p = registry.get(id)
     if (!p) continue
+    // Gate against the corner height directly (user-confirmed 2026-08-01, "only increase
+    // if the current height is lower than the corner height") rather than computing the
+    // blend first and checking whether it happened to come out higher/lower — a direct
+    // pre-check on intent instead of an incidental post-hoc comparison. The falloff blend
+    // itself is unchanged (still a smooth distance-based fade toward sourceZ, not a flat
+    // jump) — this only decides whether a point is eligible to move AT ALL for its type's
+    // allowed direction, same "never move against your direction" spirit as before.
+    if (direction === 'up' && p.z >= sourceZ) continue    // already at/above the corner height — never lower it
+    if (direction === 'down' && p.z <= sourceZ) continue  // already at/below the corner height — never raise it
     const t = d / maxDistance
     const blend = f(t)
     const newZ = p.z + blend * (sourceZ - p.z)
-    if (direction === 'up' && newZ < p.z) continue    // never lower a point for a "raise" type
-    if (direction === 'down' && newZ > p.z) continue  // never raise a point for a "lower" type
     p.z = newZ
     p.baseZ = newZ
   }
@@ -746,73 +767,9 @@ export function getRegionCornerIds(edges, regionId) {
   return [...ids]
 }
 
-// River z-gradient (plan "typed-gliding-leaf", per plan "rustling-churning-finch" §7):
-// endpoints are fixed at whatever z already exists at the moment the River is drawn —
-// this only sets INTERIOR path points, along `edge.pointIds` (the River's own raw
-// centreline chain, not a split land copy), weighted by cumulative (x,y) distance.
-//
-// New Rule for Rivers (user-confirmed 2026-07-14): water can only ever flow downhill —
-// grading between two fixed points must never invent an interior rise. Each stretch
-// between two fixed points (see gradeRange below) always walks from whichever end is
-// HIGHER down to the other, so it's monotonic-decreasing by construction — the old
-// approach (always interpolating start-to-end in path order) could invent an uphill
-// stretch whenever the "start" happened to be the lower of the two, which is exactly
-// the "aqueduct bridging a dip" artifact this fixes.
-//
-// If the path crosses an already-assigned Cliff at an interior point (`cliffPointIds`,
-// every pointId on any currently-assigned Cliff edge), that crossing is a Waterfall: its
-// own z (the Cliff split's high/low value) is never overwritten — each stretch either
-// side of it (start-to-crossing, crossing-to-end, or crossing-to-crossing for a river
-// that crosses more than one Cliff) grades independently, per the same rule, so the
-// vertical gap at the crossing itself is exactly the Waterfall drop. A crossing whose
-// own fixed value is out of monotonic order relative to its neighbours (a genuinely
-// inconsistent River/Cliff combination) still shows as a real jump there — this
-// algorithm can't paper over a contradiction in the underlying terrain data, only
-// guarantee every stretch it actually computes is internally consistent.
-// zLocked points (Sea/Lake/Ice Sheet) are never overwritten, matching every other
-// z-height writer in this file.
-export function applyRiverZGradient(registry, edge, cliffPointIds = new Set()) {
-  const path = edge.pointIds || []
-  if (path.length < 2) return
-  const pts = path.map(id => registry.get(id))
-  if (pts.some(p => !p)) return
-
-  const cum = [0]
-  for (let i = 1; i < pts.length; i++) {
-    cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y))
-  }
-  if (cum[cum.length - 1] === 0) return
-
-  // Walks from whichever of pts[i0]/pts[i1] is HIGHER toward the other, writing every
-  // STRICTLY interior point between them (i0/i1 themselves are never touched — they're
-  // either the river's own fixed endpoints or a Cliff crossing's fixed Waterfall value)
-  // with a straight distance-weighted lerp from the high end down to the low end.
-  // Choosing the walk direction per-pair this way is what guarantees each stretch is
-  // monotonic-decreasing by construction (interpolating from a high fixed value down to
-  // a low fixed value can never produce an interior value above the high end), which is
-  // exactly the "New Rule for Rivers" (user-confirmed 2026-07-14): water only flows
-  // downhill, never uphill, between two fixed points.
-  const gradeRange = (i0, i1) => {
-    const forward = pts[i0].z >= pts[i1].z
-    const hiIdx = forward ? i0 : i1, loIdx = forward ? i1 : i0
-    const step = forward ? 1 : -1
-    const hiZ = pts[hiIdx].z, loZ = pts[loIdx].z
-    const totalDist = Math.abs(cum[loIdx] - cum[hiIdx])
-    if (totalDist <= 0) return
-    for (let i = hiIdx + step; i !== loIdx; i += step) {
-      if (pts[i].zLocked) continue
-      const t = Math.abs(cum[i] - cum[hiIdx]) / totalDist
-      pts[i].z = hiZ + (loZ - hiZ) * t
-    }
-  }
-
-  // Every interior Cliff crossing along this path (a river can cross more than one
-  // Cliff) is a fixed anchor, same as the two endpoints — grade independently between
-  // each consecutive pair of anchors, never overwriting any of them.
-  const anchors = [0]
-  for (let i = 1; i < pts.length - 1; i++) {
-    if (cliffPointIds.has(path[i])) anchors.push(i)
-  }
-  anchors.push(pts.length - 1)
-  for (let a = 0; a < anchors.length - 1; a++) gradeRange(anchors[a], anchors[a + 1])
-}
+// River z-gradient — MOVED to RiverZHeight.js (2026-08-01 redesign, plan
+// "splendid-beaming-narwhal"): `applyRiverZGradient` (per-edge, no cross-edge grouping) is
+// superseded by `regradeAllRiverNetworks`/`applyRiverNetworkZGradient`, which grade a whole
+// connected River network at once (source/mouth determined network-wide, branching supported,
+// Waterfall drops computed from computeCliffChainSides' own high/low gap instead of frozen at
+// whatever z happened to already be there). See that file's header for the full design.

@@ -2,14 +2,20 @@
 - I don't like the current FP indication.  FP names are often not rendered.
 - Archways are not appearing in game.  I've not yet found one.  
 - added a canal to 3 District edges and it collapsed the 3 edges to one line, and hence affected the districts adjacent. 
-- Move all Terrain Config (terrain modifiers, extrude patterns, height changes settins etc.) into a new file: K:\UnityProjects\Guild-Wars\guild-wars-web\shared\terrainConfig.js, similar to districtConfig.js
+
+- district blocks and then plots are not following terrain heights.  they are flat.  
+- Lakes and seas should have all points at exactly the same zheight,  (sea = 0, lake = calculated.)
+- Walk mode is not detecting all surfaces.  Cliffs, shores, streets all need to be detected.  We need to detect the visible terrain too.
+- its possible to get stuck on a wall. 
+- terrain edges are still being shown for ie rivers cliffs, ice cliffs, etc.
+- ice sheets are not working correctly,  - should be raised to a plateau, but arent' being changed.  The edge between the previously visible and the now unhidden terrains shows a gap. 
+![1785560192328](image/TODO/1785560192328.png)
 
 
 I want to replace all dimensions, so the world dimension are in metres. 
+Begin a search through the codebase for all distance metrics and multiply by an amount such that doors are 2 metres tall. 
+Note that this shouldn't change anything in game, its purely a change of scales to make distances match something I recognize.
 
-Begin a search through the codebase for all distance metrics and multiply by a scale suct that street spacing of 1.0 -> 3 metres, so multiply all distances by 3.  
-
-![1785497980750](image/TODO/1785497980750.png)
 
 # Features:
 ## General 
@@ -23,7 +29,16 @@ Begin a search through the codebase for all distance metrics and multiply by a s
 - (future) if the player is in front of a sewer/hatch door, they climb down it.
 
 ## Terrain Mode
-I actually want to add a subdivision layer across all terrain. In Terrain mode, we will continue to store the existing geometry as a generative layer.  upon leaving Terrain mode, we store only the subdivided geometry as the full DCEL mesh. 
+
+
+Rework lakes and seas.    
+They are the opposite of hills.  ie we reduce the height of the terrain, using the same groundplane and erosion logic.   Zheight can go negative for seas and lakes.  
+We leave the eroded terrain in place. 
+for lakes add a horizonal "water" plane at the place that top point that the plane intersects the ground, while still remaining inside the terrain 
+For seas just add a plan at z=0.  
+Note that these planes will be divided into the terrain plots to add Fishing elements to, and colour jittered.
+But, they don't need to be subdivided, since they are flat and don't need extra geometry to handle curves. 
+
 
 
 ## District Mode
@@ -307,3 +322,6 @@ Do the work to correct the jittered terrain-plot color reverting to default on h
 - WorldRenderer.js: DONE (2026-07-19), but not the originally-planned shape. Quantified all 132 methods against the 3 sub-renderers it already composed (`terrainRenderer`/`districtRenderer`/`groundRenderer` — separate classes since before this session): 74 were pure one-line pass-throughs to a sub-renderer, 36 had real cross-cutting logic (camera/mode/picking), 22 were fully standalone. Building 3 *new* layer classes (the original plan) would have added a third layer of indirection over an already-2-layer system for no value. Instead: manually reviewed all 74 "pure" delegates and found 8 actually had real logic hidden inside (5 mark-dirty/needs-render side effects, 1 feature-flag guard, 1 privacy boundary around an `_`-prefixed property, 1 compound property-set-then-render) — kept those 8 as real methods. Deleted the remaining 66, repointed all 145 real call sites across `App.js`(115) and `InputHandler.js`(30) to call the sub-renderer directly (e.g. `renderer.terrainRenderer.renderTerrain(...)` instead of `renderer.renderTerrain(...)`), verified via a full-codebase caller sweep (checked all files touching `.renderer`/`worldRenderer`, not just the ones with obvious hits) and a self-reference check within `WorldRenderer.js` itself — the latter caught 6 real internal `this.cityDistrictData` uses (the deleted getter) that would have silently broken `focusOnHQ`/`getLandmarkAtWorldPos`/`setHQHover`/`debugPlotWings`/`captureHQSnapshot`/`_plotSpatialIndex`, now fixed to `this.districtRenderer.cityDistrictData`. `WorldRenderer.js`: 1371 → 1185 lines. **No automated test harness exists for client rendering and the dev server can't be started from this session — this stage has zero automated verification, unlike Stages 1-3. Needs a thorough live check (every UI mode, especially HQ-related interactions) before trusting it.**
 
 - Sometime Edge definition panels are not in a logical place.  
+
+
+I actually want to add a subdivision layer across all terrain. In Terrain mode, we will continue to store the existing geometry as a generative layer.  upon leaving Terrain mode, we store only the subdivided geometry as the full DCEL mesh. 

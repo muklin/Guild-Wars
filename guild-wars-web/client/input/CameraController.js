@@ -38,7 +38,11 @@ export default class CameraController {
     // Orbital parameters (spherical coordinates)
     this.targetPosition = new THREE.Vector3(25, 0, 25)
     this.distance = 45
-    this.azimuth = 0
+    // Math.PI/2, not 0 — matches centerOnMap()'s own azimuth (see its doc comment: "North
+    // at top"), so the compass reads correctly for the brief window before
+    // restoreSavedState()/centerOnMap() overwrites this placeholder (confirmed live: a 0
+    // default rendered the HUD compass W-up/N-right on the very first frame).
+    this.azimuth = Math.PI / 2
     this.elevation = Math.PI / 6 // 30 degrees
 
     // Zoom — start framing the full map; allow deep zoom-in (close enough to read
